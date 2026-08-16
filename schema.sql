@@ -174,20 +174,58 @@ create table kpis (
   target      numeric,
   target_direction text not null default 'min' check (target_direction in ('min', 'max')),
   frequency   text check (frequency in ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
+  -- 'manual' : valeur saisie directement (comportement historique). 'ratio' : valeur
+  -- calculée à partir du détail ligne par ligne (kpi_detail_records), voir plus bas.
+  calculation_type text not null default 'manual' check (calculation_type in ('manual', 'ratio')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
 
+-- Trace chaque import CSV de détail comme preuve d'audit : qui a importé quoi, quand,
+-- depuis quel fichier, avec quel taux de succès. Doit exister avant kpi_records et
+-- kpi_detail_records, qui y font tous les deux référence.
+create table kpi_import_batches (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants (id) on delete cascade,
+  kpi_id        uuid not null references kpis (id) on delete cascade,
+  file_name     text,
+  imported_by   uuid references users (id) on delete set null,
+  imported_at   timestamptz not null default now(),
+  rows_total    integer not null default 0,
+  rows_valid    integer not null default 0,
+  rows_rejected integer not null default 0
+);
+
 create table kpi_records (
-  id           uuid primary key default gen_random_uuid(),
-  tenant_id    uuid not null references tenants (id) on delete cascade,
-  kpi_id       uuid not null references kpis (id) on delete cascade,
-  period_date  date not null,
-  value        numeric not null,
-  comment      text,
-  recorded_by  uuid references users (id) on delete set null,
-  created_at   timestamptz not null default now(),
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  kpi_id          uuid not null references kpis (id) on delete cascade,
+  period_date     date not null,
+  value           numeric not null,
+  comment         text,
+  -- 'manual' : saisie directe. 'import_csv' : calculée depuis un import de détail —
+  -- repasse à 'manual' si un humain modifie ensuite la valeur (voir PATCH .../records/:id).
+  source          text not null default 'manual' check (source in ('manual', 'import_csv')),
+  import_batch_id uuid references kpi_import_batches (id) on delete set null,
+  recorded_by     uuid references users (id) on delete set null,
+  created_at      timestamptz not null default now(),
   unique (kpi_id, period_date)
+);
+
+-- Détail ligne par ligne (ex : une commande contrôlée conforme/non conforme) derrière
+-- une valeur calculée de kpi_records — sert de preuve consultable pour un point du
+-- graphique, et de base de recalcul si un import complémentaire arrive plus tard.
+create table kpi_detail_records (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  kpi_id          uuid not null references kpis (id) on delete cascade,
+  period_date     date not null,
+  item_reference  text not null,
+  is_compliant    boolean not null,
+  comment         text,
+  import_batch_id uuid references kpi_import_batches (id) on delete cascade,
+  created_by      uuid references users (id) on delete set null,
+  created_at      timestamptz not null default now()
 );
 
 -- Workflow d'approbation tracé (remplace le simple champ status en donnant une
@@ -358,6 +396,15 @@ create index idx_kpis_tenant_id on kpis (tenant_id);
 create index idx_kpi_records_tenant_id on kpi_records (tenant_id);
 create index idx_kpi_records_kpi_id on kpi_records (kpi_id);
 create index idx_kpi_records_period_date on kpi_records (period_date);
+create index idx_kpi_records_import_batch_id on kpi_records (import_batch_id);
+
+create index idx_kpi_import_batches_tenant_id on kpi_import_batches (tenant_id);
+create index idx_kpi_import_batches_kpi_id on kpi_import_batches (kpi_id);
+
+create index idx_kpi_detail_records_tenant_id on kpi_detail_records (tenant_id);
+create index idx_kpi_detail_records_kpi_id on kpi_detail_records (kpi_id);
+create index idx_kpi_detail_records_period_date on kpi_detail_records (period_date);
+create index idx_kpi_detail_records_import_batch_id on kpi_detail_records (import_batch_id);
 
 create index idx_document_workflows_tenant_id on document_workflows (tenant_id);
 create index idx_document_workflows_document_id on document_workflows (document_id);
@@ -567,6 +614,8 @@ alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
+alter table kpi_import_batches enable row level security;
+alter table kpi_detail_records enable row level security;
 alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
@@ -640,6 +689,16 @@ create policy kpis_isolation on kpis
   with check (tenant_id = auth_tenant_id());
 
 create policy kpi_records_isolation on kpi_records
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy kpi_import_batches_isolation on kpi_import_batches
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy kpi_detail_records_isolation on kpi_detail_records
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
