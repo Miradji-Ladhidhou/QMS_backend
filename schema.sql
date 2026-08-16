@@ -21,19 +21,6 @@ begin
 end;
 $$;
 
--- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
--- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
--- éviter une récursion de policy, sans exposer de faille de search_path.
-create or replace function auth_tenant_id()
-returns uuid
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select tenant_id from public.users where id = auth.uid();
-$$;
-
 -- =============================================================================
 -- TABLES
 -- =============================================================================
@@ -44,7 +31,6 @@ create table tenants (
   slug        text not null unique,
   plan        text not null default 'free' check (plan in ('free', 'starter', 'pro', 'enterprise')),
   logo_url    text,
-  capa_counter integer not null default 0,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -106,7 +92,7 @@ create table capas (
   origin       text,
   ref_document uuid references documents (id) on delete set null,
   priority     text not null default 'medium' check (priority in ('low', 'medium', 'high', 'critical')),
-  status       text not null default 'open' check (status in ('open', 'in_progress', 'pending_verification', 'closed')),
+  status       text not null default 'open' check (status in ('open', 'in_progress', 'pending_verification', 'closed', 'overdue')),
   assigned_to  uuid references users (id) on delete set null,
   due_date     date,
   closed_at    timestamptz,
@@ -114,6 +100,23 @@ create table capas (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   unique (tenant_id, number)
+);
+
+-- Compteur de numérotation des CAPA, par tenant et par année (CAPA-2026-001)
+create table capa_counters (
+  tenant_id  uuid not null references tenants (id) on delete cascade,
+  year       integer not null,
+  counter    integer not null default 0,
+  primary key (tenant_id, year)
+);
+
+create table capa_comments (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  capa_id     uuid not null references capas (id) on delete cascade,
+  user_id     uuid references users (id) on delete set null,
+  comment     text not null,
+  created_at  timestamptz not null default now()
 );
 
 create table trainings (
@@ -159,6 +162,19 @@ create table kpi_records (
   unique (kpi_id, period_date)
 );
 
+-- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
+-- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
+-- éviter une récursion de policy, sans exposer de faille de search_path.
+create or replace function auth_tenant_id()
+returns uuid
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select tenant_id from public.users where id = auth.uid();
+$$;
+
 -- =============================================================================
 -- INDEX
 -- =============================================================================
@@ -179,6 +195,10 @@ create index idx_capas_tenant_id on capas (tenant_id);
 create index idx_capas_status on capas (status);
 create index idx_capas_assigned_to on capas (assigned_to);
 create index idx_capas_ref_document on capas (ref_document);
+create index idx_capas_due_date on capas (due_date);
+
+create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
+create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
 create index idx_trainings_tenant_id on trainings (tenant_id);
 
@@ -215,19 +235,22 @@ create trigger trg_trainings_updated_at before update on trainings
 create trigger trg_kpis_updated_at before update on kpis
   for each row execute function set_updated_at();
 
--- Numérotation auto-incrémentée des CAPA par tenant (ex : CAPA-00001)
+-- Numérotation auto-incrémentée des CAPA par tenant et par année (ex : CAPA-2026-001)
 create or replace function set_capa_number()
 returns trigger
 language plpgsql
 as $$
 declare
+  capa_year integer := extract(year from now())::integer;
   next_seq integer;
 begin
-  update tenants set capa_counter = capa_counter + 1
-    where id = new.tenant_id
-    returning capa_counter into next_seq;
+  insert into capa_counters (tenant_id, year, counter)
+    values (new.tenant_id, capa_year, 1)
+    on conflict (tenant_id, year)
+    do update set counter = capa_counters.counter + 1
+    returning counter into next_seq;
 
-  new.number := 'CAPA-' || lpad(next_seq::text, 5, '0');
+  new.number := 'CAPA-' || capa_year || '-' || lpad(next_seq::text, 3, '0');
   return new;
 end;
 $$;
@@ -245,6 +268,8 @@ alter table document_categories enable row level security;
 alter table documents enable row level security;
 alter table document_versions enable row level security;
 alter table capas enable row level security;
+alter table capa_counters enable row level security;
+alter table capa_comments enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpis enable row level security;
@@ -278,6 +303,16 @@ create policy document_versions_isolation on document_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy capas_isolation on capas
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy capa_counters_isolation on capa_counters
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy capa_comments_isolation on capa_comments
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

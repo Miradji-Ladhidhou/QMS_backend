@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
 import categoriesRoutes from './routes/categories.js';
+import capasRoutes from './routes/capas.js';
 
 const app = express();
 
@@ -19,6 +20,7 @@ app.get('/health', (req, res) => {
 app.use('/auth', authRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/categories', categoriesRoutes);
+app.use('/api/capas', capasRoutes);
 
 const PORT = process.env.PORT || 4000;
 
