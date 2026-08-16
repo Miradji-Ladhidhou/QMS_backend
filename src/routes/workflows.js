@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
@@ -5,6 +6,12 @@ import { requireAuth } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
+
+// Signature électronique simple (eIDAS, non qualifiée) : hash SHA-256 de l'engagement pris,
+// horodaté et lié à la version exacte du document au moment de l'approbation.
+function generateSignatureHash({ documentId, version, approverId, timestamp, decision }) {
+  return createHash('sha256').update(`${documentId}${version}${approverId}${timestamp}${decision}`).digest('hex');
+}
 
 router.use(requireAuth);
 
@@ -53,7 +60,7 @@ router.post(
 
     const { data: workflow, error: workflowError } = await supabase
       .from('document_workflows')
-      .select('*')
+      .select('*, document:documents(id, version)')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -71,10 +78,28 @@ router.post(
     }
 
     const { decision, comment } = req.body;
+    const decidedAt = new Date().toISOString();
+
+    const signatureHash =
+      decision === 'approved'
+        ? generateSignatureHash({
+            documentId: workflow.document_id,
+            version: workflow.document.version,
+            approverId: req.user.id,
+            timestamp: decidedAt,
+            decision,
+          })
+        : null;
 
     const { data: approval, error: approvalError } = await supabase
       .from('document_approvals')
-      .update({ decision, comment: comment || null, decided_at: new Date().toISOString() })
+      .update({
+        decision,
+        comment: comment || null,
+        decided_at: decidedAt,
+        signature_hash: signatureHash,
+        ip_address: req.ip,
+      })
       .eq('workflow_id', workflow.id)
       .eq('approver_id', req.user.id)
       .select()

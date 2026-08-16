@@ -5,6 +5,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
+import { buildCertificatePdf } from '../services/certificatePdf.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -90,7 +91,81 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: "Impossible de récupérer l'historique des versions." });
   }
 
-  res.json({ ...document, versions });
+  // Dernier workflow d'approbation ouvert pour ce document (le cas échéant), avec l'état
+  // de chaque approbateur — utilisé par le frontend pour les boutons Approuver/Rejeter
+  // et le badge "Signé électroniquement".
+  const { data: workflow } = await supabase
+    .from('document_workflows')
+    .select('id, status, required_approvers, current_step, created_at')
+    .eq('document_id', document.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let approvals = [];
+  if (workflow) {
+    const { data: workflowApprovals } = await supabase
+      .from('document_approvals')
+      .select('id, approver_id, decision, comment, decided_at, approver:users(id, full_name)')
+      .eq('workflow_id', workflow.id)
+      .order('created_at', { ascending: true });
+    approvals = workflowApprovals || [];
+  }
+
+  res.json({ ...document, versions, workflow: workflow ? { ...workflow, approvals } : null });
+});
+
+// GET /api/documents/:id/certificate — certificat PDF de signature électronique
+router.get('/:id/certificate', async (req, res) => {
+  const { data: document, error: documentError } = await supabase
+    .from('documents')
+    .select('id, number, title, version')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (documentError || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const { data: workflow, error: workflowError } = await supabase
+    .from('document_workflows')
+    .select('id, status, created_at')
+    .eq('tenant_id', req.tenantId)
+    .eq('document_id', document.id)
+    .eq('status', 'approved')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (workflowError || !workflow) {
+    return res.status(404).json({ error: 'Aucun workflow approuvé pour ce document.' });
+  }
+
+  const { data: approvals, error: approvalsError } = await supabase
+    .from('document_approvals')
+    .select('decision, decided_at, signature_hash, ip_address, approver:users(full_name)')
+    .eq('workflow_id', workflow.id)
+    .eq('decision', 'approved')
+    .order('decided_at', { ascending: true });
+
+  if (approvalsError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les approbations.' });
+  }
+
+  const pdfBuffer = await buildCertificatePdf({ document, workflow, approvals });
+
+  await logAudit({
+    tenantId: req.tenantId,
+    documentId: document.id,
+    userId: req.user.id,
+    action: 'certificate_generated',
+    details: { workflow_id: workflow.id },
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="certificat-${document.number}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/documents — création + upload optionnel du fichier initial

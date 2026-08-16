@@ -14,6 +14,10 @@ import workflowsRoutes from './routes/workflows.js';
 
 const app = express();
 
+// Nécessaire pour que req.ip reflète l'IP réelle du client derrière un reverse proxy
+// (Render, etc.) plutôt que celle du proxy — utilisé pour la signature électronique.
+app.set('trust proxy', true);
+
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json());
