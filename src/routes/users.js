@@ -5,6 +5,14 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 const ASSIGNABLE_ROLES = ['admin', 'manager', 'member'];
+const DIGEST_FREQUENCIES = ['immediate', 'daily', 'weekly'];
+const NOTIFICATION_PREFERENCE_FIELDS = [
+  'email_documents_to_review',
+  'email_capa_overdue',
+  'email_training_renewal',
+  'email_approval_requests',
+  'digest_frequency',
+];
 
 router.use(requireAuth);
 
@@ -37,6 +45,76 @@ router.get('/me', async (req, res) => {
 
   res.json(data);
 });
+
+// GET /api/users/me/notification-preferences — crée les préférences par défaut si absentes
+router.get('/me/notification-preferences', async (req, res) => {
+  const { data, error } = await supabase
+    .from('user_notification_preferences')
+    .select('*')
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les préférences de notification.' });
+  }
+
+  if (data) {
+    return res.json(data);
+  }
+
+  const { data: created, error: createError } = await supabase
+    .from('user_notification_preferences')
+    .insert({ user_id: req.user.id, tenant_id: req.tenantId })
+    .select()
+    .single();
+
+  if (createError) {
+    return res.status(500).json({ error: 'Impossible de créer les préférences de notification.' });
+  }
+
+  res.json(created);
+});
+
+// PATCH /api/users/me/notification-preferences
+router.patch(
+  '/me/notification-preferences',
+  [
+    body('email_documents_to_review').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('email_capa_overdue').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('email_training_renewal').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('email_approval_requests').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('digest_frequency').optional({ values: 'falsy' }).isIn(DIGEST_FREQUENCIES).withMessage('Fréquence invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const update = {};
+    for (const field of NOTIFICATION_PREFERENCE_FIELDS) {
+      if (field in req.body) {
+        update[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const { data, error } = await supabase
+      .from('user_notification_preferences')
+      .upsert({ user_id: req.user.id, tenant_id: req.tenantId, ...update }, { onConflict: 'user_id' })
+      .select()
+      .single();
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la mise à jour des préférences.' });
+    }
+
+    res.json(data);
+  }
+);
 
 // POST /api/users/invite — invite un nouvel utilisateur par email (admin uniquement)
 router.post(

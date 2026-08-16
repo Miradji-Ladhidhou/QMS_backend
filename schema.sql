@@ -163,6 +163,18 @@ create table kpi_records (
   unique (kpi_id, period_date)
 );
 
+create table user_notification_preferences (
+  user_id                   uuid primary key references users (id) on delete cascade,
+  tenant_id                 uuid not null references tenants (id) on delete cascade,
+  email_documents_to_review boolean not null default true,
+  email_capa_overdue        boolean not null default true,
+  email_training_renewal    boolean not null default true,
+  email_approval_requests   boolean not null default true,
+  digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
+  created_at                timestamptz not null default now(),
+  updated_at                timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -214,6 +226,8 @@ create index idx_kpi_records_tenant_id on kpi_records (tenant_id);
 create index idx_kpi_records_kpi_id on kpi_records (kpi_id);
 create index idx_kpi_records_period_date on kpi_records (period_date);
 
+create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -234,6 +248,9 @@ create trigger trg_trainings_updated_at before update on trainings
   for each row execute function set_updated_at();
 
 create trigger trg_kpis_updated_at before update on kpis
+  for each row execute function set_updated_at();
+
+create trigger trg_user_notification_preferences_updated_at before update on user_notification_preferences
   for each row execute function set_updated_at();
 
 -- Numérotation auto-incrémentée des CAPA par tenant et par année (ex : CAPA-2026-001)
@@ -275,6 +292,7 @@ alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
+alter table user_notification_preferences enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -334,6 +352,11 @@ create policy kpis_isolation on kpis
   with check (tenant_id = auth_tenant_id());
 
 create policy kpi_records_isolation on kpi_records
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy user_notification_preferences_isolation on user_notification_preferences
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
