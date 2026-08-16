@@ -10,6 +10,7 @@ import trainingsRoutes from './routes/trainings.js';
 import kpisRoutes from './routes/kpis.js';
 import usersRoutes from './routes/users.js';
 import tenantRoutes from './routes/tenant.js';
+import workflowsRoutes from './routes/workflows.js';
 
 const app = express();
 
@@ -29,6 +30,7 @@ app.use('/api/trainings', trainingsRoutes);
 app.use('/api/kpis', kpisRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/tenant', tenantRoutes);
+app.use('/api/workflows', workflowsRoutes);
 
 const PORT = process.env.PORT || 4000;
 

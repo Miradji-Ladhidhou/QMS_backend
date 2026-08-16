@@ -4,6 +4,7 @@ import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { logAudit } from '../services/auditLog.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -215,7 +216,171 @@ router.post('/:id/versions', upload.single('file'), async (req, res) => {
   res.status(201).json(data);
 });
 
-// PATCH /api/documents/:id/status — changement de statut
+// POST /api/documents/:id/submit-for-approval — ouvre un workflow d'approbation tracé
+router.post(
+  '/:id/submit-for-approval',
+  [body('approver_ids').optional({ values: 'falsy' }).isArray({ min: 1 }).withMessage("Liste d'approbateurs invalide.")],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: document, error: documentError } = await supabase
+      .from('documents')
+      .select('id, category_id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (documentError || !document) {
+      return res.status(404).json({ error: 'Document introuvable.' });
+    }
+
+    let approverIds = req.body.approver_ids;
+
+    // Pas de liste explicite : on la déduit du rôle approbateur requis par la catégorie
+    if (!approverIds || approverIds.length === 0) {
+      if (!document.category_id) {
+        return res.status(400).json({
+          error: "Aucun approbateur fourni, et ce document n'a pas de catégorie pour en déduire un rôle.",
+        });
+      }
+
+      const { data: category, error: categoryError } = await supabase
+        .from('document_categories')
+        .select('required_approver_role')
+        .eq('id', document.category_id)
+        .single();
+
+      if (categoryError || !category?.required_approver_role) {
+        return res.status(400).json({
+          error: "Aucun approbateur fourni, et la catégorie de ce document n'a pas de rôle approbateur défini.",
+        });
+      }
+
+      const { data: roleUsers, error: roleUsersError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('role', category.required_approver_role);
+
+      if (roleUsersError || !roleUsers || roleUsers.length === 0) {
+        return res
+          .status(400)
+          .json({ error: `Aucun utilisateur avec le rôle "${category.required_approver_role}" pour approuver ce document.` });
+      }
+
+      approverIds = roleUsers.map((user) => user.id);
+    }
+
+    const { data: workflow, error: workflowError } = await supabase
+      .from('document_workflows')
+      .insert({
+        tenant_id: req.tenantId,
+        document_id: document.id,
+        required_approvers: approverIds,
+        created_by: req.user.id,
+      })
+      .select()
+      .single();
+
+    if (workflowError) {
+      return res.status(500).json({ error: 'Erreur lors de la création du workflow.' });
+    }
+
+    const approvalRows = approverIds.map((approverId) => ({
+      tenant_id: req.tenantId,
+      workflow_id: workflow.id,
+      approver_id: approverId,
+    }));
+
+    const { error: approvalsError } = await supabase.from('document_approvals').insert(approvalRows);
+
+    if (approvalsError) {
+      return res.status(500).json({ error: 'Erreur lors de la création des approbations.' });
+    }
+
+    const { data: updatedDocument, error: updateError } = await supabase
+      .from('documents')
+      .update({ status: 'in_review' })
+      .eq('id', document.id)
+      .select('*, category:document_categories(id, name, color)')
+      .single();
+
+    if (updateError) {
+      return res.status(500).json({ error: 'Erreur lors de la mise à jour du document.' });
+    }
+
+    await logAudit({
+      tenantId: req.tenantId,
+      documentId: document.id,
+      userId: req.user.id,
+      action: 'submitted_for_approval',
+      details: { workflow_id: workflow.id, approver_ids: approverIds },
+    });
+
+    res.status(201).json({ document: updatedDocument, workflow });
+  }
+);
+
+// GET /api/documents/:id/download — URL de téléchargement, journalisée dans l'audit
+router.get('/:id/download', async (req, res) => {
+  const { data: document, error } = await supabase
+    .from('documents')
+    .select('id, file_path, file_name')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  if (!document.file_path) {
+    return res.status(404).json({ error: 'Aucun fichier associé à ce document.' });
+  }
+
+  const { data: publicUrlData } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(document.file_path);
+
+  await logAudit({
+    tenantId: req.tenantId,
+    documentId: document.id,
+    userId: req.user.id,
+    action: 'downloaded',
+    details: { file_name: document.file_name },
+  });
+
+  res.json({ url: publicUrlData.publicUrl });
+});
+
+// GET /api/documents/:id/audit-log — historique complet et immuable des actions
+router.get('/:id/audit-log', async (req, res) => {
+  const { data: document, error: documentError } = await supabase
+    .from('documents')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (documentError || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const { data, error } = await supabase
+    .from('document_audit_log')
+    .select('*, user:users(id, full_name)')
+    .eq('document_id', document.id)
+    .order('created_at', { ascending: false });
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible de récupérer le journal d'audit." });
+  }
+
+  res.json(data);
+});
+
+// PATCH /api/documents/:id/status — changement de statut manuel
 router.patch(
   '/:id/status',
   [body('status').isIn(DOCUMENT_STATUSES).withMessage(`Statut invalide (${DOCUMENT_STATUSES.join(', ')}).`)],
@@ -242,6 +407,14 @@ router.patch(
     if (error || !data) {
       return res.status(404).json({ error: 'Document introuvable.' });
     }
+
+    await logAudit({
+      tenantId: req.tenantId,
+      documentId: req.params.id,
+      userId: req.user.id,
+      action: 'status_changed_manually',
+      details: { status },
+    });
 
     res.json(data);
   }

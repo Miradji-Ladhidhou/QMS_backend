@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
+const APPROVER_ROLES = ['owner', 'admin', 'manager', 'member'];
 
 router.use(requireAuth);
 
@@ -25,18 +26,21 @@ router.get('/', async (req, res) => {
 // POST /api/categories — création
 router.post(
   '/',
-  [body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.')],
+  [
+    body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
+    body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, color } = req.body;
+    const { name, color, required_approver_role: requiredApproverRole } = req.body;
 
     const { data, error } = await supabase
       .from('document_categories')
-      .insert({ tenant_id: req.tenantId, name, color: color || null })
+      .insert({ tenant_id: req.tenantId, name, color: color || null, required_approver_role: requiredApproverRole || null })
       .select()
       .single();
 
@@ -51,18 +55,21 @@ router.post(
 // PUT /api/categories/:id — mise à jour
 router.put(
   '/:id',
-  [body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.')],
+  [
+    body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
+    body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, color } = req.body;
+    const { name, color, required_approver_role: requiredApproverRole } = req.body;
 
     const { data, error } = await supabase
       .from('document_categories')
-      .update({ name, color: color || null })
+      .update({ name, color: color || null, required_approver_role: requiredApproverRole || null })
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .select()
