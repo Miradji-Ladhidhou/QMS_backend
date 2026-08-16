@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { filterViewableCategories } from '../middleware/documentPermissions.js';
+import { filterViewableCategories, hasCategoryPermission } from '../middleware/documentPermissions.js';
 
 const router = Router();
 const APPROVER_ROLES = ['owner', 'admin', 'manager', 'member'];
@@ -122,9 +122,10 @@ router.delete('/:id', async (req, res) => {
 });
 
 // GET /api/categories/:id/permissions — permissions d'accès (utilisateurs et groupes) sur
-// une catégorie restreinte. Réservé aux admins : le tableau des accès est lui-même une
-// information sensible.
-router.get('/:id/permissions', requireRole('owner', 'admin'), async (req, res) => {
+// une catégorie restreinte. Visible par les admins (bypass) et par quiconque a can_edit
+// sur cette catégorie (ceux qui peuvent modifier ses documents doivent pouvoir voir qui
+// d'autre y a accès) — pas les simples lecteurs (can_view seul).
+router.get('/:id/permissions', async (req, res) => {
   const { data: category, error: categoryError } = await supabase
     .from('document_categories')
     .select('id')
@@ -134,6 +135,18 @@ router.get('/:id/permissions', requireRole('owner', 'admin'), async (req, res) =
 
   if (categoryError || !category) {
     return res.status(404).json({ error: 'Catégorie introuvable.' });
+  }
+
+  const allowed = await hasCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: category.id,
+    permission: 'edit',
+  });
+
+  if (!allowed) {
+    return res.status(403).json({ error: "Vous n'avez pas accès à cette information." });
   }
 
   const { data: permissions, error } = await supabase
