@@ -32,6 +32,9 @@ async function notifyCapaAssigned(tenantId, capa) {
       dueDate: capa.due_date || '—',
       capaUrl: `${process.env.FRONTEND_URL}/capas/${capa.id}`,
     },
+    notificationTitle: 'CAPA assignée',
+    notificationMessage: `${capa.number} — ${capa.title}`,
+    notificationLink: `/capas/${capa.id}`,
   });
 }
 

@@ -56,9 +56,27 @@ export async function markNotificationSent({ tenantId, userId, notificationType,
   return false;
 }
 
+// Notification visible dans l'app (cloche) — créée indépendamment du succès de l'email,
+// et même si l'utilisateur n'a pas d'adresse email exploitable.
+export async function createInAppNotification({ tenantId, userId, type, title, message, link }) {
+  const { error } = await supabase.from('notifications').insert({
+    tenant_id: tenantId,
+    user_id: userId,
+    type,
+    title,
+    message: message || null,
+    link: link || null,
+  });
+
+  if (error) {
+    console.error(`[notifications] Échec de création de la notification in-app (${type}) :`, error.message);
+  }
+}
+
 // Envoi immédiat (assignation CAPA, demande d'approbation) : ne dépend pas de digest_frequency
 // (ces évènements n'attendent jamais le batch quotidien), seulement de l'interrupteur on/off
-// et de la déduplication du jour.
+// et de la déduplication du jour. Crée toujours la notification in-app ; l'email est en plus,
+// tenté seulement si une adresse est disponible.
 export async function sendImmediateNotification({
   tenantId,
   userId,
@@ -68,15 +86,27 @@ export async function sendImmediateNotification({
   templateName,
   subject,
   variables,
+  notificationTitle,
+  notificationMessage,
+  notificationLink,
 }) {
   const preferences = await getNotificationPreferences(userId);
   if (!preferences[prefField]) return;
 
-  const email = await getUserEmail(userId);
-  if (!email) return;
-
   const shouldSend = await markNotificationSent({ tenantId, userId, notificationType, referenceId });
   if (!shouldSend) return;
+
+  await createInAppNotification({
+    tenantId,
+    userId,
+    type: notificationType,
+    title: notificationTitle,
+    message: notificationMessage,
+    link: notificationLink,
+  });
+
+  const email = await getUserEmail(userId);
+  if (!email) return;
 
   const fullName = await getUserFullName(userId);
   const html = renderTemplate(templateName, { userName: fullName, ...variables });

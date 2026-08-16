@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
+import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
@@ -38,6 +39,58 @@ const SAMPLE_VARIABLES = {
 };
 
 router.use(requireAuth);
+
+// GET /api/notifications — les miennes, non lues en premier
+router.get('/', async (req, res) => {
+  const { data, error } = await supabase
+    .from('notifications')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('user_id', req.user.id)
+    .order('read', { ascending: true })
+    .order('created_at', { ascending: false })
+    .limit(100);
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les notifications.' });
+  }
+
+  res.json(data);
+});
+
+// PATCH /api/notifications/read-all — tout marquer comme lu
+router.patch('/read-all', async (req, res) => {
+  const { error } = await supabase
+    .from('notifications')
+    .update({ read: true })
+    .eq('tenant_id', req.tenantId)
+    .eq('user_id', req.user.id)
+    .eq('read', false);
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la mise à jour des notifications.' });
+  }
+
+  res.status(204).send();
+});
+
+// PATCH /api/notifications/:id/read
+router.patch('/:id/read', async (req, res) => {
+  const { data, error } = await supabase
+    .from('notifications')
+    .update({ read: true })
+    .eq('tenant_id', req.tenantId)
+    .eq('user_id', req.user.id)
+    .eq('id', req.params.id)
+    .select()
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Notification introuvable.' });
+  }
+
+  res.json(data);
+});
 
 // POST /api/notifications/test-email — vérifie que l'envoi fonctionne (développement uniquement)
 router.post(

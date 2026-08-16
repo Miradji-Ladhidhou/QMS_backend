@@ -413,6 +413,9 @@ router.post(
             documentTitle: updatedDocument.title,
             documentUrl: `${process.env.FRONTEND_URL}/documents/${document.id}`,
           },
+          notificationTitle: 'Approbation requise',
+          notificationMessage: `${updatedDocument.number} — ${updatedDocument.title}`,
+          notificationLink: `/documents/${document.id}`,
         }).catch((err) => console.error("Échec de la notification de demande d'approbation :", err.message));
       }
     });

@@ -233,6 +233,20 @@ create table notification_log (
   unique (user_id, notification_type, reference_id, sent_date)
 );
 
+-- Notifications visibles dans l'application (cloche), en complément de l'email :
+-- une ligne par alerte générée, indépendamment du succès de l'envoi email.
+create table notifications (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  user_id     uuid not null references users (id) on delete cascade,
+  type        text not null,
+  title       text not null,
+  message     text,
+  link        text,
+  read        boolean not null default false,
+  created_at  timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -301,6 +315,10 @@ create index idx_user_notification_preferences_tenant_id on user_notification_pr
 create index idx_notification_log_tenant_id on notification_log (tenant_id);
 create index idx_notification_log_user_id on notification_log (user_id);
 create index idx_notification_log_sent_date on notification_log (sent_date);
+
+create index idx_notifications_tenant_id on notifications (tenant_id);
+create index idx_notifications_user_id on notifications (user_id);
+create index idx_notifications_user_read on notifications (user_id, read);
 
 -- =============================================================================
 -- TRIGGERS
@@ -391,6 +409,7 @@ alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
 alter table user_notification_preferences enable row level security;
 alter table notification_log enable row level security;
+alter table notifications enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -480,6 +499,11 @@ create policy user_notification_preferences_isolation on user_notification_prefe
   with check (tenant_id = auth_tenant_id());
 
 create policy notification_log_isolation on notification_log
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy notifications_isolation on notifications
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

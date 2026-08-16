@@ -2,7 +2,13 @@ import cron from 'node-cron';
 import { supabase } from '../services/supabase.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
-import { getUserEmail, getUserFullName, getNotificationPreferences, markNotificationSent } from '../services/notificationHelpers.js';
+import {
+  getUserEmail,
+  getUserFullName,
+  getNotificationPreferences,
+  markNotificationSent,
+  createInAppNotification,
+} from '../services/notificationHelpers.js';
 
 const REVIEW_WINDOW_DAYS = 30;
 const CAPA_WINDOW_DAYS = 7;
@@ -92,16 +98,28 @@ async function maybeSendDigestItem({
   subject,
   variables,
   weeklyRunToday,
+  notificationTitle,
+  notificationMessage,
+  notificationLink,
 }) {
   const preferences = await getNotificationPreferences(userId);
   if (!preferences[prefField]) return;
   if (preferences.digest_frequency === 'weekly' && !weeklyRunToday) return;
 
-  const email = await getUserEmail(userId);
-  if (!email) return;
-
   const shouldSend = await markNotificationSent({ tenantId, userId, notificationType, referenceId });
   if (!shouldSend) return;
+
+  await createInAppNotification({
+    tenantId,
+    userId,
+    type: notificationType,
+    title: notificationTitle,
+    message: notificationMessage,
+    link: notificationLink,
+  });
+
+  const email = await getUserEmail(userId);
+  if (!email) return;
 
   const fullName = await getUserFullName(userId);
   const html = renderTemplate(templateName, { userName: fullName, ...variables });
@@ -139,6 +157,9 @@ async function processTenant(tenantId) {
         documentUrl: `${frontendUrl}/documents/${doc.id}`,
       },
       weeklyRunToday,
+      notificationTitle: 'Document à réviser',
+      notificationMessage: `${doc.number} — ${doc.title}`,
+      notificationLink: `/documents/${doc.id}`,
     });
   }
 
@@ -158,6 +179,9 @@ async function processTenant(tenantId) {
         capaUrl: `${frontendUrl}/capas/${capa.id}`,
       },
       weeklyRunToday,
+      notificationTitle: 'CAPA à traiter',
+      notificationMessage: `${capa.number} — ${capa.title}`,
+      notificationLink: `/capas/${capa.id}`,
     });
   }
 
@@ -176,6 +200,9 @@ async function processTenant(tenantId) {
         trainingUrl: `${frontendUrl}/trainings`,
       },
       weeklyRunToday,
+      notificationTitle: 'Formation à renouveler',
+      notificationMessage: record.training?.title || '',
+      notificationLink: '/trainings',
     });
   }
 }
