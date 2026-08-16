@@ -6,6 +6,8 @@ import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
 import categoriesRoutes from './routes/categories.js';
 import capasRoutes from './routes/capas.js';
+import trainingsRoutes from './routes/trainings.js';
+import kpisRoutes from './routes/kpis.js';
 
 const app = express();
 
@@ -21,6 +23,8 @@ app.use('/auth', authRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/capas', capasRoutes);
+app.use('/api/trainings', trainingsRoutes);
+app.use('/api/kpis', kpisRoutes);
 
 const PORT = process.env.PORT || 4000;
 
