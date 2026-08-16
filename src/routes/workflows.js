@@ -15,6 +15,25 @@ function generateSignatureHash({ documentId, version, approverId, timestamp, dec
 
 router.use(requireAuth);
 
+// GET /api/workflows/mine — workflows en attente de MA décision (pour "Mes approbations")
+router.get('/mine', async (req, res) => {
+  const { data, error } = await supabase
+    .from('document_approvals')
+    .select('id, decision, workflow:document_workflows(id, status, document:documents(id, number, title, version))')
+    .eq('tenant_id', req.tenantId)
+    .eq('approver_id', req.user.id)
+    .eq('decision', 'pending');
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer vos approbations en attente.' });
+  }
+
+  // Ne garder que les workflows encore ouverts (pas déjà finalisés par un rejet d'un autre approbateur)
+  const pending = data.filter((item) => item.workflow?.status === 'pending');
+
+  res.json(pending);
+});
+
 // GET /api/workflows/:id — détail avec l'état de chaque approbateur
 router.get('/:id', async (req, res) => {
   const { data: workflow, error } = await supabase
