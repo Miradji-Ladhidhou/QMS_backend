@@ -4,6 +4,7 @@ import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { extractText } from '../services/textExtraction.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -113,6 +114,7 @@ router.post(
 
     let filePath = null;
     let fileName = null;
+    let extractedText = null;
 
     if (req.file) {
       filePath = `${req.tenantId}/${documentId}/${req.file.originalname}`;
@@ -123,6 +125,8 @@ router.post(
       } catch (uploadError) {
         return res.status(500).json({ error: uploadError.message });
       }
+
+      extractedText = await extractText(req.file);
     }
 
     const { data, error } = await supabase
@@ -137,6 +141,7 @@ router.post(
         review_date: reviewDate || null,
         file_path: filePath,
         file_name: fileName,
+        extracted_text: extractedText,
         created_by: req.user.id,
       })
       .select('*, category:document_categories(id, name, color)')
@@ -195,12 +200,15 @@ router.post('/:id/versions', upload.single('file'), async (req, res) => {
     return res.status(500).json({ error: uploadError.message });
   }
 
+  const extractedText = await extractText(req.file);
+
   const { data, error } = await supabase
     .from('documents')
     .update({
       version: newVersion,
       file_path: filePath,
       file_name: req.file.originalname,
+      extracted_text: extractedText,
       status: 'draft',
       approved_by: null,
     })

@@ -63,6 +63,7 @@ create table documents (
   status       text not null default 'draft' check (status in ('draft', 'in_review', 'approved', 'obsolete')),
   file_path    text,
   file_name    text,
+  extracted_text text,
   created_by   uuid references users (id) on delete set null,
   approved_by  uuid references users (id) on delete set null,
   review_date  date,
