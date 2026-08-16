@@ -8,6 +8,12 @@ import { logAudit } from '../services/auditLog.js';
 import { buildCertificatePdf } from '../services/certificatePdf.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { extractText } from '../services/textExtraction.js';
+import {
+  requireCategoryPermission,
+  filterViewableDocuments,
+  resolveDocumentById,
+  resolveCategoryFromBody,
+} from '../middleware/documentPermissions.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -35,11 +41,13 @@ async function uploadToStorage(path, file) {
   }
 }
 
-// GET /api/documents — liste des documents du tenant, avec leur catégorie
+// GET /api/documents — liste des documents du tenant, avec leur catégorie. Les documents
+// d'une catégorie restreinte (is_restricted) sont filtrés hors de la liste si l'utilisateur
+// n'a pas la permission can_view dessus (directement ou via un groupe).
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
-    .select('*, category:document_categories(id, name, color)')
+    .select('*, category:document_categories(id, name, color, is_restricted)')
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
@@ -47,7 +55,13 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les documents.' });
   }
 
-  res.json(data);
+  const viewable = await filterViewableDocuments({
+    userId: req.user.id,
+    userRole: req.userRole,
+    documents: data,
+  });
+
+  res.json(viewable);
 });
 
 // GET /api/documents/search?q=terme — recherche plein texte (titre, description, contenu extrait)
@@ -63,6 +77,8 @@ router.get(
     const { data, error } = await supabase.rpc('search_documents', {
       p_tenant_id: req.tenantId,
       p_query: req.query.q,
+      p_user_id: req.user.id,
+      p_user_role: req.userRole,
     });
 
     if (error) {
@@ -94,7 +110,7 @@ router.get('/alerts', async (req, res) => {
 });
 
 // GET /api/documents/:id — détail avec historique de versions
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error } = await supabase
     .from('documents')
     .select('*, category:document_categories(id, name, color)')
@@ -141,7 +157,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // GET /api/documents/:id/certificate — certificat PDF de signature électronique
-router.get('/:id/certificate', async (req, res) => {
+router.get('/:id/certificate', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error: documentError } = await supabase
     .from('documents')
     .select('id, number, title, version')
@@ -197,6 +213,10 @@ router.get('/:id/certificate', async (req, res) => {
 router.post(
   '/',
   upload.single('file'),
+  requireCategoryPermission('edit', resolveCategoryFromBody, {
+    deniedStatus: 403,
+    deniedMessage: "Vous n'avez pas la permission de créer un document dans cette catégorie.",
+  }),
   [
     body('number').trim().notEmpty().withMessage('Le numéro du document est requis.'),
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
@@ -259,7 +279,11 @@ router.post(
 );
 
 // POST /api/documents/:id/versions — nouvelle version, archive l'ancienne
-router.post('/:id/versions', upload.single('file'), async (req, res) => {
+router.post(
+  '/:id/versions',
+  upload.single('file'),
+  requireCategoryPermission('edit', resolveDocumentById),
+  async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Un fichier est requis pour créer une nouvelle version.' });
   }
@@ -326,6 +350,7 @@ router.post('/:id/versions', upload.single('file'), async (req, res) => {
 // POST /api/documents/:id/submit-for-approval — ouvre un workflow d'approbation tracé
 router.post(
   '/:id/submit-for-approval',
+  requireCategoryPermission('approve', resolveDocumentById),
   [body('approver_ids').optional({ values: 'falsy' }).isArray({ min: 1 }).withMessage("Liste d'approbateurs invalide.")],
   async (req, res) => {
     const errors = validationResult(req);
@@ -456,7 +481,7 @@ router.post(
 );
 
 // GET /api/documents/:id/download — URL de téléchargement, journalisée dans l'audit
-router.get('/:id/download', async (req, res) => {
+router.get('/:id/download', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error } = await supabase
     .from('documents')
     .select('id, file_path, file_name')
@@ -486,7 +511,7 @@ router.get('/:id/download', async (req, res) => {
 });
 
 // GET /api/documents/:id/audit-log — historique complet et immuable des actions
-router.get('/:id/audit-log', async (req, res) => {
+router.get('/:id/audit-log', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error: documentError } = await supabase
     .from('documents')
     .select('id')
@@ -514,6 +539,7 @@ router.get('/:id/audit-log', async (req, res) => {
 // PATCH /api/documents/:id/status — changement de statut manuel
 router.patch(
   '/:id/status',
+  requireCategoryPermission('edit', resolveDocumentById),
   [body('status').isIn(DOCUMENT_STATUSES).withMessage(`Statut invalide (${DOCUMENT_STATUSES.join(', ')}).`)],
   async (req, res) => {
     const errors = validationResult(req);
@@ -551,8 +577,14 @@ router.patch(
   }
 );
 
-// DELETE /api/documents/:id — réservé aux admins/managers
-router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+// DELETE /api/documents/:id — réservé aux admins/managers, et soumis à can_delete si la
+// catégorie est restreinte (un manager n'a pas le bypass admin — il lui faut une permission
+// explicite can_delete pour supprimer un document d'une catégorie restreinte).
+router.delete(
+  '/:id',
+  requireRole('owner', 'admin', 'manager'),
+  requireCategoryPermission('delete', resolveDocumentById),
+  async (req, res) => {
   const { error, count } = await supabase
     .from('documents')
     .delete({ count: 'exact' })

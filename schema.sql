@@ -460,7 +460,18 @@ create trigger trg_set_capa_number before insert on capas
 -- Recherche plein texte sur les documents : classement par pertinence (ts_rank),
 -- extrait mis en évidence (ts_headline), et localisation de la correspondance
 -- (titre vs contenu) pour l'indicateur visuel côté frontend.
-create or replace function search_documents(p_tenant_id uuid, p_query text, p_limit integer default 20)
+--
+-- p_user_id / p_user_role (obligatoires, pas de valeur par défaut) appliquent les
+-- permissions granulaires du Chantier 4 : un document dans une catégorie restreinte
+-- (is_restricted) n'apparaît dans les résultats que si l'appelant est owner/admin, ou
+-- dispose d'une entrée category_permissions.can_view (directement ou via un groupe).
+create or replace function search_documents(
+  p_tenant_id uuid,
+  p_user_id uuid,
+  p_user_role text,
+  p_query text,
+  p_limit integer default 20
+)
 returns table (
   id uuid,
   number text,
@@ -491,9 +502,29 @@ as $$
       when to_tsvector('french', coalesce(d.title, '')) @@ query then 'title'
       else 'content'
     end as match_location
-  from documents d, websearch_to_tsquery('french', p_query) query
+  from documents d
+  left join document_categories dc on dc.id = d.category_id
+  cross join websearch_to_tsquery('french', p_query) query
   where d.tenant_id = p_tenant_id
     and d.search_vector @@ query
+    and (
+      p_user_role in ('owner', 'admin')
+      or d.category_id is null
+      or coalesce(dc.is_restricted, false) = false
+      or exists (
+        select 1
+        from category_permissions cp
+        where cp.category_id = d.category_id
+          and cp.can_view = true
+          and (
+            (cp.subject_type = 'user' and cp.subject_id = p_user_id)
+            or (
+              cp.subject_type = 'group'
+              and cp.subject_id in (select gm.group_id from group_members gm where gm.user_id = p_user_id)
+            )
+          )
+      )
+    )
   order by rank desc
   limit p_limit;
 $$;

@@ -4,6 +4,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
+import { requireCategoryPermission, resolveDocumentFromWorkflow } from '../middleware/documentPermissions.js';
 
 const router = Router();
 
@@ -35,7 +36,7 @@ router.get('/mine', async (req, res) => {
 });
 
 // GET /api/workflows/:id — détail avec l'état de chaque approbateur
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireCategoryPermission('view', resolveDocumentFromWorkflow), async (req, res) => {
   const { data: workflow, error } = await supabase
     .from('document_workflows')
     .select('*, document:documents(id, number, title, status, version)')
@@ -63,6 +64,7 @@ router.get('/:id', async (req, res) => {
 // POST /api/workflows/:id/decide — un approbateur soumet sa décision
 router.post(
   '/:id/decide',
+  requireCategoryPermission('approve', resolveDocumentFromWorkflow),
   [
     body('decision').isIn(['approved', 'rejected']).withMessage('Décision invalide.'),
     body('comment')
