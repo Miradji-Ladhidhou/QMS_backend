@@ -1,14 +1,32 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import { sendImmediateNotification } from '../services/notificationHelpers.js';
 
 const router = Router();
 
 const CAPA_STATUSES = ['open', 'in_progress', 'pending_verification', 'closed', 'overdue'];
-const CAPA_PRIORITIES = ['low', 'medium', 'high', 'critical'];
-const PATCHABLE_FIELDS = ['status', 'priority', 'assigned_to', 'due_date'];
+const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
+const PATCHABLE_FIELDS = [
+  'status',
+  'priority',
+  'severity',
+  'assigned_to',
+  'due_date',
+  'service',
+  'description',
+  'root_cause',
+  'corrective_action',
+  'preventive_action',
+  'effectiveness_verified',
+  'effectiveness_notes',
+  'comment',
+];
+
+// Délai de traitement par défaut (en jours depuis la création) quand le tenant n'a pas
+// paramétré ses propres valeurs via PUT /api/capas/priority-delays.
+const DEFAULT_PRIORITY_DELAYS = { critical: 30, high: 60, medium: 90, low: 120 };
 
 router.use(requireAuth);
 
@@ -48,6 +66,54 @@ async function closeOverdueCapas(tenantId) {
     .lt('due_date', today)
     .not('status', 'in', '(closed,overdue)');
 }
+
+// GET /api/capas/priority-delays — délais de traitement configurés (jours), avec repli sur
+// les valeurs par défaut pour toute priorité non paramétrée par ce tenant.
+router.get('/priority-delays', async (req, res) => {
+  const { data, error } = await supabase
+    .from('capa_priority_delays')
+    .select('priority, delay_days')
+    .eq('tenant_id', req.tenantId);
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les délais de traitement.' });
+  }
+
+  const delays = { ...DEFAULT_PRIORITY_DELAYS };
+  for (const row of data) {
+    delays[row.priority] = row.delay_days;
+  }
+
+  res.json(delays);
+});
+
+// PUT /api/capas/priority-delays — paramétrage des délais par priorité (admin uniquement)
+router.put(
+  '/priority-delays',
+  requireRole('owner', 'admin'),
+  CAPA_LEVELS.map((level) => body(level).isInt({ min: 1 }).withMessage(`Délai invalide pour la priorité "${level}".`)),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const rows = CAPA_LEVELS.map((level) => ({
+      tenant_id: req.tenantId,
+      priority: level,
+      delay_days: Number(req.body[level]),
+    }));
+
+    const { error } = await supabase.from('capa_priority_delays').upsert(rows, { onConflict: 'tenant_id,priority' });
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la mise à jour des délais de traitement.' });
+    }
+
+    const delays = Object.fromEntries(rows.map((row) => [row.priority, row.delay_days]));
+    res.json(delays);
+  }
+);
 
 // GET /api/capas — liste avec le responsable assigné, statuts en retard mis à jour
 router.get('/', async (req, res) => {
@@ -97,9 +163,12 @@ router.post(
   '/',
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('service').optional({ values: 'falsy' }).trim(),
+    body('description').optional({ values: 'falsy' }).trim(),
     body('origin').optional({ values: 'falsy' }).trim(),
     body('ref_document').optional({ values: 'falsy' }).isUUID().withMessage('Document de référence invalide.'),
-    body('priority').optional({ values: 'falsy' }).isIn(CAPA_PRIORITIES).withMessage('Priorité invalide.'),
+    body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
+    body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
   ],
@@ -109,15 +178,28 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { title, origin, ref_document: refDocument, priority, assigned_to: assignedTo, due_date: dueDate } = req.body;
+    const {
+      title,
+      service,
+      description,
+      origin,
+      ref_document: refDocument,
+      severity,
+      priority,
+      assigned_to: assignedTo,
+      due_date: dueDate,
+    } = req.body;
 
     const { data, error } = await supabase
       .from('capas')
       .insert({
         tenant_id: req.tenantId,
         title,
+        service: service || null,
+        description: description || null,
         origin: origin || null,
         ref_document: refDocument || null,
+        severity: severity || undefined,
         priority: priority || undefined,
         assigned_to: assignedTo || null,
         due_date: dueDate || null,
@@ -138,14 +220,24 @@ router.post(
   }
 );
 
-// PATCH /api/capas/:id — mise à jour du statut, de la priorité, de l'assignation ou de l'échéance
+// PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
+// assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
 router.patch(
   '/:id',
   [
     body('status').optional({ values: 'falsy' }).isIn(CAPA_STATUSES).withMessage('Statut invalide.'),
-    body('priority').optional({ values: 'falsy' }).isIn(CAPA_PRIORITIES).withMessage('Priorité invalide.'),
+    body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
+    body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+    body('service').optional({ values: 'falsy' }).trim(),
+    body('description').optional({ values: 'falsy' }).trim(),
+    body('root_cause').optional({ values: 'falsy' }).trim(),
+    body('corrective_action').optional({ values: 'falsy' }).trim(),
+    body('preventive_action').optional({ values: 'falsy' }).trim(),
+    body('effectiveness_verified').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
+    body('effectiveness_notes').optional({ values: 'falsy' }).trim(),
+    body('comment').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);

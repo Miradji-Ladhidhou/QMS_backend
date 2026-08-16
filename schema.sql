@@ -91,20 +91,30 @@ create table document_versions (
 );
 
 create table capas (
-  id           uuid primary key default gen_random_uuid(),
-  tenant_id    uuid not null references tenants (id) on delete cascade,
-  number       text,
-  title        text not null,
-  origin       text,
-  ref_document uuid references documents (id) on delete set null,
-  priority     text not null default 'medium' check (priority in ('low', 'medium', 'high', 'critical')),
-  status       text not null default 'open' check (status in ('open', 'in_progress', 'pending_verification', 'closed', 'overdue')),
-  assigned_to  uuid references users (id) on delete set null,
-  due_date     date,
-  closed_at    timestamptz,
-  created_by   uuid references users (id) on delete set null,
-  created_at   timestamptz not null default now(),
-  updated_at   timestamptz not null default now(),
+  id                      uuid primary key default gen_random_uuid(),
+  tenant_id               uuid not null references tenants (id) on delete cascade,
+  number                  text,
+  title                   text not null,
+  service                 text,
+  description             text,
+  origin                  text,
+  ref_document            uuid references documents (id) on delete set null,
+  severity                text not null default 'medium' check (severity in ('low', 'medium', 'high', 'critical')),
+  priority                text not null default 'medium' check (priority in ('low', 'medium', 'high', 'critical')),
+  status                  text not null default 'open' check (status in ('open', 'in_progress', 'pending_verification', 'closed', 'overdue')),
+  assigned_to             uuid references users (id) on delete set null,
+  due_date                date,
+  root_cause              text,
+  corrective_action       text,
+  preventive_action       text,
+  -- null = pas encore vérifiée, true/false = verdict de la vérification d'efficacité
+  effectiveness_verified  boolean,
+  effectiveness_notes     text,
+  comment                 text,
+  closed_at               timestamptz,
+  created_by              uuid references users (id) on delete set null,
+  created_at              timestamptz not null default now(),
+  updated_at              timestamptz not null default now(),
   unique (tenant_id, number)
 );
 
@@ -114,6 +124,16 @@ create table capa_counters (
   year       integer not null,
   counter    integer not null default 0,
   primary key (tenant_id, year)
+);
+
+-- Délai de traitement (en jours, depuis la création) par niveau de priorité, paramétrable
+-- par tenant. Une priorité sans ligne ici retombe sur un défaut côté application (voir
+-- DEFAULT_PRIORITY_DELAYS dans capas.js) : haut/critique plus courts que bas/moyen.
+create table capa_priority_delays (
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  priority    text not null check (priority in ('low', 'medium', 'high', 'critical')),
+  delay_days  integer not null check (delay_days > 0),
+  primary key (tenant_id, priority)
 );
 
 create table capa_comments (
@@ -540,6 +560,7 @@ alter table documents enable row level security;
 alter table document_versions enable row level security;
 alter table capas enable row level security;
 alter table capa_counters enable row level security;
+alter table capa_priority_delays enable row level security;
 alter table capa_comments enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
@@ -588,6 +609,11 @@ create policy capas_isolation on capas
   with check (tenant_id = auth_tenant_id());
 
 create policy capa_counters_isolation on capa_counters
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy capa_priority_delays_isolation on capa_priority_delays
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
