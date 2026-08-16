@@ -280,6 +280,51 @@ create trigger trg_set_capa_number before insert on capas
   for each row when (new.number is null) execute function set_capa_number();
 
 -- =============================================================================
+-- RECHERCHE
+-- =============================================================================
+
+-- Recherche plein texte sur les documents : classement par pertinence (ts_rank),
+-- extrait mis en évidence (ts_headline), et localisation de la correspondance
+-- (titre vs contenu) pour l'indicateur visuel côté frontend.
+create or replace function search_documents(p_tenant_id uuid, p_query text, p_limit integer default 20)
+returns table (
+  id uuid,
+  number text,
+  title text,
+  status text,
+  category_id uuid,
+  rank real,
+  snippet text,
+  match_location text
+)
+language sql
+stable
+as $$
+  select
+    d.id,
+    d.number,
+    d.title,
+    d.status,
+    d.category_id,
+    ts_rank(d.search_vector, query) as rank,
+    ts_headline(
+      'french',
+      coalesce(d.title, '') || '. ' || coalesce(d.description, '') || '. ' || coalesce(d.extracted_text, ''),
+      query,
+      'MaxWords=30, MinWords=15, ShortWord=3, HighlightAll=false, MaxFragments=1, StartSel=<mark>, StopSel=</mark>'
+    ) as snippet,
+    case
+      when to_tsvector('french', coalesce(d.title, '')) @@ query then 'title'
+      else 'content'
+    end as match_location
+  from documents d, websearch_to_tsquery('french', p_query) query
+  where d.tenant_id = p_tenant_id
+    and d.search_vector @@ query
+  order by rank desc
+  limit p_limit;
+$$;
+
+-- =============================================================================
 -- ROW LEVEL SECURITY
 -- =============================================================================
 
