@@ -174,58 +174,80 @@ create table kpis (
   target      numeric,
   target_direction text not null default 'min' check (target_direction in ('min', 'max')),
   frequency   text check (frequency in ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
-  -- 'manual' : valeur saisie directement (comportement historique). 'ratio' : valeur
-  -- calculée à partir du détail ligne par ligne (kpi_detail_records), voir plus bas.
+  -- 'manual' : valeur saisie directement. 'ratio' : calculée depuis un import générique
+  -- (kpi_raw_imports/kpi_raw_rows), selon la recette définie dans kpi_calculation_configs.
   calculation_type text not null default 'manual' check (calculation_type in ('manual', 'ratio')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
 
--- Trace chaque import CSV de détail comme preuve d'audit : qui a importé quoi, quand,
--- depuis quel fichier, avec quel taux de succès. Doit exister avant kpi_records et
--- kpi_detail_records, qui y font tous les deux référence.
-create table kpi_import_batches (
-  id            uuid primary key default gen_random_uuid(),
-  tenant_id     uuid not null references tenants (id) on delete cascade,
-  kpi_id        uuid not null references kpis (id) on delete cascade,
-  file_name     text,
-  imported_by   uuid references users (id) on delete set null,
-  imported_at   timestamptz not null default now(),
-  rows_total    integer not null default 0,
-  rows_valid    integer not null default 0,
-  rows_rejected integer not null default 0
+-- Import générique : un fichier peut avoir n'importe quelle structure de colonnes, donc
+-- on ne fige rien au niveau du schéma. kpi_id est nullable le temps de l'import initial :
+-- on peut déposer un fichier, voir les colonnes qu'il contient, puis choisir ensuite à
+-- quel KPI le rattacher et quelle recette de calcul lui appliquer (kpi_calculation_configs).
+-- Doit exister avant kpi_records, qui y fait référence (source_import_id).
+create table kpi_raw_imports (
+  id                uuid primary key default gen_random_uuid(),
+  tenant_id         uuid not null references tenants (id) on delete cascade,
+  kpi_id            uuid references kpis (id) on delete cascade,
+  file_name         text,
+  imported_by       uuid references users (id) on delete set null,
+  imported_at       timestamptz not null default now(),
+  -- En-têtes détectées dans le fichier (ex: ["Numéro", "Résultat", "Utilisateur"]) —
+  -- affichées à l'utilisateur pour construire la recette de calcul sans deviner les noms.
+  detected_columns  jsonb not null default '[]'::jsonb,
+  row_count         integer not null default 0
 );
 
 create table kpi_records (
-  id              uuid primary key default gen_random_uuid(),
-  tenant_id       uuid not null references tenants (id) on delete cascade,
-  kpi_id          uuid not null references kpis (id) on delete cascade,
-  period_date     date not null,
-  value           numeric not null,
-  comment         text,
-  -- 'manual' : saisie directe. 'import_csv' : calculée depuis un import de détail —
+  id                uuid primary key default gen_random_uuid(),
+  tenant_id         uuid not null references tenants (id) on delete cascade,
+  kpi_id            uuid not null references kpis (id) on delete cascade,
+  period_date       date not null,
+  value             numeric not null,
+  comment           text,
+  -- 'manual' : saisie directe. 'import_csv' : calculée depuis un import générique —
   -- repasse à 'manual' si un humain modifie ensuite la valeur (voir PATCH .../records/:id).
-  source          text not null default 'manual' check (source in ('manual', 'import_csv')),
-  import_batch_id uuid references kpi_import_batches (id) on delete set null,
-  recorded_by     uuid references users (id) on delete set null,
-  created_at      timestamptz not null default now(),
+  source            text not null default 'manual' check (source in ('manual', 'import_csv')),
+  source_import_id  uuid references kpi_raw_imports (id) on delete set null,
+  recorded_by       uuid references users (id) on delete set null,
+  created_at        timestamptz not null default now(),
   unique (kpi_id, period_date)
 );
 
--- Détail ligne par ligne (ex : une commande contrôlée conforme/non conforme) derrière
--- une valeur calculée de kpi_records — sert de preuve consultable pour un point du
--- graphique, et de base de recalcul si un import complémentaire arrive plus tard.
-create table kpi_detail_records (
-  id              uuid primary key default gen_random_uuid(),
-  tenant_id       uuid not null references tenants (id) on delete cascade,
-  kpi_id          uuid not null references kpis (id) on delete cascade,
-  period_date     date not null,
-  item_reference  text not null,
-  is_compliant    boolean not null,
-  comment         text,
-  import_batch_id uuid references kpi_import_batches (id) on delete cascade,
-  created_by      uuid references users (id) on delete set null,
-  created_at      timestamptz not null default now()
+-- Chaque ligne du fichier importé, telle quelle : row_data porte une clé par colonne du
+-- fichier (ex: {"Numéro": "114...", "Résultat": "Conforme", "Utilisateur": "LADHIDHOU"}).
+-- Stocker en JSONB plutôt que dans des colonnes typées évite une migration de schéma à
+-- chaque nouvelle structure de fichier — c'est la ligne brute qui sert de preuve d'audit,
+-- et la base sur laquelle kpi_calculation_configs applique sa recette pour produire la
+-- valeur agrégée de kpi_records.
+create table kpi_raw_rows (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  import_id   uuid not null references kpi_raw_imports (id) on delete cascade,
+  row_index   integer not null,
+  row_data    jsonb not null
+);
+
+-- La "recette" de calcul appliquée aux lignes brutes d'un KPI pour produire sa valeur
+-- (kpi_records.value) à chaque période. Un même mécanisme générique couvre plusieurs
+-- besoins : ratio (part des lignes dont filter_column = filter_value), sum/average d'une
+-- colonne numérique, count (nombre de lignes, avec filtre optionnel), count_grouped
+-- (comptage par valeur distincte de group_by_column, ex: nombre de non-conformités par
+-- utilisateur). period_column est vide quand la période n'est pas déductible du fichier
+-- et doit être précisée manuellement à chaque import plutôt que lue colonne par colonne.
+create table kpi_calculation_configs (
+  id                uuid primary key default gen_random_uuid(),
+  tenant_id         uuid not null references tenants (id) on delete cascade,
+  kpi_id            uuid not null references kpis (id) on delete cascade,
+  calc_type         text not null check (calc_type in ('ratio', 'sum', 'average', 'count', 'count_grouped')),
+  source_column     text,
+  filter_column     text,
+  filter_value      text,
+  group_by_column   text,
+  period_column     text,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
 );
 
 -- Workflow d'approbation tracé (remplace le simple champ status en donnant une
@@ -396,15 +418,19 @@ create index idx_kpis_tenant_id on kpis (tenant_id);
 create index idx_kpi_records_tenant_id on kpi_records (tenant_id);
 create index idx_kpi_records_kpi_id on kpi_records (kpi_id);
 create index idx_kpi_records_period_date on kpi_records (period_date);
-create index idx_kpi_records_import_batch_id on kpi_records (import_batch_id);
+create index idx_kpi_records_source_import_id on kpi_records (source_import_id);
 
-create index idx_kpi_import_batches_tenant_id on kpi_import_batches (tenant_id);
-create index idx_kpi_import_batches_kpi_id on kpi_import_batches (kpi_id);
+create index idx_kpi_raw_imports_tenant_id on kpi_raw_imports (tenant_id);
+create index idx_kpi_raw_imports_kpi_id on kpi_raw_imports (kpi_id);
 
-create index idx_kpi_detail_records_tenant_id on kpi_detail_records (tenant_id);
-create index idx_kpi_detail_records_kpi_id on kpi_detail_records (kpi_id);
-create index idx_kpi_detail_records_period_date on kpi_detail_records (period_date);
-create index idx_kpi_detail_records_import_batch_id on kpi_detail_records (import_batch_id);
+create index idx_kpi_raw_rows_tenant_id on kpi_raw_rows (tenant_id);
+create index idx_kpi_raw_rows_import_id on kpi_raw_rows (import_id);
+-- Interroger row_data par clé (ex: filtrer sur "Résultat") est le principal accès du
+-- moteur de calcul générique : un index GIN accélère ces recherches JSONB.
+create index idx_kpi_raw_rows_row_data on kpi_raw_rows using gin (row_data);
+
+create index idx_kpi_calculation_configs_tenant_id on kpi_calculation_configs (tenant_id);
+create index idx_kpi_calculation_configs_kpi_id on kpi_calculation_configs (kpi_id);
 
 create index idx_document_workflows_tenant_id on document_workflows (tenant_id);
 create index idx_document_workflows_document_id on document_workflows (document_id);
@@ -614,8 +640,9 @@ alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
-alter table kpi_import_batches enable row level security;
-alter table kpi_detail_records enable row level security;
+alter table kpi_raw_imports enable row level security;
+alter table kpi_raw_rows enable row level security;
+alter table kpi_calculation_configs enable row level security;
 alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
@@ -693,12 +720,17 @@ create policy kpi_records_isolation on kpi_records
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
 
-create policy kpi_import_batches_isolation on kpi_import_batches
+create policy kpi_raw_imports_isolation on kpi_raw_imports
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
 
-create policy kpi_detail_records_isolation on kpi_detail_records
+create policy kpi_raw_rows_isolation on kpi_raw_rows
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy kpi_calculation_configs_isolation on kpi_calculation_configs
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
