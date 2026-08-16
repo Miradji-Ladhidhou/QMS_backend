@@ -12,6 +12,7 @@ import usersRoutes from './routes/users.js';
 import tenantRoutes from './routes/tenant.js';
 import workflowsRoutes from './routes/workflows.js';
 import notificationsRoutes from './routes/notifications.js';
+import groupsRoutes from './routes/groups.js';
 import { scheduleNotificationJob } from './jobs/notificationJob.js';
 
 const app = express();
@@ -38,6 +39,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/tenant', tenantRoutes);
 app.use('/api/workflows', workflowsRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/groups', groupsRoutes);
 
 const PORT = process.env.PORT || 4000;
 
