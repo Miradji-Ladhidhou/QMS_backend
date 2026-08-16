@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
 
 const router = Router();
 
@@ -59,6 +60,59 @@ router.get('/', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
+// avant GET /:id : sinon "report" serait capturé comme un id et renverrait 404.
+router.get('/report', async (req, res) => {
+  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+
+  const { data: kpis, error } = await supabase
+    .from('kpis')
+    .select(`*, records:kpi_records(${RECORDS_SELECT})`)
+    .eq('tenant_id', req.tenantId)
+    .order('name', { ascending: true });
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de générer le rapport.' });
+  }
+
+  // Pour les KPI en mode ratio, la mention "preuve d'audit" du rapport a besoin du nombre
+  // total de lignes de détail jamais importées et de la date du dernier import.
+  const ratioKpiIds = kpis.filter((kpi) => kpi.calculation_type === 'ratio').map((kpi) => kpi.id);
+  const detailStatsByKpi = {};
+
+  if (ratioKpiIds.length > 0) {
+    const { data: detailRows } = await supabase
+      .from('kpi_detail_records')
+      .select('kpi_id')
+      .eq('tenant_id', req.tenantId)
+      .in('kpi_id', ratioKpiIds);
+
+    for (const row of detailRows || []) {
+      detailStatsByKpi[row.kpi_id] = detailStatsByKpi[row.kpi_id] || { count: 0, lastImportedAt: null };
+      detailStatsByKpi[row.kpi_id].count += 1;
+    }
+
+    const { data: batchRows } = await supabase
+      .from('kpi_import_batches')
+      .select('kpi_id, imported_at')
+      .eq('tenant_id', req.tenantId)
+      .in('kpi_id', ratioKpiIds)
+      .order('imported_at', { ascending: false });
+
+    for (const batch of batchRows || []) {
+      if (detailStatsByKpi[batch.kpi_id] && !detailStatsByKpi[batch.kpi_id].lastImportedAt) {
+        detailStatsByKpi[batch.kpi_id].lastImportedAt = batch.imported_at;
+      }
+    }
+  }
+
+  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, kpis, detailStatsByKpi });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/kpis — création
