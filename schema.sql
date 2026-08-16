@@ -174,9 +174,11 @@ create table kpis (
   target      numeric,
   target_direction text not null default 'min' check (target_direction in ('min', 'max')),
   frequency   text check (frequency in ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
-  -- 'manual' : valeur saisie directement. 'ratio' : calculée depuis un import générique
-  -- (kpi_raw_imports/kpi_raw_rows), selon la recette définie dans kpi_calculation_configs.
-  calculation_type text not null default 'manual' check (calculation_type in ('manual', 'ratio')),
+  -- 'manual' : valeur saisie directement. 'import' : calculée depuis un import générique
+  -- (kpi_raw_imports/kpi_raw_rows). Le type de calcul précis (ratio, sum, average, count,
+  -- count_grouped) n'est pas dupliqué ici : il vit uniquement dans kpi_calculation_configs
+  -- .calc_type, pour éviter deux colonnes à garder synchronisées.
+  calculation_type text not null default 'manual' check (calculation_type in ('manual', 'import')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -206,9 +208,10 @@ create table kpi_records (
   period_date       date not null,
   value             numeric not null,
   comment           text,
-  -- 'manual' : saisie directe. 'import_csv' : calculée depuis un import générique —
-  -- repasse à 'manual' si un humain modifie ensuite la valeur (voir PATCH .../records/:id).
-  source            text not null default 'manual' check (source in ('manual', 'import_csv')),
+  -- 'manual' : saisie directe. 'import' : calculée depuis un import générique (CSV/Excel,
+  -- kpi_raw_imports/kpi_raw_rows) — repasse à 'manual' si un humain modifie ensuite la
+  -- valeur (voir PATCH .../records/:id).
+  source            text not null default 'manual' check (source in ('manual', 'import')),
   source_import_id  uuid references kpi_raw_imports (id) on delete set null,
   recorded_by       uuid references users (id) on delete set null,
   created_at        timestamptz not null default now(),
@@ -236,6 +239,8 @@ create table kpi_raw_rows (
 -- (comptage par valeur distincte de group_by_column, ex: nombre de non-conformités par
 -- utilisateur). period_column est vide quand la période n'est pas déductible du fichier
 -- et doit être précisée manuellement à chaque import plutôt que lue colonne par colonne.
+-- Une seule recette active par KPI (unique (kpi_id)) : POST /api/kpis/:id/calculation-config
+-- fait un upsert dessus plutôt que d'accumuler des configurations concurrentes.
 create table kpi_calculation_configs (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -247,7 +252,8 @@ create table kpi_calculation_configs (
   group_by_column   text,
   period_column     text,
   created_at        timestamptz not null default now(),
-  updated_at        timestamptz not null default now()
+  updated_at        timestamptz not null default now(),
+  unique (kpi_id)
 );
 
 -- Workflow d'approbation tracé (remplace le simple champ status en donnant une

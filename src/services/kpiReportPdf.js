@@ -149,13 +149,13 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
   const targetDirection = kpi.target_direction || 'min';
   const hasTarget = kpi.target !== null && kpi.target !== undefined;
   const status = getKpiStatus(lastRecord?.value, kpi.target, targetDirection);
-  const isRatio = kpi.calculation_type === 'ratio';
+  const isImportBased = kpi.calculation_type === 'import';
 
   // 32pt titre+objectif avant le graphique, CHART_HEIGHT pour le graphique, puis marge/
   // séparateur/mention d'audit — sous-estimer ce total est ce qui casse la mise en page
   // (une section qui déborde milieu de dessin se retrouve coupée n'importe où sur la page
   // suivante). Mieux vaut sur-estimer largement que de risquer une section tronquée.
-  const requiredHeight = 32 + CHART_HEIGHT + 26 + (isRatio ? 14 : 0);
+  const requiredHeight = 32 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0);
   ensureSpace(doc, tenantName, requiredHeight);
 
   const sectionTop = doc.y;
@@ -200,7 +200,7 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
       doc.fontSize(7).fillColor(INK);
       doc.text(formatDateShort(record.period_date), tableX, rowY, { width: tableWidth * 0.3 });
       doc.text(`${record.value} ${kpi.unit || ''}`, tableX + tableWidth * 0.3, rowY, { width: tableWidth * 0.3 });
-      doc.text(record.source === 'import_csv' ? 'Import CSV' : 'Manuelle', tableX + tableWidth * 0.6, rowY, {
+      doc.text(record.source === 'import' ? 'Import' : 'Manuelle', tableX + tableWidth * 0.6, rowY, {
         width: tableWidth * 0.4,
       });
       rowY += 9;
@@ -208,11 +208,11 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
 
   doc.y = chartY + CHART_HEIGHT + 6;
 
-  if (isRatio) {
+  if (isImportBased) {
     const auditLine =
       detailStats && detailStats.count > 0
-        ? `Source : import CSV, ${detailStats.count} ligne${detailStats.count > 1 ? 's' : ''}, dernière mise à jour le ${formatDateShort(detailStats.lastImportedAt)}`
-        : 'Source : import CSV — aucun import réalisé pour l\'instant.';
+        ? `Source : import de fichier, ${detailStats.count} ligne${detailStats.count > 1 ? 's' : ''}, dernière mise à jour le ${formatDateShort(detailStats.lastImportedAt)}`
+        : 'Source : import de fichier — aucun import réalisé pour l\'instant.';
     doc.fontSize(7).fillColor(MUTED).text(auditLine, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.y += 12;
   }
