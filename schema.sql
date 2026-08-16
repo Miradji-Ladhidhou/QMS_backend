@@ -53,7 +53,7 @@ create table users (
   id          uuid primary key references auth.users (id) on delete cascade,
   tenant_id   uuid not null references tenants (id) on delete cascade,
   full_name   text,
-  role        text not null default 'member' check (role in ('owner', 'admin', 'member')),
+  role        text not null default 'member' check (role in ('owner', 'admin', 'manager', 'member')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
