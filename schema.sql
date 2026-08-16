@@ -64,6 +64,8 @@ create table documents (
   status       text not null default 'draft' check (status in ('draft', 'in_review', 'approved', 'obsolete')),
   file_path    text,
   file_name    text,
+  extracted_text text,
+  search_vector tsvector,
   created_by   uuid references users (id) on delete set null,
   approved_by  uuid references users (id) on delete set null,
   review_date  date,
@@ -272,6 +274,7 @@ create index idx_documents_tenant_id on documents (tenant_id);
 create index idx_documents_category_id on documents (category_id);
 create index idx_documents_status on documents (status);
 create index idx_documents_title_trgm on documents using gin (title gin_trgm_ops);
+create index idx_documents_search_vector on documents using gin (search_vector);
 
 create index idx_document_versions_document_id on document_versions (document_id);
 create index idx_document_versions_tenant_id on document_versions (tenant_id);
@@ -333,6 +336,23 @@ create trigger trg_users_updated_at before update on users
 create trigger trg_documents_updated_at before update on documents
   for each row execute function set_updated_at();
 
+-- Recherche plein texte (français) : title poids A, description poids B, extracted_text poids C
+create or replace function documents_search_vector_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.search_vector :=
+    setweight(to_tsvector('french', coalesce(new.title, '')), 'A') ||
+    setweight(to_tsvector('french', coalesce(new.description, '')), 'B') ||
+    setweight(to_tsvector('french', coalesce(new.extracted_text, '')), 'C');
+  return new;
+end;
+$$;
+
+create trigger trg_documents_search_vector before insert or update on documents
+  for each row execute function documents_search_vector_update();
+
 create trigger trg_capas_updated_at before update on capas
   for each row execute function set_updated_at();
 
@@ -387,6 +407,51 @@ $$;
 
 create trigger trg_set_capa_number before insert on capas
   for each row when (new.number is null) execute function set_capa_number();
+
+-- =============================================================================
+-- RECHERCHE
+-- =============================================================================
+
+-- Recherche plein texte sur les documents : classement par pertinence (ts_rank),
+-- extrait mis en évidence (ts_headline), et localisation de la correspondance
+-- (titre vs contenu) pour l'indicateur visuel côté frontend.
+create or replace function search_documents(p_tenant_id uuid, p_query text, p_limit integer default 20)
+returns table (
+  id uuid,
+  number text,
+  title text,
+  status text,
+  category_id uuid,
+  rank real,
+  snippet text,
+  match_location text
+)
+language sql
+stable
+as $$
+  select
+    d.id,
+    d.number,
+    d.title,
+    d.status,
+    d.category_id,
+    ts_rank(d.search_vector, query) as rank,
+    ts_headline(
+      'french',
+      coalesce(d.title, '') || '. ' || coalesce(d.description, '') || '. ' || coalesce(d.extracted_text, ''),
+      query,
+      'MaxWords=30, MinWords=15, ShortWord=3, HighlightAll=false, MaxFragments=1, StartSel=<mark>, StopSel=</mark>'
+    ) as snippet,
+    case
+      when to_tsvector('french', coalesce(d.title, '')) @@ query then 'title'
+      else 'content'
+    end as match_location
+  from documents d, websearch_to_tsquery('french', p_query) query
+  where d.tenant_id = p_tenant_id
+    and d.search_vector @@ query
+  order by rank desc
+  limit p_limit;
+$$;
 
 -- =============================================================================
 -- ROW LEVEL SECURITY

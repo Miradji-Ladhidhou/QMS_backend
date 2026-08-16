@@ -1,12 +1,13 @@
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';
-import { body, validationResult } from 'express-validator';
+import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { buildCertificatePdf } from '../services/certificatePdf.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
+import { extractText } from '../services/textExtraction.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -48,6 +49,29 @@ router.get('/', async (req, res) => {
 
   res.json(data);
 });
+
+// GET /api/documents/search?q=terme — recherche plein texte (titre, description, contenu extrait)
+router.get(
+  '/search',
+  [query('q').trim().notEmpty().withMessage('Le terme de recherche est requis.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase.rpc('search_documents', {
+      p_tenant_id: req.tenantId,
+      p_query: req.query.q,
+    });
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la recherche.' });
+    }
+
+    res.json(data);
+  }
+);
 
 // GET /api/documents/alerts — documents à réviser sous 30 jours ou en retard
 router.get('/alerts', async (req, res) => {
@@ -190,6 +214,7 @@ router.post(
 
     let filePath = null;
     let fileName = null;
+    let extractedText = null;
 
     if (req.file) {
       filePath = `${req.tenantId}/${documentId}/${req.file.originalname}`;
@@ -200,6 +225,8 @@ router.post(
       } catch (uploadError) {
         return res.status(500).json({ error: uploadError.message });
       }
+
+      extractedText = await extractText(req.file);
     }
 
     const { data, error } = await supabase
@@ -214,6 +241,7 @@ router.post(
         review_date: reviewDate || null,
         file_path: filePath,
         file_name: fileName,
+        extracted_text: extractedText,
         created_by: req.user.id,
       })
       .select('*, category:document_categories(id, name, color)')
@@ -272,12 +300,15 @@ router.post('/:id/versions', upload.single('file'), async (req, res) => {
     return res.status(500).json({ error: uploadError.message });
   }
 
+  const extractedText = await extractText(req.file);
+
   const { data, error } = await supabase
     .from('documents')
     .update({
       version: newVersion,
       file_path: filePath,
       file_name: req.file.originalname,
+      extracted_text: extractedText,
       status: 'draft',
       approved_by: null,
     })
