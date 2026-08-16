@@ -93,6 +93,42 @@ export async function filterViewableDocuments({ userId, userRole, documents }) {
   return documents.filter((doc) => !doc.category?.is_restricted || viewableCategoryIds.has(doc.category_id));
 }
 
+// Filtre une liste de catégories (comme filterViewableDocuments, mais la restriction
+// porte directement sur la catégorie elle-même plutôt que sur documents.category_id) —
+// utilisé par GET /api/categories pour appliquer le principe de moindre divulgation :
+// une catégorie restreinte sans accès n'apparaît nulle part, y compris dans les
+// sélecteurs de filtre côté frontend.
+export async function filterViewableCategories({ userId, userRole, categories }) {
+  if (ADMIN_ROLES.includes(userRole)) return categories;
+
+  const restrictedIds = categories.filter((c) => c.is_restricted).map((c) => c.id);
+  if (restrictedIds.length === 0) return categories;
+
+  const { data: permissions, error } = await supabase
+    .from('category_permissions')
+    .select('category_id, subject_type, subject_id, can_view')
+    .in('category_id', restrictedIds)
+    .eq('can_view', true);
+
+  if (error) {
+    return categories.filter((c) => !c.is_restricted);
+  }
+
+  const groupIds = await getUserGroupIds(userId);
+
+  const viewableIds = new Set(
+    (permissions || [])
+      .filter(
+        (row) =>
+          (row.subject_type === 'user' && row.subject_id === userId) ||
+          (row.subject_type === 'group' && groupIds.includes(row.subject_id))
+      )
+      .map((row) => row.category_id)
+  );
+
+  return categories.filter((c) => !c.is_restricted || viewableIds.has(c.id));
+}
+
 // --- Résolveurs de cible, pour requireCategoryPermission ci-dessous ---
 
 export async function resolveDocumentById(req) {

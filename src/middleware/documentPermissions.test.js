@@ -8,6 +8,7 @@ const { supabase } = await import('../services/supabase.js');
 const {
   hasCategoryPermission,
   filterViewableDocuments,
+  filterViewableCategories,
 } = await import('./documentPermissions.js');
 
 // Fait de `supabase.from(table)` un builder chaînable et "thenable" : chaque appel
@@ -254,5 +255,53 @@ describe('filterViewableDocuments', () => {
     const result = await filterViewableDocuments({ userId: 'u1', userRole: 'employee', documents });
 
     expect(result.map((d) => d.id)).toEqual(['d1']);
+  });
+});
+
+describe('filterViewableCategories', () => {
+  it('ne filtre rien pour un admin', async () => {
+    const categories = [{ id: 'c1', is_restricted: true }, { id: 'c2', is_restricted: false }];
+
+    const result = await filterViewableCategories({ userId: 'u1', userRole: 'admin', categories });
+
+    expect(result).toEqual(categories);
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
+
+  it('n’interroge pas la base si aucune catégorie n’est restreinte', async () => {
+    const categories = [{ id: 'c1', is_restricted: false }, { id: 'c2', is_restricted: false }];
+
+    const result = await filterViewableCategories({ userId: 'u1', userRole: 'employee', categories });
+
+    expect(result).toEqual(categories);
+    expect(supabase.from).not.toHaveBeenCalled();
+  });
+
+  it('masque une catégorie restreinte sans permission — absence naturelle, pas d’erreur', async () => {
+    mockSupabaseQueues({
+      category_permissions: [{ data: [], error: null }],
+      group_members: [{ data: [], error: null }],
+    });
+
+    const categories = [{ id: 'restricted', is_restricted: true }, { id: 'open', is_restricted: false }];
+
+    const result = await filterViewableCategories({ userId: 'u1', userRole: 'employee', categories });
+
+    expect(result.map((c) => c.id)).toEqual(['open']);
+  });
+
+  it('garde une catégorie restreinte avec permission directe can_view', async () => {
+    mockSupabaseQueues({
+      category_permissions: [
+        { data: [{ category_id: 'restricted', subject_type: 'user', subject_id: 'u1', can_view: true }], error: null },
+      ],
+      group_members: [{ data: [], error: null }],
+    });
+
+    const categories = [{ id: 'restricted', is_restricted: true }];
+
+    const result = await filterViewableCategories({ userId: 'u1', userRole: 'employee', categories });
+
+    expect(result.map((c) => c.id)).toEqual(['restricted']);
   });
 });

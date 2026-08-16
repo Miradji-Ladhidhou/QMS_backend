@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { filterViewableCategories } from '../middleware/documentPermissions.js';
 
 const router = Router();
 const APPROVER_ROLES = ['owner', 'admin', 'manager', 'member'];
@@ -9,7 +10,9 @@ const SUBJECT_TYPES = ['user', 'group'];
 
 router.use(requireAuth);
 
-// GET /api/categories — liste des catégories du tenant
+// GET /api/categories — liste des catégories du tenant. Une catégorie restreinte à
+// laquelle l'utilisateur n'a pas accès (can_view) n'apparaît pas — principe de moindre
+// divulgation, notamment pour le sélecteur de filtre de la liste des documents.
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('document_categories')
@@ -21,7 +24,9 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les catégories.' });
   }
 
-  res.json(data);
+  const viewable = await filterViewableCategories({ userId: req.user.id, userRole: req.userRole, categories: data });
+
+  res.json(viewable);
 });
 
 // POST /api/categories — création
