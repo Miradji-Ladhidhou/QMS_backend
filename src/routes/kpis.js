@@ -6,6 +6,8 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 
 const KPI_FREQUENCIES = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
+const KPI_TARGET_DIRECTIONS = ['min', 'max'];
+const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency'];
 
 router.use(requireAuth);
 
@@ -31,6 +33,10 @@ router.post(
     body('name').trim().notEmpty().withMessage('Le nom du KPI est requis.'),
     body('unit').optional({ values: 'falsy' }).trim(),
     body('target').optional({ values: 'falsy' }).isFloat().withMessage('Objectif invalide.'),
+    body('target_direction')
+      .optional({ values: 'falsy' })
+      .isIn(KPI_TARGET_DIRECTIONS)
+      .withMessage('Sens de l\'objectif invalide.'),
     body('frequency').optional({ values: 'falsy' }).isIn(KPI_FREQUENCIES).withMessage('Fréquence invalide.'),
   ],
   async (req, res) => {
@@ -39,7 +45,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, unit, target, frequency } = req.body;
+    const { name, unit, target, target_direction: targetDirection, frequency } = req.body;
 
     const { data, error } = await supabase
       .from('kpis')
@@ -48,6 +54,7 @@ router.post(
         name,
         unit: unit || null,
         target: target ?? null,
+        target_direction: targetDirection || undefined,
         frequency: frequency || null,
       })
       .select()
@@ -58,6 +65,50 @@ router.post(
     }
 
     res.status(201).json(data);
+  }
+);
+
+// PATCH /api/kpis/:id — met à jour un ou plusieurs champs (ex: sens de l'objectif)
+router.patch(
+  '/:id',
+  [
+    body('target').optional({ values: 'falsy' }).isFloat().withMessage('Objectif invalide.'),
+    body('target_direction')
+      .optional({ values: 'falsy' })
+      .isIn(KPI_TARGET_DIRECTIONS)
+      .withMessage('Sens de l\'objectif invalide.'),
+    body('frequency').optional({ values: 'falsy' }).isIn(KPI_FREQUENCIES).withMessage('Fréquence invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const update = {};
+    for (const field of PATCHABLE_FIELDS) {
+      if (field in req.body) {
+        update[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const { data, error } = await supabase
+      .from('kpis')
+      .update(update)
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'KPI introuvable.' });
+    }
+
+    res.json(data);
   }
 );
 

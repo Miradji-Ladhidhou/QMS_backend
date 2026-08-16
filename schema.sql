@@ -146,6 +146,7 @@ create table kpis (
   name        text not null,
   unit        text,
   target      numeric,
+  target_direction text not null default 'min' check (target_direction in ('min', 'max')),
   frequency   text check (frequency in ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
