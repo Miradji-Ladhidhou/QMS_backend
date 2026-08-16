@@ -64,6 +64,7 @@ create table documents (
   file_path    text,
   file_name    text,
   extracted_text text,
+  search_vector tsvector,
   created_by   uuid references users (id) on delete set null,
   approved_by  uuid references users (id) on delete set null,
   review_date  date,
@@ -189,6 +190,7 @@ create index idx_documents_tenant_id on documents (tenant_id);
 create index idx_documents_category_id on documents (category_id);
 create index idx_documents_status on documents (status);
 create index idx_documents_title_trgm on documents using gin (title gin_trgm_ops);
+create index idx_documents_search_vector on documents using gin (search_vector);
 
 create index idx_document_versions_document_id on document_versions (document_id);
 create index idx_document_versions_tenant_id on document_versions (tenant_id);
@@ -227,6 +229,23 @@ create trigger trg_users_updated_at before update on users
 
 create trigger trg_documents_updated_at before update on documents
   for each row execute function set_updated_at();
+
+-- Recherche plein texte (français) : title poids A, description poids B, extracted_text poids C
+create or replace function documents_search_vector_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.search_vector :=
+    setweight(to_tsvector('french', coalesce(new.title, '')), 'A') ||
+    setweight(to_tsvector('french', coalesce(new.description, '')), 'B') ||
+    setweight(to_tsvector('french', coalesce(new.extracted_text, '')), 'C');
+  return new;
+end;
+$$;
+
+create trigger trg_documents_search_vector before insert or update on documents
+  for each row execute function documents_search_vector_update();
 
 create trigger trg_capas_updated_at before update on capas
   for each row execute function set_updated_at();
