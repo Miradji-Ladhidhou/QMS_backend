@@ -3,9 +3,16 @@ import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { sanitizeFileName } from '../utils/storagePath.js';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+// defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
+// corrompt (mojibake) les noms de fichiers accentués envoyés en UTF-8 par le navigateur.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  defParamCharset: 'utf8',
+});
 const LOGO_BUCKET = 'tenant-logos';
 
 router.use(requireAuth);
@@ -57,7 +64,7 @@ router.post('/logo', requireRole('owner', 'admin'), upload.single('file'), async
     return res.status(400).json({ error: 'Un fichier est requis.' });
   }
 
-  const logoPath = `${req.tenantId}/logo-${Date.now()}-${req.file.originalname}`;
+  const logoPath = `${req.tenantId}/logo-${Date.now()}-${sanitizeFileName(req.file.originalname)}`;
 
   const { error: uploadError } = await supabase.storage
     .from(LOGO_BUCKET)

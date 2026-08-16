@@ -8,6 +8,7 @@ import { logAudit } from '../services/auditLog.js';
 import { buildCertificatePdf } from '../services/certificatePdf.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { extractText } from '../services/textExtraction.js';
+import { sanitizeFileName } from '../utils/storagePath.js';
 import {
   requireCategoryPermission,
   filterViewableDocuments,
@@ -16,7 +17,13 @@ import {
 } from '../middleware/documentPermissions.js';
 
 const router = Router();
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
+// defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
+// corrompt (mojibake) les noms de fichiers accentués envoyés en UTF-8 par le navigateur.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  defParamCharset: 'utf8',
+});
 
 const DOCUMENT_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
 const STORAGE_BUCKET = 'qms-documents';
@@ -237,7 +244,7 @@ router.post(
     let extractedText = null;
 
     if (req.file) {
-      filePath = `${req.tenantId}/${documentId}/${req.file.originalname}`;
+      filePath = `${req.tenantId}/${documentId}/${sanitizeFileName(req.file.originalname)}`;
       fileName = req.file.originalname;
 
       try {
@@ -316,7 +323,7 @@ router.post(
   }
 
   const newVersion = bumpVersion(document.version);
-  const filePath = `${req.tenantId}/${document.id}/${newVersion}-${req.file.originalname}`;
+  const filePath = `${req.tenantId}/${document.id}/${newVersion}-${sanitizeFileName(req.file.originalname)}`;
 
   try {
     await uploadToStorage(filePath, req.file);
