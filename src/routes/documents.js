@@ -81,7 +81,7 @@ router.get('/:id', async (req, res) => {
 
   const { data: versions, error: versionsError } = await supabase
     .from('document_versions')
-    .select('*')
+    .select('*, changed_by_user:users(id, full_name)')
     .eq('document_id', document.id)
     .order('created_at', { ascending: false });
 
