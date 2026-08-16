@@ -363,6 +363,38 @@ router.delete('/:id/records/:recordId', async (req, res) => {
   res.status(204).send();
 });
 
+// GET /api/kpis/:id/calculation-config — la recette actuelle du KPI, si une a déjà été
+// enregistrée (404 sinon) : sert au frontend à proposer "réutiliser" plutôt que de forcer
+// une reconfiguration à chaque import, et à préremplir le formulaire d'édition seule.
+router.get('/:id/calculation-config', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const { data, error } = await supabase
+    .from('kpi_calculation_configs')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la récupération de la configuration de calcul.' });
+  }
+  if (!data) {
+    return res.status(404).json({ error: 'Aucune configuration de calcul pour ce KPI.' });
+  }
+
+  res.json(data);
+});
+
 // POST /api/kpis/:id/calculation-config — enregistre ou met à jour la recette de calcul
 // appliquée aux imports génériques de ce KPI (voir POST /api/kpi-imports/:importId/apply).
 router.post(

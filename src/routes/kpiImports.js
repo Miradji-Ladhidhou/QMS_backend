@@ -274,6 +274,11 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    // Mode aperçu : calcule exactement comme un import réel (mêmes lectures, mêmes
+    // rejets), mais n'écrit rien dans kpi_records — utile pour valider une recette
+    // avant de l'appliquer pour de bon.
+    const dryRun = req.body.dry_run === true || req.body.dry_run === 'true';
+
     const { data: importRow, error: importError } = await supabase
       .from('kpi_raw_imports')
       .select('id, kpi_id')
@@ -302,7 +307,10 @@ router.post(
         return res.status(404).json({ error: 'KPI introuvable.' });
       }
 
-      await supabase.from('kpi_raw_imports').update({ kpi_id: targetKpiId }).eq('id', importRow.id);
+      // Un aperçu (dry_run) ne doit avoir aucun effet de bord, y compris le rattachement.
+      if (!dryRun) {
+        await supabase.from('kpi_raw_imports').update({ kpi_id: targetKpiId }).eq('id', importRow.id);
+      }
     }
 
     const { data: config, error: configError } = await supabase
@@ -422,7 +430,7 @@ router.post(
     }
 
     let records = [];
-    if (upsertRows.length > 0) {
+    if (!dryRun && upsertRows.length > 0) {
       const { data: upserted, error: upsertError } = await supabase
         .from('kpi_records')
         .upsert(upsertRows, { onConflict: 'kpi_id,period_date' })
@@ -438,6 +446,7 @@ router.post(
       import_id: importRow.id,
       kpi_id: targetKpiId,
       calc_type: config.calc_type,
+      dry_run: dryRun,
       rows_total: rawRows.length,
       rows_processed: rowsProcessed,
       rows_rejected: rowsRejected,
