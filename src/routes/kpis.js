@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
+import { computeGroup, describeCalculation, groupRowsByPeriod } from '../services/kpiCalculation.js';
 
 const router = Router();
 
@@ -23,7 +24,10 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    .select(`*, records:kpi_records(${RECORDS_SELECT})`)
+    // calculation_config (calc_type surtout) permet au frontend de choisir la bonne
+    // visualisation par carte (tendance vs répartition) sans une requête par KPI —
+    // renvoyé comme objet unique grâce à unique(kpi_id) sur kpi_calculation_configs.
+    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_config:kpi_calculation_configs(calc_type, group_by_column)`)
     .eq('tenant_id', req.tenantId)
     .order('name', { ascending: true });
 
@@ -137,7 +141,7 @@ router.post(
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    .select(`*, records:kpi_records(${RECORDS_SELECT})`)
+    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_config:kpi_calculation_configs(calc_type, group_by_column)`)
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .order('period_date', { foreignTable: 'kpi_records', ascending: true })
@@ -493,5 +497,235 @@ router.post(
     res.status(200).json({ ...data, warning });
   }
 );
+
+// GET /api/kpis/:id/imports — historique des imports pour ce KPI (fichier, qui, quand,
+// combien de lignes, quelle(s) période(s) affectée(s)) — remplace l'ancien
+// GET .../import-batches, sur le nouveau système générique.
+router.get('/:id/imports', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const { data: imports, error } = await supabase
+    .from('kpi_raw_imports')
+    .select('id, file_name, imported_at, row_count, imported_by_user:users!kpi_raw_imports_imported_by_fkey(id, full_name)')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .order('imported_at', { ascending: false });
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible de récupérer l'historique des imports." });
+  }
+
+  const importIds = imports.map((imp) => imp.id);
+  const affectedPeriodsByImport = {};
+
+  if (importIds.length > 0) {
+    const { data: records } = await supabase
+      .from('kpi_records')
+      .select('source_import_id, period_date')
+      .eq('tenant_id', req.tenantId)
+      .eq('kpi_id', kpi.id)
+      .in('source_import_id', importIds);
+
+    for (const record of records || []) {
+      const list = (affectedPeriodsByImport[record.source_import_id] ||= []);
+      list.push(record.period_date);
+    }
+  }
+
+  res.json(
+    imports.map((imp) => ({
+      ...imp,
+      affected_periods: (affectedPeriodsByImport[imp.id] || []).sort(),
+    }))
+  );
+});
+
+// GET /api/kpis/:id/records/:recordId/proof?page=1&page_size=50 — la preuve derrière une
+// valeur calculée : reproduit exactement le regroupement par période fait à l'import (même
+// logique, cf. services/kpiCalculation.js) pour retrouver les lignes brutes qui ont produit
+// cette valeur, avec une description en langage clair et pagination du détail.
+router.get('/:id/records/:recordId/proof', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id, unit')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const { data: record, error: recordError } = await supabase
+    .from('kpi_records')
+    .select('id, period_date, value, source, source_import_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .eq('id', req.params.recordId)
+    .single();
+
+  if (recordError || !record) {
+    return res.status(404).json({ error: 'Valeur introuvable.' });
+  }
+
+  if (record.source !== 'import' || !record.source_import_id) {
+    return res.status(400).json({ error: "Cette valeur n'a pas été calculée depuis un import : aucune preuve à afficher." });
+  }
+
+  const { data: config, error: configError } = await supabase
+    .from('kpi_calculation_configs')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .maybeSingle();
+
+  if (configError || !config) {
+    return res.status(404).json({ error: 'Configuration de calcul introuvable pour ce KPI.' });
+  }
+
+  const { data: importRow, error: importError } = await supabase
+    .from('kpi_raw_imports')
+    .select('id, file_name, imported_at, detected_columns, imported_by_user:users!kpi_raw_imports_imported_by_fkey(id, full_name)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', record.source_import_id)
+    .single();
+
+  if (importError || !importRow) {
+    return res.status(404).json({ error: 'Import source introuvable.' });
+  }
+
+  const { data: rawRows, error: rowsError } = await supabase
+    .from('kpi_raw_rows')
+    .select('row_index, row_data')
+    .eq('tenant_id', req.tenantId)
+    .eq('import_id', importRow.id)
+    .order('row_index', { ascending: true });
+
+  if (rowsError) {
+    return res.status(500).json({ error: 'Erreur lors de la récupération des lignes importées.' });
+  }
+
+  // Reproduit le même regroupement qu'à l'application de l'import, pour isoler exactement
+  // les lignes qui ont produit cette période — sans colonne de période, l'import entier est
+  // une période unique (c'est la même règle que POST .../apply).
+  let matchedRows;
+  if (config.period_column) {
+    const groups = groupRowsByPeriod(rawRows, config.period_column, null);
+    matchedRows = groups.get(record.period_date) || [];
+  } else {
+    matchedRows = rawRows.map((row) => ({ rowIndex: row.row_index, rowData: row.row_data }));
+  }
+
+  const calcResult = computeGroup(config, matchedRows);
+  const description = describeCalculation(config, calcResult, matchedRows.length, record.value, kpi.unit);
+
+  const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+  const pageSize = Math.min(200, Math.max(1, parseInt(req.query.page_size, 10) || 50));
+  const start = (page - 1) * pageSize;
+  const pagedRows = matchedRows.slice(start, start + pageSize);
+
+  res.json({
+    record: { id: record.id, period_date: record.period_date, value: record.value },
+    import: {
+      id: importRow.id,
+      file_name: importRow.file_name,
+      imported_at: importRow.imported_at,
+      imported_by_user: importRow.imported_by_user,
+    },
+    calc_type: config.calc_type,
+    description,
+    columns: importRow.detected_columns,
+    rows_total: matchedRows.length,
+    page,
+    page_size: pageSize,
+    rows: pagedRows.map((row) => ({ row_index: row.rowIndex, row_data: row.rowData })),
+  });
+});
+
+// GET /api/kpis/:id/distribution — répartition par catégorie (calc_type='count_grouped')
+// calculée à la volée depuis le dernier import de ce KPI. Jamais persisté dans kpi_records
+// (ce mode sert à une vue de répartition, pas à un point de tendance), donc recalculé à
+// chaque consultation plutôt que stocké.
+router.get('/:id/distribution', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const { data: config, error: configError } = await supabase
+    .from('kpi_calculation_configs')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .maybeSingle();
+
+  if (configError || !config) {
+    return res.status(404).json({ error: 'Aucune configuration de calcul pour ce KPI.' });
+  }
+  if (config.calc_type !== 'count_grouped') {
+    return res.status(400).json({ error: "Ce KPI n'est pas configuré en répartition par catégorie (count_grouped)." });
+  }
+
+  const { data: importRow, error: importError } = await supabase
+    .from('kpi_raw_imports')
+    .select('id, file_name, imported_at')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .order('imported_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (importError) {
+    return res.status(500).json({ error: "Erreur lors de la récupération de l'import." });
+  }
+  if (!importRow) {
+    return res.status(404).json({ error: 'Aucun import pour ce KPI.' });
+  }
+
+  const { data: rawRows, error: rowsError } = await supabase
+    .from('kpi_raw_rows')
+    .select('row_index, row_data')
+    .eq('tenant_id', req.tenantId)
+    .eq('import_id', importRow.id)
+    .order('row_index', { ascending: true });
+
+  if (rowsError) {
+    return res.status(500).json({ error: 'Erreur lors de la récupération des lignes importées.' });
+  }
+
+  // Sans colonne de période, l'import entier forme un seul groupe (étiqueté avec la date de
+  // l'import, faute de mieux) ; avec une colonne de période, une répartition par période.
+  const groups = config.period_column
+    ? groupRowsByPeriod(rawRows, config.period_column, null)
+    : new Map([[importRow.imported_at.slice(0, 10), rawRows.map((row) => ({ rowIndex: row.row_index, rowData: row.row_data }))]]);
+
+  const periods = Array.from(groups.entries()).map(([periodKey, rows]) => {
+    const isRawFallback = periodKey.startsWith('__raw__:');
+    const periodLabel = isRawFallback ? periodKey.slice('__raw__:'.length) : periodKey;
+    const result = computeGroup(config, rows);
+    return { period_label: periodLabel, grouped_counts: result.groupedCounts, rows_total: rows.length };
+  });
+
+  res.json({
+    import: { id: importRow.id, file_name: importRow.file_name, imported_at: importRow.imported_at },
+    group_by_column: config.group_by_column,
+    periods,
+  });
+});
 
 export default router;

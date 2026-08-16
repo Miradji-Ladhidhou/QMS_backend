@@ -6,6 +6,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { RECORDS_SELECT } from './kpis.js';
+import { computeGroup, groupRowsByPeriod, normalizeAnyDate } from '../services/kpiCalculation.js';
 
 const router = Router();
 
@@ -175,91 +176,6 @@ router.post('/', upload.single('file'), async (req, res) => {
   });
 });
 
-// Tente de convertir une valeur de colonne "période" en date yyyy-MM-dd : ISO tel quel,
-// yyyy-MM ramené au 1er du mois, jj/mm/aaaa (format FR courant dans les exports Excel), ou
-// tout ce que Date.parse sait lire nativement. Retourne null si rien ne correspond — la
-// ligne est alors groupée par sa valeur brute plutôt que rejetée (cf. computeGroup ci-dessous).
-function normalizeAnyDate(raw) {
-  if (raw === null || raw === undefined) return null;
-  const str = String(raw).trim();
-  if (!str) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
-  if (/^\d{4}-\d{2}$/.test(str)) return `${str}-01`;
-  const dmy = str.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (dmy) {
-    const [, d, m, y] = dmy;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-  }
-  const parsed = new Date(str);
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
-}
-
-// Tolère la virgule décimale FR ("12,5") tant qu'il n'y a pas déjà de point.
-function toNumber(raw) {
-  if (raw === null || raw === undefined) return NaN;
-  let str = String(raw).trim();
-  if (!str) return NaN;
-  if (str.includes(',') && !str.includes('.')) str = str.replace(',', '.');
-  return Number(str);
-}
-
-// Applique la recette de calcul (kpi_calculation_configs) à un groupe de lignes brutes
-// (déjà réparties par période). Les 4 premiers types produisent une valeur unique
-// destinée à kpi_records ; count_grouped produit une répartition, gardée à part.
-function computeGroup(config, rows) {
-  const rowsTotal = rows.length;
-
-  switch (config.calc_type) {
-    case 'ratio': {
-      const matching = rows.filter(({ rowData }) => {
-        const value = rowData[config.filter_column];
-        return String(value ?? '').trim().toLowerCase() === String(config.filter_value).trim().toLowerCase();
-      }).length;
-      return {
-        value: rowsTotal > 0 ? Number(((matching / rowsTotal) * 100).toFixed(2)) : null,
-        rowsValid: rowsTotal,
-        rejectedDetails: [],
-      };
-    }
-    case 'sum':
-    case 'average': {
-      const numbers = [];
-      const rejectedDetails = [];
-      rows.forEach(({ rowIndex, rowData }) => {
-        const num = toNumber(rowData[config.source_column]);
-        if (Number.isNaN(num)) {
-          rejectedDetails.push({
-            row_index: rowIndex,
-            reason: `Valeur non numérique dans "${config.source_column}" ("${rowData[config.source_column]}").`,
-          });
-        } else {
-          numbers.push(num);
-        }
-      });
-      const value =
-        numbers.length === 0
-          ? null
-          : config.calc_type === 'sum'
-          ? Number(numbers.reduce((a, b) => a + b, 0).toFixed(2))
-          : Number((numbers.reduce((a, b) => a + b, 0) / numbers.length).toFixed(2));
-      return { value, rowsValid: numbers.length, rejectedDetails };
-    }
-    case 'count': {
-      return { value: rowsTotal, rowsValid: rowsTotal, rejectedDetails: [] };
-    }
-    case 'count_grouped': {
-      const groupedCounts = {};
-      rows.forEach(({ rowData }) => {
-        const key = String(rowData[config.group_by_column] ?? '').trim() || '(vide)';
-        groupedCounts[key] = (groupedCounts[key] || 0) + 1;
-      });
-      return { groupedCounts, rowsValid: rowsTotal, rejectedDetails: [] };
-    }
-    default:
-      return { value: null, rowsValid: 0, rejectedDetails: [] };
-  }
-}
-
 // POST /api/kpi-imports/:importId/apply — applique la recette de calcul enregistrée du KPI
 // cible aux lignes brutes de cet import, et met à jour kpi_records (upsert par période).
 router.post(
@@ -354,22 +270,7 @@ router.post(
       }
     }
 
-    // Groupe les lignes par période : par valeur (normalisée en date si possible) de
-    // period_column, ou par la période unique fournie manuellement si le fichier ne porte
-    // pas lui-même de colonne de date.
-    const groups = new Map();
-    for (const { row_index: rowIndex, row_data: rowData } of rawRows) {
-      let key;
-      if (config.period_column) {
-        const raw = rowData[config.period_column];
-        const normalized = normalizeAnyDate(raw);
-        key = normalized || `__raw__:${String(raw ?? '').trim() || '(vide)'}`;
-      } else {
-        key = manualPeriodDate;
-      }
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push({ rowIndex, rowData });
-    }
+    const groups = groupRowsByPeriod(rawRows, config.period_column, manualPeriodDate);
 
     const periods = [];
     const upsertRows = [];
