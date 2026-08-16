@@ -49,6 +49,7 @@ create table document_categories (
   tenant_id   uuid not null references tenants (id) on delete cascade,
   name        text not null,
   color       text,
+  required_approver_role text check (required_approver_role in ('owner', 'admin', 'manager', 'member')),
   created_at  timestamptz not null default now()
 );
 
@@ -163,6 +164,49 @@ create table kpi_records (
   unique (kpi_id, period_date)
 );
 
+-- Workflow d'approbation tracé (remplace le simple champ status en donnant une
+-- preuve auditable de qui devait approuver et de l'état de chacun).
+create table document_workflows (
+  id                  uuid primary key default gen_random_uuid(),
+  tenant_id           uuid not null references tenants (id) on delete cascade,
+  document_id         uuid not null references documents (id) on delete cascade,
+  required_approvers  uuid[] not null,
+  current_step        integer not null default 0,
+  status              text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  created_by          uuid references users (id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+
+-- Une ligne par approbateur requis, créée dès la soumission (decision='pending'),
+-- puis mise à jour par cet approbateur (jamais par un autre) quand il décide.
+create table document_approvals (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  workflow_id     uuid not null references document_workflows (id) on delete cascade,
+  approver_id     uuid not null references users (id) on delete cascade,
+  decision        text not null default 'pending' check (decision in ('pending', 'approved', 'rejected')),
+  comment         text,
+  decided_at      timestamptz,
+  signature_hash  text,
+  ip_address      text,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now(),
+  unique (workflow_id, approver_id)
+);
+
+-- Piste d'audit exigée par ISO 9001 / FDA 21 CFR Part 11 : INSERT uniquement,
+-- jamais de UPDATE/DELETE (voir le trigger document_audit_log_immutable plus bas).
+create table document_audit_log (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  document_id uuid not null references documents (id) on delete cascade,
+  user_id     uuid references users (id) on delete set null,
+  action      text not null,
+  details     jsonb,
+  created_at  timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -214,6 +258,18 @@ create index idx_kpi_records_tenant_id on kpi_records (tenant_id);
 create index idx_kpi_records_kpi_id on kpi_records (kpi_id);
 create index idx_kpi_records_period_date on kpi_records (period_date);
 
+create index idx_document_workflows_tenant_id on document_workflows (tenant_id);
+create index idx_document_workflows_document_id on document_workflows (document_id);
+create index idx_document_workflows_status on document_workflows (status);
+
+create index idx_document_approvals_tenant_id on document_approvals (tenant_id);
+create index idx_document_approvals_workflow_id on document_approvals (workflow_id);
+create index idx_document_approvals_approver_id on document_approvals (approver_id);
+
+create index idx_document_audit_log_tenant_id on document_audit_log (tenant_id);
+create index idx_document_audit_log_document_id on document_audit_log (document_id);
+create index idx_document_audit_log_created_at on document_audit_log (created_at);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -235,6 +291,27 @@ create trigger trg_trainings_updated_at before update on trainings
 
 create trigger trg_kpis_updated_at before update on kpis
   for each row execute function set_updated_at();
+
+create trigger trg_document_workflows_updated_at before update on document_workflows
+  for each row execute function set_updated_at();
+
+create trigger trg_document_approvals_updated_at before update on document_approvals
+  for each row execute function set_updated_at();
+
+-- document_audit_log est une piste d'audit : aucune modification ni suppression
+-- n'est autorisée, quel que soit le rôle (y compris service_role), uniquement des INSERT.
+create or replace function document_audit_log_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'document_audit_log est immuable : aucune modification ni suppression autorisée.';
+end;
+$$;
+
+create trigger trg_document_audit_log_immutable
+  before update or delete on document_audit_log
+  for each row execute function document_audit_log_immutable();
 
 -- Numérotation auto-incrémentée des CAPA par tenant et par année (ex : CAPA-2026-001)
 create or replace function set_capa_number()
@@ -275,6 +352,9 @@ alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
+alter table document_workflows enable row level security;
+alter table document_approvals enable row level security;
+alter table document_audit_log enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -336,4 +416,24 @@ create policy kpis_isolation on kpis
 create policy kpi_records_isolation on kpi_records
   for all
   using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy document_workflows_isolation on document_workflows
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy document_approvals_isolation on document_approvals
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+-- Lecture seule via RLS (en plus du trigger d'immuabilité) : même un accès authentifié
+-- direct ne peut qu'insérer/lire, jamais modifier ou supprimer une entrée d'audit.
+create policy document_audit_log_select on document_audit_log
+  for select
+  using (tenant_id = auth_tenant_id());
+
+create policy document_audit_log_insert on document_audit_log
+  for insert
   with check (tenant_id = auth_tenant_id());
