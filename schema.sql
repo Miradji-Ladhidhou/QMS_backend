@@ -219,6 +219,20 @@ create table user_notification_preferences (
   updated_at                timestamptz not null default now()
 );
 
+-- Trace chaque email envoyé (job planifié ou déclenchement immédiat) : sert au debug
+-- et, via la contrainte unique ci-dessous, empêche physiquement de renvoyer la même
+-- alerte deux fois le même jour au même utilisateur.
+create table notification_log (
+  id                 uuid primary key default gen_random_uuid(),
+  tenant_id          uuid not null references tenants (id) on delete cascade,
+  user_id            uuid not null references users (id) on delete cascade,
+  notification_type  text not null,
+  reference_id       uuid,
+  sent_date          date not null default current_date,
+  created_at         timestamptz not null default now(),
+  unique (user_id, notification_type, reference_id, sent_date)
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -283,6 +297,10 @@ create index idx_document_audit_log_document_id on document_audit_log (document_
 create index idx_document_audit_log_created_at on document_audit_log (created_at);
 
 create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
+
+create index idx_notification_log_tenant_id on notification_log (tenant_id);
+create index idx_notification_log_user_id on notification_log (user_id);
+create index idx_notification_log_sent_date on notification_log (sent_date);
 
 -- =============================================================================
 -- TRIGGERS
@@ -372,6 +390,7 @@ alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
 alter table user_notification_preferences enable row level security;
+alter table notification_log enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -456,6 +475,11 @@ create policy document_audit_log_insert on document_audit_log
   with check (tenant_id = auth_tenant_id());
 
 create policy user_notification_preferences_isolation on user_notification_preferences
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy notification_log_isolation on notification_log
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

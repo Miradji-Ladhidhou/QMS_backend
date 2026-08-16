@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
+import { sendImmediateNotification } from '../services/notificationHelpers.js';
 
 const router = Router();
 
@@ -10,6 +11,29 @@ const CAPA_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const PATCHABLE_FIELDS = ['status', 'priority', 'assigned_to', 'due_date'];
 
 router.use(requireAuth);
+
+// Notification immédiate (n'attend pas le batch quotidien) quand une CAPA est assignée.
+// Réutilise le toggle "email_capa_overdue" : le modèle de préférences (Chantier 3.2) n'a
+// pas de case dédiée "assignation", et c'est la plus proche sémantiquement.
+async function notifyCapaAssigned(tenantId, capa) {
+  if (!capa.assigned_to) return;
+
+  await sendImmediateNotification({
+    tenantId,
+    userId: capa.assigned_to,
+    prefField: 'email_capa_overdue',
+    notificationType: 'capa_assigned',
+    referenceId: capa.id,
+    templateName: 'capaOverdue',
+    subject: `Une CAPA vous a été assignée : ${capa.number}`,
+    variables: {
+      capaNumber: capa.number,
+      capaTitle: capa.title,
+      dueDate: capa.due_date || '—',
+      capaUrl: `${process.env.FRONTEND_URL}/capas/${capa.id}`,
+    },
+  });
+}
 
 async function closeOverdueCapas(tenantId) {
   const today = new Date().toISOString().slice(0, 10);
@@ -103,6 +127,10 @@ router.post(
       return res.status(500).json({ error: 'Erreur lors de la création de la CAPA.' });
     }
 
+    notifyCapaAssigned(req.tenantId, data).catch((err) =>
+      console.error("Échec de la notification d'assignation CAPA :", err.message)
+    );
+
     res.status(201).json(data);
   }
 );
@@ -147,6 +175,12 @@ router.patch(
 
     if (error || !data) {
       return res.status(404).json({ error: 'CAPA introuvable.' });
+    }
+
+    if (update.assigned_to) {
+      notifyCapaAssigned(req.tenantId, data).catch((err) =>
+        console.error("Échec de la notification d'assignation CAPA :", err.message)
+      );
     }
 
     res.json(data);

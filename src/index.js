@@ -12,6 +12,7 @@ import usersRoutes from './routes/users.js';
 import tenantRoutes from './routes/tenant.js';
 import workflowsRoutes from './routes/workflows.js';
 import notificationsRoutes from './routes/notifications.js';
+import { scheduleNotificationJob } from './jobs/notificationJob.js';
 
 const app = express();
 
@@ -43,3 +44,5 @@ const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`QMS SaaS backend listening on port ${PORT}`);
 });
+
+scheduleNotificationJob();

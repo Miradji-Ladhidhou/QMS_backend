@@ -6,6 +6,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { buildCertificatePdf } from '../services/certificatePdf.js';
+import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
@@ -393,6 +394,27 @@ router.post(
       userId: req.user.id,
       action: 'submitted_for_approval',
       details: { workflow_id: workflow.id, approver_ids: approverIds },
+    });
+
+    // Envoi immédiat à chaque approbateur — ne doit pas attendre le batch quotidien.
+    getUserFullName(req.user.id).then((requesterName) => {
+      for (const approverId of approverIds) {
+        sendImmediateNotification({
+          tenantId: req.tenantId,
+          userId: approverId,
+          prefField: 'email_approval_requests',
+          notificationType: 'approval_request',
+          referenceId: workflow.id,
+          templateName: 'approvalRequest',
+          subject: `Approbation requise : ${updatedDocument.number}`,
+          variables: {
+            requesterName,
+            documentNumber: updatedDocument.number,
+            documentTitle: updatedDocument.title,
+            documentUrl: `${process.env.FRONTEND_URL}/documents/${document.id}`,
+          },
+        }).catch((err) => console.error("Échec de la notification de demande d'approbation :", err.message));
+      }
     });
 
     res.status(201).json({ document: updatedDocument, workflow });

@@ -29,7 +29,7 @@ const SAMPLE_VARIABLES = {
     trainingUrl: `${process.env.FRONTEND_URL}/trainings`,
   },
   approvalRequest: {
-    approverName: 'Alice Martin',
+    userName: 'Alice Martin',
     requesterName: 'Bruno Petit',
     documentNumber: 'QP-002',
     documentTitle: 'Manuel qualité',
