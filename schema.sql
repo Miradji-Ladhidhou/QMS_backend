@@ -50,6 +50,9 @@ create table document_categories (
   name        text not null,
   color       text,
   required_approver_role text check (required_approver_role in ('owner', 'admin', 'manager', 'member')),
+  -- false (défaut) : comportement actuel inchangé, visible par tout le tenant.
+  -- true : accès réservé aux sujets ayant une entrée dans category_permissions.
+  is_restricted boolean not null default false,
   created_at  timestamptz not null default now()
 );
 
@@ -249,6 +252,40 @@ create table notifications (
   created_at  timestamptz not null default now()
 );
 
+-- Groupes métier (ex: "RH", "Direction", "Qualité") pour attribuer des permissions
+-- sans avoir à gérer chaque utilisateur individuellement.
+create table groups (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  name        text not null,
+  created_at  timestamptz not null default now()
+);
+
+create table group_members (
+  group_id  uuid not null references groups (id) on delete cascade,
+  user_id   uuid not null references users (id) on delete cascade,
+  primary key (group_id, user_id)
+);
+
+-- Permissions par catégorie restreinte, accordées à un utilisateur ou un groupe.
+-- subject_id n'a volontairement pas de contrainte FK : il pointe vers users(id) ou
+-- groups(id) selon subject_type (association polymorphe). Une entrée orpheline après
+-- suppression d'un utilisateur/groupe reste possible mais inerte (aucun sujet réel ne
+-- correspond) ; un nettoyage périodique ou un trigger pourra être ajouté plus tard si besoin.
+create table category_permissions (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null references tenants (id) on delete cascade,
+  category_id  uuid not null references document_categories (id) on delete cascade,
+  subject_type text not null check (subject_type in ('user', 'group')),
+  subject_id   uuid not null,
+  can_view     boolean not null default true,
+  can_edit     boolean not null default false,
+  can_approve  boolean not null default false,
+  can_delete   boolean not null default false,
+  created_at   timestamptz not null default now(),
+  unique (category_id, subject_type, subject_id)
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -322,6 +359,14 @@ create index idx_notification_log_sent_date on notification_log (sent_date);
 create index idx_notifications_tenant_id on notifications (tenant_id);
 create index idx_notifications_user_id on notifications (user_id);
 create index idx_notifications_user_read on notifications (user_id, read);
+
+create index idx_groups_tenant_id on groups (tenant_id);
+
+create index idx_group_members_user_id on group_members (user_id);
+
+create index idx_category_permissions_tenant_id on category_permissions (tenant_id);
+create index idx_category_permissions_category_id on category_permissions (category_id);
+create index idx_category_permissions_subject on category_permissions (subject_type, subject_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -475,6 +520,9 @@ alter table document_audit_log enable row level security;
 alter table user_notification_preferences enable row level security;
 alter table notification_log enable row level security;
 alter table notifications enable row level security;
+alter table groups enable row level security;
+alter table group_members enable row level security;
+alter table category_permissions enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -569,6 +617,23 @@ create policy notification_log_isolation on notification_log
   with check (tenant_id = auth_tenant_id());
 
 create policy notifications_isolation on notifications
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy groups_isolation on groups
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+-- group_members n'a pas de tenant_id propre (fidèle au schéma demandé) : l'isolation
+-- passe par le tenant du groupe parent.
+create policy group_members_isolation on group_members
+  for all
+  using (exists (select 1 from groups g where g.id = group_members.group_id and g.tenant_id = auth_tenant_id()))
+  with check (exists (select 1 from groups g where g.id = group_members.group_id and g.tenant_id = auth_tenant_id()));
+
+create policy category_permissions_isolation on category_permissions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
