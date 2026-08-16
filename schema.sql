@@ -184,6 +184,7 @@ create table kpi_records (
   kpi_id       uuid not null references kpis (id) on delete cascade,
   period_date  date not null,
   value        numeric not null,
+  comment      text,
   recorded_by  uuid references users (id) on delete set null,
   created_at   timestamptz not null default now(),
   unique (kpi_id, period_date)

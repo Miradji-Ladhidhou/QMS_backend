@@ -8,7 +8,7 @@ const router = Router();
 const KPI_FREQUENCIES = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
 const KPI_TARGET_DIRECTIONS = ['min', 'max'];
 const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency'];
-const RECORD_PATCHABLE_FIELDS = ['period_date', 'value'];
+const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 
 router.use(requireAuth);
 
@@ -16,7 +16,9 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    .select('*, records:kpi_records(id, period_date, value, recorded_by)')
+    .select(
+      '*, records:kpi_records(id, period_date, value, comment, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name))'
+    )
     .eq('tenant_id', req.tenantId)
     .order('name', { ascending: true });
 
@@ -73,7 +75,9 @@ router.post(
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    .select('*, records:kpi_records(id, period_date, value, recorded_by)')
+    .select(
+      '*, records:kpi_records(id, period_date, value, comment, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name))'
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .order('period_date', { foreignTable: 'kpi_records', ascending: true })
@@ -156,6 +160,7 @@ router.post(
   [
     body('period_date').isISO8601().withMessage('Date de période invalide.'),
     body('value').isFloat().withMessage('Valeur invalide.'),
+    body('comment').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -174,7 +179,7 @@ router.post(
       return res.status(404).json({ error: 'KPI introuvable.' });
     }
 
-    const { period_date: periodDate, value } = req.body;
+    const { period_date: periodDate, value, comment } = req.body;
 
     const { data, error } = await supabase
       .from('kpi_records')
@@ -183,9 +188,10 @@ router.post(
         kpi_id: kpi.id,
         period_date: periodDate,
         value,
+        comment: comment || null,
         recorded_by: req.user.id,
       })
-      .select()
+      .select('*, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)')
       .single();
 
     if (error) {
@@ -205,6 +211,7 @@ router.patch(
   [
     body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
     body('value').optional({ values: 'falsy' }).isFloat().withMessage('Valeur invalide.'),
+    body('comment').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -240,7 +247,7 @@ router.patch(
       .eq('tenant_id', req.tenantId)
       .eq('kpi_id', kpi.id)
       .eq('id', req.params.recordId)
-      .select()
+      .select('*, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)')
       .single();
 
     if (error) {
