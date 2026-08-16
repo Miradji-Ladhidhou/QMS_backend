@@ -9,6 +9,7 @@ import capasRoutes from './routes/capas.js';
 import trainingsRoutes from './routes/trainings.js';
 import kpisRoutes from './routes/kpis.js';
 import usersRoutes from './routes/users.js';
+import tenantRoutes from './routes/tenant.js';
 
 const app = express();
 
@@ -27,6 +28,7 @@ app.use('/api/capas', capasRoutes);
 app.use('/api/trainings', trainingsRoutes);
 app.use('/api/kpis', kpisRoutes);
 app.use('/api/users', usersRoutes);
+app.use('/api/tenant', tenantRoutes);
 
 const PORT = process.env.PORT || 4000;
 
