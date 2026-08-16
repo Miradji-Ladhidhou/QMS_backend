@@ -11,6 +11,7 @@ import kpisRoutes from './routes/kpis.js';
 import usersRoutes from './routes/users.js';
 import tenantRoutes from './routes/tenant.js';
 import workflowsRoutes from './routes/workflows.js';
+import notificationsRoutes from './routes/notifications.js';
 
 const app = express();
 
@@ -35,6 +36,7 @@ app.use('/api/kpis', kpisRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/tenant', tenantRoutes);
 app.use('/api/workflows', workflowsRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 const PORT = process.env.PORT || 4000;
 

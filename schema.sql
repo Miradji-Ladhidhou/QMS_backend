@@ -207,6 +207,18 @@ create table document_audit_log (
   created_at  timestamptz not null default now()
 );
 
+create table user_notification_preferences (
+  user_id                   uuid primary key references users (id) on delete cascade,
+  tenant_id                 uuid not null references tenants (id) on delete cascade,
+  email_documents_to_review boolean not null default true,
+  email_capa_overdue        boolean not null default true,
+  email_training_renewal    boolean not null default true,
+  email_approval_requests   boolean not null default true,
+  digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
+  created_at                timestamptz not null default now(),
+  updated_at                timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -270,6 +282,8 @@ create index idx_document_audit_log_tenant_id on document_audit_log (tenant_id);
 create index idx_document_audit_log_document_id on document_audit_log (document_id);
 create index idx_document_audit_log_created_at on document_audit_log (created_at);
 
+create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -313,6 +327,8 @@ create trigger trg_document_audit_log_immutable
   before update or delete on document_audit_log
   for each row execute function document_audit_log_immutable();
 
+create trigger trg_user_notification_preferences_updated_at before update on user_notification_preferences
+  for each row execute function set_updated_at();
 -- Numérotation auto-incrémentée des CAPA par tenant et par année (ex : CAPA-2026-001)
 create or replace function set_capa_number()
 returns trigger
@@ -355,6 +371,7 @@ alter table kpi_records enable row level security;
 alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
+alter table user_notification_preferences enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -436,4 +453,9 @@ create policy document_audit_log_select on document_audit_log
 
 create policy document_audit_log_insert on document_audit_log
   for insert
+  with check (tenant_id = auth_tenant_id());
+
+create policy user_notification_preferences_isolation on user_notification_preferences
+  for all
+  using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
