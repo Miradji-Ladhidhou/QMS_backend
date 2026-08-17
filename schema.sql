@@ -163,10 +163,18 @@ create table qqoqccp_analyses (
   ai_synthesis           text,
   ai_suggested_actions   jsonb,
   status                 text not null default 'draft' check (status in ('draft', 'ai_generated', 'validated')),
+  -- CAPA créée à partir de cette analyse (voir aussi capas.qqoqccp_analysis_id, l'inverse) —
+  -- nullable : une analyse peut rester autonome sans jamais donner lieu à une CAPA.
+  linked_capa_id         uuid references capas (id) on delete set null,
   created_by             uuid references users (id) on delete set null,
   created_at             timestamptz not null default now(),
   updated_at             timestamptz not null default now()
 );
+
+-- Analyse QQOQCCP à l'origine de cette CAPA (voir aussi qqoqccp_analyses.linked_capa_id,
+-- l'inverse). Ajoutée après coup via alter table plutôt qu'inline dans capas ci-dessus :
+-- qqoqccp_analyses est définie plus bas dans ce fichier, donc pas encore créée à ce stade.
+alter table capas add column qqoqccp_analysis_id uuid references qqoqccp_analyses (id) on delete set null;
 
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
