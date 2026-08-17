@@ -166,9 +166,23 @@ create table training_records (
   created_at     timestamptz not null default now()
 );
 
+-- Classement arborescent des KPI (ex : "Contrôle commande" > "Contrôle 2026" > les KPI de
+-- 2026) — parent_id nul = dossier racine. on delete cascade sur parent_id : supprimer un
+-- dossier supprime ses sous-dossiers, mais pas les KPI qu'il contenait (voir kpis.folder_id
+-- ci-dessous, qui repasse à null plutôt que d'être supprimé).
+create table kpi_folders (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  parent_id   uuid references kpi_folders (id) on delete cascade,
+  name        text not null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
 create table kpis (
   id          uuid primary key default gen_random_uuid(),
   tenant_id   uuid not null references tenants (id) on delete cascade,
+  folder_id   uuid references kpi_folders (id) on delete set null,
   name        text not null,
   unit        text,
   target      numeric,
@@ -432,7 +446,11 @@ create index idx_training_records_training_id on training_records (training_id);
 create index idx_training_records_user_id on training_records (user_id);
 create index idx_training_records_next_due_date on training_records (next_due_date);
 
+create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
+create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
+
 create index idx_kpis_tenant_id on kpis (tenant_id);
+create index idx_kpis_folder_id on kpis (folder_id);
 
 create index idx_kpi_records_tenant_id on kpi_records (tenant_id);
 create index idx_kpi_records_kpi_id on kpi_records (kpi_id);
@@ -658,6 +676,7 @@ alter table capa_priority_delays enable row level security;
 alter table capa_comments enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
+alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
 alter table kpi_raw_imports enable row level security;
@@ -726,6 +745,11 @@ create policy trainings_isolation on trainings
   with check (tenant_id = auth_tenant_id());
 
 create policy training_records_isolation on training_records
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy kpi_folders_isolation on kpi_folders
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

@@ -13,16 +13,21 @@ const KPI_TARGET_DIRECTIONS = ['min', 'max'];
 // kpi_calculation_configs.calc_type — ici on distingue seulement saisie manuelle vs calculée.
 const KPI_CALCULATION_TYPES = ['manual', 'import'];
 export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped'];
-const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type'];
+const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id'];
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
   'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
 
 router.use(requireAuth);
 
-// GET /api/kpis — liste avec valeurs historiques
+// GET /api/kpis — liste avec valeurs historiques. Sans ?folder_id, renvoie TOUS les KPI du
+// tenant (utilisé par le tableau de bord et le rapport PDF, qui ont besoin de l'ensemble
+// indépendamment du classement). Avec ?folder_id=root ou =<uuid>, ne renvoie que les KPI de
+// ce dossier — c'est ce qu'utilise la page KPI en navigation par dossier.
 router.get('/', async (req, res) => {
-  const { data, error } = await supabase
+  const { folder_id: folderId } = req.query;
+
+  let query = supabase
     .from('kpis')
     // calculation_configs (toutes les séries du KPI, id+label+calc_type surtout) permet au
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
@@ -30,8 +35,13 @@ router.get('/', async (req, res) => {
     .select(
       `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`
     )
-    .eq('tenant_id', req.tenantId)
-    .order('name', { ascending: true });
+    .eq('tenant_id', req.tenantId);
+
+  if (folderId) {
+    query = folderId === 'root' ? query.is('folder_id', null) : query.eq('folder_id', folderId);
+  }
+
+  const { data, error } = await query.order('name', { ascending: true });
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les KPIs.' });
@@ -101,6 +111,7 @@ router.post(
       .optional({ values: 'falsy' })
       .isIn(KPI_CALCULATION_TYPES)
       .withMessage('Type de calcul invalide.'),
+    body('folder_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -115,7 +126,20 @@ router.post(
       target_direction: targetDirection,
       frequency,
       calculation_type: calculationType,
+      folder_id: folderId,
     } = req.body;
+
+    if (folderId) {
+      const { data: folder } = await supabase
+        .from('kpi_folders')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', folderId)
+        .maybeSingle();
+      if (!folder) {
+        return res.status(400).json({ error: 'Dossier introuvable.' });
+      }
+    }
 
     const { data, error } = await supabase
       .from('kpis')
@@ -127,6 +151,7 @@ router.post(
         target_direction: targetDirection || undefined,
         frequency: frequency || null,
         calculation_type: calculationType || undefined,
+        folder_id: folderId || null,
       })
       .select()
       .single();
@@ -172,6 +197,7 @@ router.patch(
       .optional({ values: 'falsy' })
       .isIn(KPI_CALCULATION_TYPES)
       .withMessage('Type de calcul invalide.'),
+    body('folder_id').optional({ nullable: true }).custom((value) => value === null || typeof value === 'string').withMessage('Dossier invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -185,9 +211,24 @@ router.patch(
         update[field] = req.body[field];
       }
     }
+    if ('folder_id' in update) {
+      update.folder_id = update.folder_id || null;
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    if (update.folder_id) {
+      const { data: folder } = await supabase
+        .from('kpi_folders')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', update.folder_id)
+        .maybeSingle();
+      if (!folder) {
+        return res.status(400).json({ error: 'Dossier introuvable.' });
+      }
     }
 
     const { data, error } = await supabase
