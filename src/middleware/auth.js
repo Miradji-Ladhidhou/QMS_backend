@@ -20,7 +20,7 @@ export async function requireAuth(req, res, next) {
 
   const { data: profile, error: profileError } = await supabase
     .from('users')
-    .select('tenant_id, role, is_super_admin, tenant:tenants(is_suspended)')
+    .select('tenant_id, role, is_super_admin, is_active, tenant:tenants(is_suspended)')
     .eq('id', user.id)
     .single();
 
@@ -32,6 +32,10 @@ export async function requireAuth(req, res, next) {
   // donnée — sauf le super admin lui-même, qui doit pouvoir intervenir en toutes circonstances.
   if (profile.tenant?.is_suspended && !profile.is_super_admin) {
     return res.status(403).json({ error: 'Ce compte est suspendu. Contactez votre administrateur.' });
+  }
+
+  if (!profile.is_active) {
+    return res.status(403).json({ error: 'Ce compte a été désactivé.' });
   }
 
   req.user = user;

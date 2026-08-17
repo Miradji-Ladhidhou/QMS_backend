@@ -16,11 +16,11 @@ const NOTIFICATION_PREFERENCE_FIELDS = [
 
 router.use(requireAuth);
 
-// GET /api/users — membres du tenant (utilisé pour les sélecteurs d'assignation)
+// GET /api/users — membres du tenant (utilisé pour les sélecteurs d'assignation et la gestion des utilisateurs)
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, full_name, role')
+    .select('id, full_name, role, is_active')
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -28,14 +28,27 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les utilisateurs.' });
   }
 
-  res.json(data);
+  // L'email et le statut d'invitation vivent dans auth.users, pas dans public.users —
+  // un appel admin par utilisateur (liste de tenant, donc de petite taille).
+  const withAuthInfo = await Promise.all(
+    data.map(async (member) => {
+      const { data: authData } = await supabase.auth.admin.getUserById(member.id);
+      return {
+        ...member,
+        email: authData?.user?.email || null,
+        invitation_pending: !!authData?.user && !authData.user.last_sign_in_at,
+      };
+    })
+  );
+
+  res.json(withAuthInfo);
 });
 
 // GET /api/users/me — profil de l'utilisateur authentifié
 router.get('/me', async (req, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, full_name, role, tenant_id, is_super_admin')
+    .select('id, full_name, role, tenant_id, is_super_admin, is_active')
     .eq('id', req.user.id)
     .single();
 
@@ -43,8 +56,33 @@ router.get('/me', async (req, res) => {
     return res.status(404).json({ error: 'Profil introuvable.' });
   }
 
-  res.json(data);
+  res.json({ ...data, email: req.user.email });
 });
+
+// PATCH /api/users/me — modifie son propre nom complet
+router.patch(
+  '/me',
+  [body('full_name').trim().notEmpty().withMessage('Le nom complet est requis.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update({ full_name: req.body.full_name })
+      .eq('id', req.user.id)
+      .select('id, full_name, role')
+      .single();
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la mise à jour du profil.' });
+    }
+
+    res.json(data);
+  }
+);
 
 // GET /api/users/me/notification-preferences — crée les préférences par défaut si absentes
 router.get('/me/notification-preferences', async (req, res) => {
@@ -162,15 +200,90 @@ router.post(
   }
 );
 
-// PATCH /api/users/:id — modifie le rôle d'un utilisateur (admin uniquement)
+// POST /api/users/:id/resend-invite — renvoie l'email d'invitation (admin uniquement, tant que non confirmé)
+router.post('/:id/resend-invite', requireRole('owner', 'admin'), async (req, res) => {
+  const { data: target, error: targetError } = await supabase
+    .from('users')
+    .select('id, full_name')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (targetError || !target) {
+    return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.admin.getUserById(req.params.id);
+
+  if (authError || !authData?.user?.email) {
+    return res.status(404).json({ error: 'Compte introuvable.' });
+  }
+
+  if (authData.user.last_sign_in_at) {
+    return res.status(400).json({ error: 'Cet utilisateur a déjà activé son compte.' });
+  }
+
+  const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(authData.user.email, {
+    data: { full_name: target.full_name },
+  });
+
+  if (inviteError) {
+    return res.status(500).json({ error: "Erreur lors du renvoi de l'invitation." });
+  }
+
+  res.json({ ok: true });
+});
+
+// POST /api/users/:id/transfer-ownership — le owner actuel cède son rôle à un autre membre (owner uniquement)
+router.post('/:id/transfer-ownership', requireRole('owner'), async (req, res) => {
+  if (req.params.id === req.user.id) {
+    return res.status(400).json({ error: 'Vous êtes déjà propriétaire.' });
+  }
+
+  const { data: target, error: targetError } = await supabase
+    .from('users')
+    .select('id, is_active')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (targetError || !target) {
+    return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  }
+
+  if (!target.is_active) {
+    return res.status(400).json({ error: 'Ce compte est désactivé.' });
+  }
+
+  const { error: rpcError } = await supabase.rpc('transfer_ownership', {
+    p_tenant_id: req.tenantId,
+    p_current_owner_id: req.user.id,
+    p_new_owner_id: req.params.id,
+  });
+
+  if (rpcError) {
+    return res.status(500).json({ error: 'Erreur lors du transfert de propriété.' });
+  }
+
+  res.json({ ok: true });
+});
+
+// PATCH /api/users/:id — modifie le rôle et/ou le statut actif/inactif d'un utilisateur (admin uniquement)
 router.patch(
   '/:id',
   requireRole('owner', 'admin'),
-  [body('role').isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.')],
+  [
+    body('role').optional().isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
+    body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    if (!('role' in req.body) && !('is_active' in req.body)) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
     const { data: target, error: targetError } = await supabase
@@ -184,20 +297,35 @@ router.patch(
       return res.status(404).json({ error: 'Utilisateur introuvable.' });
     }
 
-    if (target.role === 'owner') {
-      return res.status(403).json({ error: 'Le rôle du propriétaire ne peut pas être modifié.' });
+    const update = {};
+
+    if ('role' in req.body) {
+      if (target.role === 'owner') {
+        return res.status(403).json({ error: 'Le rôle du propriétaire ne peut pas être modifié.' });
+      }
+      update.role = req.body.role;
+    }
+
+    if ('is_active' in req.body) {
+      if (target.role === 'owner') {
+        return res.status(403).json({ error: 'Le propriétaire ne peut pas être désactivé.' });
+      }
+      if (target.id === req.user.id) {
+        return res.status(403).json({ error: 'Vous ne pouvez pas désactiver votre propre compte.' });
+      }
+      update.is_active = req.body.is_active;
     }
 
     const { data, error } = await supabase
       .from('users')
-      .update({ role: req.body.role })
+      .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, role')
+      .select('id, full_name, role, is_active')
       .single();
 
     if (error) {
-      return res.status(500).json({ error: 'Erreur lors de la mise à jour du rôle.' });
+      return res.status(500).json({ error: 'Erreur lors de la mise à jour.' });
     }
 
     res.json(data);

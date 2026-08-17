@@ -47,6 +47,7 @@ create table users (
   is_super_admin  boolean not null default false,
   full_name       text,
   role            text not null default 'member' check (role in ('owner', 'admin', 'manager', 'member')),
+  is_active       boolean not null default true,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -449,6 +450,24 @@ security definer
 set search_path = public
 as $$
   select tenant_id from public.users where id = auth.uid();
+$$;
+
+-- Transfère le rôle owner d'un tenant à un autre membre en une seule transaction,
+-- pour ne jamais laisser un tenant sans owner ou avec deux owners en cas d'échec partiel.
+create or replace function transfer_ownership(p_tenant_id uuid, p_current_owner_id uuid, p_new_owner_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update users set role = 'owner' where id = p_new_owner_id and tenant_id = p_tenant_id;
+  if not found then
+    raise exception 'Nouveau propriétaire introuvable dans ce tenant.';
+  end if;
+
+  update users set role = 'admin' where id = p_current_owner_id and tenant_id = p_tenant_id;
+end;
 $$;
 
 -- =============================================================================
