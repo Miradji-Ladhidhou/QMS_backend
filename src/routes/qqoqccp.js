@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
+import { generateQqoqccpSuggestion } from '../services/groq.js';
 
 const router = Router();
 
-const PATCHABLE_FIELDS = ['title', 'qui', 'quoi', 'ou_', 'quand_', 'comment_', 'combien', 'pourquoi'];
+const QQOQCCP_FIELDS = ['qui', 'quoi', 'ou_', 'quand_', 'comment_', 'combien', 'pourquoi'];
+const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS];
 
 router.use(requireAuth);
 
@@ -131,6 +133,64 @@ router.patch(
     res.json(data);
   }
 );
+
+// POST /api/qqoqccp/:id/generate — suggestion IA (Groq) à partir des réponses déjà saisies
+router.post('/:id/generate', async (req, res) => {
+  const { data: analysis, error: fetchError } = await supabase
+    .from('qqoqccp_analyses')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (fetchError || !analysis) {
+    return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+  }
+
+  const filledCount = QQOQCCP_FIELDS.filter((field) => analysis[field]).length;
+  if (filledCount < 3) {
+    return res.status(400).json({ error: 'Remplissez au moins 3 des 7 questions avant de générer une proposition.' });
+  }
+
+  let suggestion;
+  try {
+    suggestion = await generateQqoqccpSuggestion({
+      qui: analysis.qui,
+      quoi: analysis.quoi,
+      ou_: analysis.ou_,
+      quand_: analysis.quand_,
+      comment_: analysis.comment_,
+      combien: analysis.combien,
+      pourquoi: analysis.pourquoi,
+    });
+  } catch (err) {
+    // L'analyse elle-même n'est pas touchée : aucune écriture en base n'a encore eu lieu
+    // à ce stade, elle reste consultable normalement même si Groq échoue.
+    return res.status(503).json({ error: `Impossible de générer une suggestion IA : ${err.message}` });
+  }
+
+  const { data, error } = await supabase
+    .from('qqoqccp_analyses')
+    .update({
+      ai_synthesis: suggestion.synthesis,
+      ai_suggested_actions: {
+        root_causes: suggestion.root_causes,
+        suggested_actions: suggestion.suggested_actions,
+        overall_priority: suggestion.overall_priority,
+      },
+      status: 'ai_generated',
+    })
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .select()
+    .single();
+
+  if (error || !data) {
+    return res.status(500).json({ error: "Erreur lors de l'enregistrement de la suggestion IA." });
+  }
+
+  res.json(data);
+});
 
 // DELETE /api/qqoqccp/:id — suppression
 router.delete('/:id', async (req, res) => {
