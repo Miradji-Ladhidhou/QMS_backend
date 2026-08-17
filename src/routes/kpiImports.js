@@ -14,12 +14,28 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 router.use(requireAuth);
 
+// Les exports Excel FR utilisent souvent le point-virgule, et un copier-coller depuis Excel
+// enregistré tel quel produit un fichier tabulé (onglets) — on détecte le séparateur le plus
+// probable plutôt que d'imposer la virgule, en comptant les occurrences sur l'en-tête.
+const CSV_DELIMITER_CANDIDATES = [',', ';', '\t'];
+
+function detectCsvDelimiter(firstLine) {
+  let best = ',';
+  let bestCount = 0;
+  for (const candidate of CSV_DELIMITER_CANDIDATES) {
+    const count = firstLine.split(candidate).length - 1;
+    if (count > bestCount) {
+      bestCount = count;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
 function parseCsvBuffer(buffer) {
   const content = buffer.toString('utf8');
-  // Les exports Excel FR utilisent souvent le point-virgule : on détecte le séparateur
-  // plutôt que d'imposer la virgule.
   const firstLine = content.split('\n')[0] || '';
-  const delimiter = firstLine.split(';').length > firstLine.split(',').length ? ';' : ',';
+  const delimiter = detectCsvDelimiter(firstLine);
   return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true });
 }
 
