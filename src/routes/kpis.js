@@ -186,6 +186,7 @@ router.get('/:id', async (req, res) => {
 // PATCH /api/kpis/:id — met à jour un ou plusieurs champs (ex: sens de l'objectif)
 router.patch(
   '/:id',
+  requireRole('owner', 'admin', 'manager'),
   [
     body('target').optional({ values: 'falsy' }).isFloat().withMessage('Objectif invalide.'),
     body('target_direction')
@@ -321,6 +322,7 @@ router.post(
 // PATCH /api/kpis/:id/records/:recordId — corrige une valeur déjà saisie
 router.patch(
   '/:id/records/:recordId',
+  requireRole('owner', 'admin', 'manager'),
   [
     body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
     body('value').optional({ values: 'falsy' }).isFloat().withMessage('Valeur invalide.'),
@@ -384,7 +386,7 @@ router.patch(
 );
 
 // DELETE /api/kpis/:id/records/:recordId — supprime une valeur précise
-router.delete('/:id/records/:recordId', async (req, res) => {
+router.delete('/:id/records/:recordId', requireRole('owner', 'admin', 'manager'), async (req, res) => {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
     .select('id')
@@ -556,7 +558,7 @@ router.post('/:id/series', SERIES_VALIDATORS, async (req, res) => {
 
 // PATCH /api/kpis/:id/series/:configId — modifie une série existante (recalcule à nouveau
 // via POST /api/kpi-imports/:importId/apply avec ce config_id une fois enregistrée).
-router.patch('/:id/series/:configId', SERIES_VALIDATORS, async (req, res) => {
+router.patch('/:id/series/:configId', requireRole('owner', 'admin', 'manager'), SERIES_VALIDATORS, async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
@@ -610,7 +612,7 @@ router.patch('/:id/series/:configId', SERIES_VALIDATORS, async (req, res) => {
 
 // DELETE /api/kpis/:id/series/:configId — supprime une série ; les valeurs qu'elle a
 // produites disparaissent avec elle (kpi_records.config_id ON DELETE CASCADE).
-router.delete('/:id/series/:configId', async (req, res) => {
+router.delete('/:id/series/:configId', requireRole('owner', 'admin', 'manager'), async (req, res) => {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
     .select('id')

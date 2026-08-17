@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 const MAX_ANCESTOR_DEPTH = 30;
@@ -107,6 +107,7 @@ router.post(
 // PATCH /api/kpi-folders/:id — renomme et/ou déplace (parent_id) un dossier
 router.patch(
   '/:id',
+  requireRole('owner', 'admin', 'manager'),
   [
     body('name').optional().trim().notEmpty().withMessage('Le nom du dossier est requis.'),
     body('parent_id').optional({ nullable: true }).custom((value) => value === null || typeof value === 'string').withMessage('Dossier parent invalide.'),
@@ -170,7 +171,7 @@ router.patch(
 // DELETE /api/kpi-folders/:id — supprime le dossier et ses sous-dossiers (cascade en base) ;
 // les KPI qu'ils contenaient reviennent à la racine (folder_id remis à null en base), ils ne
 // sont jamais supprimés par cette action.
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase
     .from('kpi_folders')
     .delete({ count: 'exact' })

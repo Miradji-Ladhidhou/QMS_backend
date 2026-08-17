@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 
@@ -12,6 +12,7 @@ const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS];
 // Mêmes valeurs que capas.js (CAPA_LEVELS) — dupliquées ici plutôt qu'importées : le prompt
 // scope les changements à ce fichier, et cette route ne doit pas modifier capas.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
+const MANAGER_ROLES = ['owner', 'admin', 'manager'];
 
 router.use(requireAuth);
 
@@ -103,7 +104,11 @@ router.post('/', CREATE_VALIDATORS, createAnalysis);
 // déboucher sur une CAPA (voir qqoqccp_analyses.linked_capa_id / capas.qqoqccp_analysis_id).
 router.post('/quick-start', CREATE_VALIDATORS, createAnalysis);
 
-// PATCH /api/qqoqccp/:id — met à jour le titre et/ou n'importe lequel des 7 champs
+// PATCH /api/qqoqccp/:id — met à jour le titre et/ou n'importe lequel des 7 champs. Un
+// member peut modifier SA PROPRE analyse tant qu'elle n'est pas encore validée (liée à une
+// CAPA) — le diagnostic guidé doit rester utilisable en autonomie (c'est ce PATCH qui porte
+// la sauvegarde automatique des 7 questions). Owner/admin/manager peuvent toujours modifier
+// n'importe quelle analyse, y compris déjà validée.
 router.patch(
   '/:id',
   [
@@ -120,6 +125,23 @@ router.patch(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: existing, error: fetchError } = await supabase
+      .from('qqoqccp_analyses')
+      .select('id, created_by, status')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !existing) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+
+    const isManager = MANAGER_ROLES.includes(req.userRole);
+    const isOwnUnvalidatedAnalysis = existing.created_by === req.user.id && existing.status !== 'validated';
+    if (!isManager && !isOwnUnvalidatedAnalysis) {
+      return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
     }
 
     const update = {};
@@ -304,7 +326,7 @@ router.post(
 );
 
 // DELETE /api/qqoqccp/:id — suppression
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase
     .from('qqoqccp_analyses')
     .delete({ count: 'exact' })

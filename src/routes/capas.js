@@ -201,8 +201,10 @@ router.post(
 
 // PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
 // assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
+// Réservé à owner/admin/manager : un member peut ouvrir une CAPA mais pas la traiter.
 router.patch(
   '/:id',
+  requireRole('owner', 'admin', 'manager'),
   [
     body('status').optional({ values: 'falsy' }).isIn(CAPA_STATUSES).withMessage('Statut invalide.'),
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
