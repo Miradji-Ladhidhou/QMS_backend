@@ -280,12 +280,14 @@ router.post('/', upload.single('file'), async (req, res) => {
   });
 });
 
-// POST /api/kpi-imports/:importId/apply — applique la recette de calcul enregistrée du KPI
-// cible aux lignes brutes de cet import, et met à jour kpi_records (upsert par période).
+// POST /api/kpi-imports/:importId/apply — applique la recette d'une série (config_id) aux
+// lignes brutes de cet import, et met à jour kpi_records (upsert par période). Un KPI pouvant
+// porter plusieurs séries, l'appel cible toujours une série précise — jamais "le" KPI — pour
+// que deux séries d'un même KPI puissent chacune avoir leur propre valeur sur une période.
 router.post(
   '/:importId/apply',
   [
-    body('kpi_id').optional({ values: 'falsy' }).isUUID().withMessage('kpi_id invalide.'),
+    body('config_id').isUUID().withMessage('config_id est requis.'),
     body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
   ],
   async (req, res) => {
@@ -310,48 +312,27 @@ router.post(
       return res.status(404).json({ error: 'Import introuvable.' });
     }
 
-    const targetKpiId = req.body.kpi_id || importRow.kpi_id;
-    if (!targetKpiId) {
-      return res.status(400).json({ error: 'Aucun KPI cible : précisez kpi_id pour rattacher cet import à un KPI.' });
-    }
-
-    if (req.body.kpi_id && req.body.kpi_id !== importRow.kpi_id) {
-      const { data: kpiCheck, error: kpiCheckError } = await supabase
-        .from('kpis')
-        .select('id')
-        .eq('tenant_id', req.tenantId)
-        .eq('id', targetKpiId)
-        .single();
-
-      if (kpiCheckError || !kpiCheck) {
-        return res.status(404).json({ error: 'KPI introuvable.' });
-      }
-
-      // Rattache l'import à ce KPI seulement s'il n'appartient encore à personne (premier
-      // arrivé) : un import déjà attribué à un autre KPI reste réutilisable en lecture par
-      // d'autres KPI (chacun avec sa propre recette) sans jamais changer de propriétaire —
-      // sinon "Historique des imports" du KPI d'origine perdrait cette entrée à chaque
-      // réutilisation. Un aperçu (dry_run) n'a de toute façon aucun effet de bord.
-      if (!dryRun && !importRow.kpi_id) {
-        await supabase.from('kpi_raw_imports').update({ kpi_id: targetKpiId }).eq('id', importRow.id);
-      }
-    }
-
     const { data: config, error: configError } = await supabase
       .from('kpi_calculation_configs')
       .select('*')
       .eq('tenant_id', req.tenantId)
-      .eq('kpi_id', targetKpiId)
-      .maybeSingle();
+      .eq('id', req.body.config_id)
+      .single();
 
-    if (configError) {
-      return res.status(500).json({ error: 'Erreur lors de la récupération de la configuration de calcul.' });
+    if (configError || !config) {
+      return res.status(404).json({ error: 'Configuration de calcul introuvable.' });
     }
-    if (!config) {
-      return res.status(400).json({
-        error:
-          "Aucune configuration de calcul enregistrée pour ce KPI. Créez-la via POST /api/kpis/:id/calculation-config avant d'appliquer un import.",
-      });
+
+    const targetKpiId = config.kpi_id;
+
+    // Rattache l'import à ce KPI seulement s'il n'appartient encore à personne (premier
+    // arrivé) : un import déjà attribué à un autre KPI reste réutilisable en lecture par
+    // d'autres KPI ou d'autres séries (chacune avec sa propre recette) sans jamais changer
+    // de propriétaire — sinon "Historique des imports" du KPI d'origine perdrait cette
+    // entrée à chaque réutilisation. Un aperçu (dry_run) n'a de toute façon aucun effet de
+    // bord.
+    if (!dryRun && !importRow.kpi_id) {
+      await supabase.from('kpi_raw_imports').update({ kpi_id: targetKpiId }).eq('id', importRow.id);
     }
 
     const { data: rawRows, error: rowsError } = await supabase
@@ -386,6 +367,7 @@ router.post(
       .map((period) => ({
         tenant_id: req.tenantId,
         kpi_id: targetKpiId,
+        config_id: config.id,
         period_date: period.period_date,
         value: period.value,
         source: 'import',
@@ -397,7 +379,7 @@ router.post(
     if (!dryRun && upsertRows.length > 0) {
       const { data: upserted, error: upsertError } = await supabase
         .from('kpi_records')
-        .upsert(upsertRows, { onConflict: 'kpi_id,period_date' })
+        .upsert(upsertRows, { onConflict: 'config_id,period_date' })
         .select(RECORDS_SELECT);
 
       if (upsertError) {
@@ -409,6 +391,8 @@ router.post(
     res.status(200).json({
       import_id: importRow.id,
       kpi_id: targetKpiId,
+      config_id: config.id,
+      label: config.label,
       calc_type: config.calc_type,
       dry_run: dryRun,
       rows_total: rawRows.length,

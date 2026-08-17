@@ -16,7 +16,7 @@ export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count',
 const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type'];
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
-  'id, period_date, value, comment, source, source_import_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
+  'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
 
 router.use(requireAuth);
 
@@ -24,10 +24,12 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    // calculation_config (calc_type surtout) permet au frontend de choisir la bonne
-    // visualisation par carte (tendance vs répartition) sans une requête par KPI —
-    // renvoyé comme objet unique grâce à unique(kpi_id) sur kpi_calculation_configs.
-    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_config:kpi_calculation_configs(calc_type, group_by_column)`)
+    // calculation_configs (toutes les séries du KPI, id+label+calc_type surtout) permet au
+    // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
+    // répartition) et de nommer chaque courbe, sans une requête par KPI.
+    .select(
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`
+    )
     .eq('tenant_id', req.tenantId)
     .order('name', { ascending: true });
 
@@ -141,7 +143,9 @@ router.post(
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
-    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_config:kpi_calculation_configs(calc_type, group_by_column)`)
+    .select(
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .order('period_date', { foreignTable: 'kpi_records', ascending: true })
@@ -310,10 +314,12 @@ router.patch(
     }
 
     // Un humain qui corrige une valeur calculée en fait, de fait, une valeur saisie
-    // manuellement — elle ne doit plus être présentée comme issue de l'import.
+    // manuellement, détachée de la série qui l'avait produite — elle ne doit plus être
+    // présentée comme issue de l'import.
     if ('value' in update) {
       update.source = 'manual';
       update.source_import_id = null;
+      update.config_id = null;
     }
 
     const { data, error } = await supabase
@@ -367,10 +373,70 @@ router.delete('/:id/records/:recordId', async (req, res) => {
   res.status(204).send();
 });
 
-// GET /api/kpis/:id/calculation-config — la recette actuelle du KPI, si une a déjà été
-// enregistrée (404 sinon) : sert au frontend à proposer "réutiliser" plutôt que de forcer
-// une reconfiguration à chaque import, et à préremplir le formulaire d'édition seule.
-router.get('/:id/calculation-config', async (req, res) => {
+const SERIES_VALIDATORS = [
+  body('label').trim().notEmpty().withMessage('Le nom de la série est requis.'),
+  body('calc_type').isIn(KPI_CALC_TYPES).withMessage('Type de calcul invalide.'),
+  body('source_column').optional({ values: 'falsy' }).trim(),
+  body('filters').optional().isArray().withMessage('filters doit être un tableau.'),
+  body('filter_logic').optional({ values: 'falsy' }).isIn(['all', 'any']).withMessage('filter_logic invalide.'),
+  body('group_by_column').optional({ values: 'falsy' }).trim(),
+  body('period_column').optional({ values: 'falsy' }).trim(),
+];
+
+function parseSeriesBody(req) {
+  const {
+    label,
+    calc_type: calcType,
+    source_column: sourceColumn,
+    filters = [],
+    filter_logic: filterLogic = 'all',
+    group_by_column: groupByColumn,
+    period_column: periodColumn,
+  } = req.body;
+
+  const filtersError = validateFilters(filters);
+  if (filtersError) return { error: filtersError };
+  if (calcType === 'ratio' && filters.length === 0) {
+    return { error: 'Au moins une condition (filters) est requise pour un calcul de type ratio.' };
+  }
+  if (['sum', 'average', 'min', 'max'].includes(calcType) && !sourceColumn) {
+    return { error: `source_column est requis pour un calcul de type ${calcType}.` };
+  }
+  if (calcType === 'count_grouped' && !groupByColumn) {
+    return { error: 'group_by_column est requis pour un calcul de type count_grouped.' };
+  }
+
+  return { label, calcType, sourceColumn, filters, filterLogic, groupByColumn, periodColumn };
+}
+
+// Avertissement non bloquant : les colonnes référencées ne figurent pas dans le dernier
+// import de ce KPI, mais un futur fichier pourrait tout de même les contenir (colonnes
+// renommées entre-temps, ou série créée avant le premier import).
+async function computeColumnWarning(tenantId, kpiId, referencedColumns) {
+  if (referencedColumns.length === 0) return null;
+
+  const { data: lastImport } = await supabase
+    .from('kpi_raw_imports')
+    .select('detected_columns')
+    .eq('tenant_id', tenantId)
+    .eq('kpi_id', kpiId)
+    .order('imported_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!lastImport) return null;
+
+  const knownColumns = new Set(lastImport.detected_columns || []);
+  const unknownColumns = [...new Set(referencedColumns)].filter((column) => !knownColumns.has(column));
+  return unknownColumns.length > 0
+    ? `Colonne(s) absente(s) du dernier import de ce KPI : ${unknownColumns.join(', ')}. Un futur fichier pourrait néanmoins les contenir.`
+    : null;
+}
+
+// GET /api/kpis/:id/series — toutes les séries (recettes de calcul nommées) de ce KPI. Un
+// KPI peut en porter plusieurs, affichées ensemble sur le même graphique (ex : "Conforme"
+// et "Non conforme" comparées sur la même période plutôt que deux KPI séparés).
+router.get('/:id/series', async (req, res) => {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
     .select('id')
@@ -387,120 +453,150 @@ router.get('/:id/calculation-config', async (req, res) => {
     .select('*')
     .eq('tenant_id', req.tenantId)
     .eq('kpi_id', kpi.id)
-    .maybeSingle();
+    .order('created_at', { ascending: true });
 
   if (error) {
-    return res.status(500).json({ error: 'Erreur lors de la récupération de la configuration de calcul.' });
+    return res.status(500).json({ error: 'Erreur lors de la récupération des séries.' });
   }
 
-  // "Pas encore de recette" est un état normal pour ce endpoint (dont le rôle est justement
-  // de vérifier son existence), pas une erreur — 200 + null plutôt que 404, pour ne pas
-  // polluer la console du navigateur d'une fausse alerte à chaque premier import d'un KPI.
-  res.json(data || null);
+  res.json(data);
 });
 
-// POST /api/kpis/:id/calculation-config — enregistre ou met à jour la recette de calcul
-// appliquée aux imports génériques de ce KPI (voir POST /api/kpi-imports/:importId/apply).
-router.post(
-  '/:id/calculation-config',
-  [
-    body('calc_type').isIn(KPI_CALC_TYPES).withMessage('Type de calcul invalide.'),
-    body('source_column').optional({ values: 'falsy' }).trim(),
-    body('filters').optional().isArray().withMessage('filters doit être un tableau.'),
-    body('filter_logic').optional({ values: 'falsy' }).isIn(['all', 'any']).withMessage('filter_logic invalide.'),
-    body('group_by_column').optional({ values: 'falsy' }).trim(),
-    body('period_column').optional({ values: 'falsy' }).trim(),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
-    }
-
-    const { data: kpi, error: kpiError } = await supabase
-      .from('kpis')
-      .select('id')
-      .eq('tenant_id', req.tenantId)
-      .eq('id', req.params.id)
-      .single();
-
-    if (kpiError || !kpi) {
-      return res.status(404).json({ error: 'KPI introuvable.' });
-    }
-
-    const {
-      calc_type: calcType,
-      source_column: sourceColumn,
-      filters = [],
-      filter_logic: filterLogic = 'all',
-      group_by_column: groupByColumn,
-      period_column: periodColumn,
-    } = req.body;
-
-    const filtersError = validateFilters(filters);
-    if (filtersError) {
-      return res.status(400).json({ error: filtersError });
-    }
-    if (calcType === 'ratio' && filters.length === 0) {
-      return res.status(400).json({ error: 'Au moins une condition (filters) est requise pour un calcul de type ratio.' });
-    }
-    if ((calcType === 'sum' || calcType === 'average' || calcType === 'min' || calcType === 'max') && !sourceColumn) {
-      return res.status(400).json({ error: `source_column est requis pour un calcul de type ${calcType}.` });
-    }
-    if (calcType === 'count_grouped' && !groupByColumn) {
-      return res.status(400).json({ error: 'group_by_column est requis pour un calcul de type count_grouped.' });
-    }
-
-    // Avertissement non bloquant : les colonnes référencées ne figurent pas dans le
-    // dernier import de ce KPI, mais un futur fichier pourrait tout de même les contenir
-    // (colonnes renommées entre-temps, ou config créée avant le premier import).
-    let warning = null;
-    const referencedColumns = [sourceColumn, groupByColumn, periodColumn, ...filters.map((f) => f.column)].filter(Boolean);
-    if (referencedColumns.length > 0) {
-      const { data: lastImport } = await supabase
-        .from('kpi_raw_imports')
-        .select('detected_columns')
-        .eq('tenant_id', req.tenantId)
-        .eq('kpi_id', kpi.id)
-        .order('imported_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (lastImport) {
-        const knownColumns = new Set(lastImport.detected_columns || []);
-        const unknownColumns = [...new Set(referencedColumns)].filter((column) => !knownColumns.has(column));
-        if (unknownColumns.length > 0) {
-          warning = `Colonne(s) absente(s) du dernier import de ce KPI : ${unknownColumns.join(', ')}. Un futur fichier pourrait néanmoins les contenir.`;
-        }
-      }
-    }
-
-    const { data, error } = await supabase
-      .from('kpi_calculation_configs')
-      .upsert(
-        {
-          tenant_id: req.tenantId,
-          kpi_id: kpi.id,
-          calc_type: calcType,
-          source_column: sourceColumn || null,
-          filters,
-          filter_logic: filterLogic,
-          group_by_column: groupByColumn || null,
-          period_column: periodColumn || null,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'kpi_id' }
-      )
-      .select()
-      .single();
-
-    if (error) {
-      return res.status(500).json({ error: "Erreur lors de l'enregistrement de la configuration de calcul." });
-    }
-
-    res.status(200).json({ ...data, warning });
+// POST /api/kpis/:id/series — crée une nouvelle série (recette de calcul nommée).
+router.post('/:id/series', SERIES_VALIDATORS, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
   }
-);
+
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const parsed = parseSeriesBody(req);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const referencedColumns = [parsed.sourceColumn, parsed.groupByColumn, parsed.periodColumn, ...parsed.filters.map((f) => f.column)].filter(
+    Boolean
+  );
+  const warning = await computeColumnWarning(req.tenantId, kpi.id, referencedColumns);
+
+  const { data, error } = await supabase
+    .from('kpi_calculation_configs')
+    .insert({
+      tenant_id: req.tenantId,
+      kpi_id: kpi.id,
+      label: parsed.label,
+      calc_type: parsed.calcType,
+      source_column: parsed.sourceColumn || null,
+      filters: parsed.filters,
+      filter_logic: parsed.filterLogic,
+      group_by_column: parsed.groupByColumn || null,
+      period_column: parsed.periodColumn || null,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: "Erreur lors de la création de la série." });
+  }
+
+  res.status(201).json({ ...data, warning });
+});
+
+// PATCH /api/kpis/:id/series/:configId — modifie une série existante (recalcule à nouveau
+// via POST /api/kpi-imports/:importId/apply avec ce config_id une fois enregistrée).
+router.patch('/:id/series/:configId', SERIES_VALIDATORS, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+  }
+
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const parsed = parseSeriesBody(req);
+  if (parsed.error) {
+    return res.status(400).json({ error: parsed.error });
+  }
+
+  const referencedColumns = [parsed.sourceColumn, parsed.groupByColumn, parsed.periodColumn, ...parsed.filters.map((f) => f.column)].filter(
+    Boolean
+  );
+  const warning = await computeColumnWarning(req.tenantId, kpi.id, referencedColumns);
+
+  const { data, error } = await supabase
+    .from('kpi_calculation_configs')
+    .update({
+      label: parsed.label,
+      calc_type: parsed.calcType,
+      source_column: parsed.sourceColumn || null,
+      filters: parsed.filters,
+      filter_logic: parsed.filterLogic,
+      group_by_column: parsed.groupByColumn || null,
+      period_column: parsed.periodColumn || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .eq('id', req.params.configId)
+    .select()
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Série introuvable.' });
+  }
+
+  res.status(200).json({ ...data, warning });
+});
+
+// DELETE /api/kpis/:id/series/:configId — supprime une série ; les valeurs qu'elle a
+// produites disparaissent avec elle (kpi_records.config_id ON DELETE CASCADE).
+router.delete('/:id/series/:configId', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const { error, count } = await supabase
+    .from('kpi_calculation_configs')
+    .delete({ count: 'exact' })
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .eq('id', req.params.configId);
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression de la série.' });
+  }
+  if (!count) {
+    return res.status(404).json({ error: 'Série introuvable.' });
+  }
+
+  res.status(204).send();
+});
 
 // GET /api/kpis/:id/imports — historique des imports pour ce KPI (fichier, qui, quand,
 // combien de lignes, quelle(s) période(s) affectée(s)) — remplace l'ancien
@@ -582,7 +678,7 @@ router.get('/:id/records/:recordId/proof', async (req, res) => {
 
   const { data: record, error: recordError } = await supabase
     .from('kpi_records')
-    .select('id, period_date, value, source, source_import_id')
+    .select('id, period_date, value, source, source_import_id, config_id')
     .eq('tenant_id', req.tenantId)
     .eq('kpi_id', kpi.id)
     .eq('id', req.params.recordId)
@@ -592,19 +688,22 @@ router.get('/:id/records/:recordId/proof', async (req, res) => {
     return res.status(404).json({ error: 'Valeur introuvable.' });
   }
 
-  if (record.source !== 'import' || !record.source_import_id) {
+  if (record.source !== 'import' || !record.source_import_id || !record.config_id) {
     return res.status(400).json({ error: "Cette valeur n'a pas été calculée depuis un import : aucune preuve à afficher." });
   }
 
+  // La preuve doit reproduire la recette exacte qui a produit CETTE valeur — un KPI pouvant
+  // désormais porter plusieurs séries, on lit la recette via le config_id propre à
+  // l'enregistrement plutôt que "la" configuration du KPI.
   const { data: config, error: configError } = await supabase
     .from('kpi_calculation_configs')
     .select('*')
     .eq('tenant_id', req.tenantId)
-    .eq('kpi_id', kpi.id)
-    .maybeSingle();
+    .eq('id', record.config_id)
+    .single();
 
   if (configError || !config) {
-    return res.status(404).json({ error: 'Configuration de calcul introuvable pour ce KPI.' });
+    return res.status(404).json({ error: 'Configuration de calcul introuvable pour cette série.' });
   }
 
   const { data: importRow, error: importError } = await supabase
@@ -656,6 +755,7 @@ router.get('/:id/records/:recordId/proof', async (req, res) => {
       imported_at: importRow.imported_at,
       imported_by_user: importRow.imported_by_user,
     },
+    series: { id: config.id, label: config.label },
     calc_type: config.calc_type,
     description,
     columns: importRow.detected_columns,
@@ -682,12 +782,15 @@ router.get('/:id/distribution', async (req, res) => {
     return res.status(404).json({ error: 'KPI introuvable.' });
   }
 
-  const { data: config, error: configError } = await supabase
-    .from('kpi_calculation_configs')
-    .select('*')
-    .eq('tenant_id', req.tenantId)
-    .eq('kpi_id', kpi.id)
-    .maybeSingle();
+  // Un KPI pouvant porter plusieurs séries, ?config_id précise laquelle afficher ; à défaut,
+  // la première série en répartition par catégorie trouvée pour ce KPI.
+  let configQuery = supabase.from('kpi_calculation_configs').select('*').eq('tenant_id', req.tenantId).eq('kpi_id', kpi.id);
+  configQuery = req.query.config_id
+    ? configQuery.eq('id', req.query.config_id)
+    : configQuery.eq('calc_type', 'count_grouped').limit(1);
+
+  const { data: configRows, error: configError } = await configQuery;
+  const config = (configRows || [])[0];
 
   if (configError || !config) {
     return res.status(404).json({ error: 'Aucune configuration de calcul pour ce KPI.' });
