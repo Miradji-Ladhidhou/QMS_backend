@@ -23,11 +23,11 @@ function formatDateTime(dateStr) {
 
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js) : neutre si pas d'objectif ou pas
 // encore de valeur, sinon atteint/non atteint selon le sens de l'objectif.
-function getKpiStatus(lastValue, target, targetDirection) {
-  if (lastValue === null || lastValue === undefined || target === null || target === undefined) {
+function getKpiStatus(value, target, targetDirection) {
+  if (value === null || value === undefined || target === null || target === undefined) {
     return 'neutral';
   }
-  const meetsTarget = targetDirection === 'max' ? lastValue <= target : lastValue >= target;
+  const meetsTarget = targetDirection === 'max' ? value <= target : value >= target;
   return meetsTarget ? 'good' : 'bad';
 }
 
@@ -145,10 +145,12 @@ const RECORD_ROWS_MAX = 12;
 function drawKpiSection(doc, tenantName, kpi, detailStats) {
   const records = [...kpi.records].sort((a, b) => (a.period_date > b.period_date ? 1 : -1));
   const lastRecords = records.slice(-RECORD_ROWS_MAX);
-  const lastRecord = records[records.length - 1];
+  // Le statut et la valeur mise en avant reflètent la moyenne de toutes les périodes
+  // enregistrées, pas seulement la dernière — cohérent avec la carte KPI du frontend.
+  const averageValue = records.length > 0 ? Number((records.reduce((sum, r) => sum + r.value, 0) / records.length).toFixed(2)) : null;
   const targetDirection = kpi.target_direction || 'min';
   const hasTarget = kpi.target !== null && kpi.target !== undefined;
-  const status = getKpiStatus(lastRecord?.value, kpi.target, targetDirection);
+  const status = getKpiStatus(averageValue, kpi.target, targetDirection);
   const isImportBased = kpi.calculation_type === 'import';
 
   // 32pt titre+objectif avant le graphique, CHART_HEIGHT pour le graphique, puis marge/
@@ -170,9 +172,9 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
   const targetLine = hasTarget
     ? `Objectif : ${targetDirection === 'max' ? '<=' : '>='} ${kpi.target} ${kpi.unit || ''}`
     : 'Objectif : non défini';
-  const lastValueLine = lastRecord ? `Dernière valeur : ${lastRecord.value} ${kpi.unit || ''}` : 'Aucune valeur enregistrée';
+  const averageValueLine = averageValue !== null ? `Moyenne : ${averageValue} ${kpi.unit || ''}` : 'Aucune valeur enregistrée';
 
-  doc.fontSize(9).fillColor('#555555').text(`${targetLine}    —    ${lastValueLine}`, PAGE_MARGIN, sectionTop + 16);
+  doc.fontSize(9).fillColor('#555555').text(`${targetLine}    —    ${averageValueLine}`, PAGE_MARGIN, sectionTop + 16);
 
   const chartY = sectionTop + 32;
   drawTrendChart(doc, { x: PAGE_MARGIN, y: chartY, width: 230, height: CHART_HEIGHT, records: lastRecords, target: kpi.target });
@@ -239,7 +241,7 @@ function drawSummaryPage(doc, tenantName, kpis) {
   function drawHeaderRow() {
     doc.fontSize(8).fillColor(MUTED);
     doc.text('KPI', PAGE_MARGIN, rowY, { width: CONTENT_WIDTH * columns.name });
-    doc.text('Dernière valeur', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, { width: CONTENT_WIDTH * columns.value });
+    doc.text('Moyenne', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, { width: CONTENT_WIDTH * columns.value });
     doc.text('Objectif', PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.value), rowY, {
       width: CONTENT_WIDTH * columns.target,
     });
@@ -267,14 +269,14 @@ function drawSummaryPage(doc, tenantName, kpis) {
     }
 
     const records = [...kpi.records].sort((a, b) => (a.period_date > b.period_date ? 1 : -1));
-    const lastRecord = records[records.length - 1];
+    const averageValue = records.length > 0 ? Number((records.reduce((sum, r) => sum + r.value, 0) / records.length).toFixed(2)) : null;
     const targetDirection = kpi.target_direction || 'min';
     const hasTarget = kpi.target !== null && kpi.target !== undefined;
-    const status = getKpiStatus(lastRecord?.value, kpi.target, targetDirection);
+    const status = getKpiStatus(averageValue, kpi.target, targetDirection);
 
     doc.fontSize(9).fillColor(INK);
     doc.text(kpi.name, PAGE_MARGIN, rowY, { width: CONTENT_WIDTH * columns.name });
-    doc.text(lastRecord ? `${lastRecord.value} ${kpi.unit || ''}` : '—', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, {
+    doc.text(averageValue !== null ? `${averageValue} ${kpi.unit || ''}` : '—', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, {
       width: CONTENT_WIDTH * columns.value,
     });
     doc.text(
