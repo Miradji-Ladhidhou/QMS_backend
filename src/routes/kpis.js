@@ -505,6 +505,12 @@ router.post(
 // GET /api/kpis/:id/imports — historique des imports pour ce KPI (fichier, qui, quand,
 // combien de lignes, quelle(s) période(s) affectée(s)) — remplace l'ancien
 // GET .../import-batches, sur le nouveau système générique.
+//
+// Dérivé de kpi_records.source_import_id plutôt que de kpi_raw_imports.kpi_id : un même
+// import peut désormais être réutilisé par plusieurs KPI (POST .../apply avec un kpi_id
+// différent, sans jamais réattribuer la propriété de l'import), donc "quel import
+// appartient à ce KPI" n'identifie plus fiablement ses imports — "quel import a produit
+// les valeurs de ce KPI" si.
 router.get('/:id/imports', async (req, res) => {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
@@ -517,32 +523,37 @@ router.get('/:id/imports', async (req, res) => {
     return res.status(404).json({ error: 'KPI introuvable.' });
   }
 
+  const { data: records, error: recordsError } = await supabase
+    .from('kpi_records')
+    .select('source_import_id, period_date')
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', kpi.id)
+    .not('source_import_id', 'is', null);
+
+  if (recordsError) {
+    return res.status(500).json({ error: "Impossible de récupérer l'historique des imports." });
+  }
+
+  const affectedPeriodsByImport = {};
+  for (const record of records || []) {
+    const list = (affectedPeriodsByImport[record.source_import_id] ||= []);
+    list.push(record.period_date);
+  }
+
+  const importIds = Object.keys(affectedPeriodsByImport);
+  if (importIds.length === 0) {
+    return res.json([]);
+  }
+
   const { data: imports, error } = await supabase
     .from('kpi_raw_imports')
     .select('id, file_name, imported_at, row_count, imported_by_user:users!kpi_raw_imports_imported_by_fkey(id, full_name)')
     .eq('tenant_id', req.tenantId)
-    .eq('kpi_id', kpi.id)
+    .in('id', importIds)
     .order('imported_at', { ascending: false });
 
   if (error) {
     return res.status(500).json({ error: "Impossible de récupérer l'historique des imports." });
-  }
-
-  const importIds = imports.map((imp) => imp.id);
-  const affectedPeriodsByImport = {};
-
-  if (importIds.length > 0) {
-    const { data: records } = await supabase
-      .from('kpi_records')
-      .select('source_import_id, period_date')
-      .eq('tenant_id', req.tenantId)
-      .eq('kpi_id', kpi.id)
-      .in('source_import_id', importIds);
-
-    for (const record of records || []) {
-      const list = (affectedPeriodsByImport[record.source_import_id] ||= []);
-      list.push(record.period_date);
-    }
   }
 
   res.json(

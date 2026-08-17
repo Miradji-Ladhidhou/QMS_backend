@@ -125,6 +125,62 @@ async function parseExcelBuffer(buffer, requestedSheetName) {
   return { sheetNames, sheetUsed: worksheet.name, rows };
 }
 
+// GET /api/kpi-imports?limit=20 — imports récents du tenant, pour réutiliser un fichier déjà
+// déposé (mêmes lignes brutes) sur un autre KPI sans avoir à le réimporter. Volontairement
+// pas filtré par KPI : n'importe quel import du tenant peut être réutilisé par n'importe quel
+// KPI (chacun applique sa propre recette aux mêmes données), cf. POST .../apply.
+router.get('/', async (req, res) => {
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+
+  const { data, error } = await supabase
+    .from('kpi_raw_imports')
+    .select('id, file_name, imported_at, row_count, detected_columns, kpi_id, kpi:kpis(id, name)')
+    .eq('tenant_id', req.tenantId)
+    .order('imported_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les imports récents.' });
+  }
+
+  res.json(data);
+});
+
+// GET /api/kpi-imports/:importId — détail d'un import déjà déposé (colonnes + aperçu des 5
+// premières lignes), même forme que la réponse de POST / — permet de reprendre le wizard
+// directement à l'étape de configuration sans redéposer le fichier.
+router.get('/:importId', async (req, res) => {
+  const { data: importRow, error: importError } = await supabase
+    .from('kpi_raw_imports')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.importId)
+    .single();
+
+  if (importError || !importRow) {
+    return res.status(404).json({ error: 'Import introuvable.' });
+  }
+
+  const { data: sampleRows, error: rowsError } = await supabase
+    .from('kpi_raw_rows')
+    .select('row_data')
+    .eq('tenant_id', req.tenantId)
+    .eq('import_id', importRow.id)
+    .order('row_index', { ascending: true })
+    .limit(5);
+
+  if (rowsError) {
+    return res.status(500).json({ error: 'Erreur lors de la récupération des lignes importées.' });
+  }
+
+  res.json({
+    import: importRow,
+    columns: importRow.detected_columns,
+    row_count: importRow.row_count,
+    sample: (sampleRows || []).map((row) => row.row_data),
+  });
+});
+
 // POST /api/kpi-imports — dépose un fichier CSV/Excel de structure arbitraire. Ne calcule
 // rien : détecte les colonnes et stocke chaque ligne telle quelle en JSONB (kpi_raw_rows),
 // pour que la recette de calcul (kpi_calculation_configs) soit choisie ensuite, en toute
@@ -271,8 +327,12 @@ router.post(
         return res.status(404).json({ error: 'KPI introuvable.' });
       }
 
-      // Un aperçu (dry_run) ne doit avoir aucun effet de bord, y compris le rattachement.
-      if (!dryRun) {
+      // Rattache l'import à ce KPI seulement s'il n'appartient encore à personne (premier
+      // arrivé) : un import déjà attribué à un autre KPI reste réutilisable en lecture par
+      // d'autres KPI (chacun avec sa propre recette) sans jamais changer de propriétaire —
+      // sinon "Historique des imports" du KPI d'origine perdrait cette entrée à chaque
+      // réutilisation. Un aperçu (dry_run) n'a de toute façon aucun effet de bord.
+      if (!dryRun && !importRow.kpi_id) {
         await supabase.from('kpi_raw_imports').update({ kpi_id: targetKpiId }).eq('id', importRow.id);
       }
     }
