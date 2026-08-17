@@ -392,11 +392,11 @@ router.get('/:id/calculation-config', async (req, res) => {
   if (error) {
     return res.status(500).json({ error: 'Erreur lors de la récupération de la configuration de calcul.' });
   }
-  if (!data) {
-    return res.status(404).json({ error: 'Aucune configuration de calcul pour ce KPI.' });
-  }
 
-  res.json(data);
+  // "Pas encore de recette" est un état normal pour ce endpoint (dont le rôle est justement
+  // de vérifier son existence), pas une erreur — 200 + null plutôt que 404, pour ne pas
+  // polluer la console du navigateur d'une fausse alerte à chaque premier import d'un KPI.
+  res.json(data || null);
 });
 
 // POST /api/kpis/:id/calculation-config — enregistre ou met à jour la recette de calcul
