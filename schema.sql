@@ -26,22 +26,29 @@ $$;
 -- =============================================================================
 
 create table tenants (
-  id          uuid primary key default gen_random_uuid(),
-  name        text not null,
-  slug        text not null unique,
-  plan        text not null default 'free' check (plan in ('free', 'starter', 'pro', 'enterprise')),
-  logo_url    text,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  id            uuid primary key default gen_random_uuid(),
+  name          text not null,
+  slug          text not null unique,
+  plan          text not null default 'free' check (plan in ('free', 'starter', 'pro', 'enterprise')),
+  logo_url      text,
+  -- Géré depuis l'espace super admin (voir routes/superAdmin.js) : un tenant suspendu ne
+  -- peut plus être utilisé (requireAuth le bloque), sans supprimer aucune de ses données.
+  is_suspended  boolean not null default false,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
 );
 
 create table users (
-  id          uuid primary key references auth.users (id) on delete cascade,
-  tenant_id   uuid not null references tenants (id) on delete cascade,
-  full_name   text,
-  role        text not null default 'member' check (role in ('owner', 'admin', 'manager', 'member')),
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  id              uuid primary key references auth.users (id) on delete cascade,
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  -- Transverse à tous les tenants, indépendant de role/tenant_id — un super admin gère la
+  -- plateforme (liste des tenants, suspension...), pas les données d'un tenant en particulier.
+  -- Ne se modifie qu'en base : aucune UI ne permet de se l'auto-attribuer.
+  is_super_admin  boolean not null default false,
+  full_name       text,
+  role            text not null default 'member' check (role in ('owner', 'admin', 'manager', 'member')),
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
 );
 
 create table document_categories (
