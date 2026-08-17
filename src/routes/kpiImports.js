@@ -16,17 +16,27 @@ router.use(requireAuth);
 
 // Les exports Excel FR utilisent souvent le point-virgule, et un copier-coller depuis Excel
 // enregistré tel quel produit un fichier tabulé (onglets) — on détecte le séparateur le plus
-// probable plutôt que d'imposer la virgule, en comptant les occurrences sur l'en-tête.
+// probable plutôt que d'imposer la virgule.
 const CSV_DELIMITER_CANDIDATES = [',', ';', '\t'];
+// Certains exports ajoutent une ou plusieurs lignes de titre/préambule avant les vraies
+// colonnes (ex : "Tableau 1", date d'export...) — postuler que la ligne 1 est toujours
+// l'en-tête casse ces fichiers (une seule colonne détectée, aucune valeur, cf. bug signalé).
+const MAX_HEADER_SCAN_LINES = 10;
 
-function detectCsvDelimiter(firstLine) {
-  let best = ',';
-  let bestCount = 0;
+// Cherche, parmi les premières lignes et les séparateurs plausibles, la combinaison qui
+// découpe le plus de champs : c'est presque toujours la vraie ligne d'en-têtes avec le vrai
+// séparateur, une ligne de titre n'ayant qu'un ou deux champs quel que soit le séparateur
+// essayé. Résout délimiteur et ligne d'en-tête en une seule passe plutôt que deux, pour ne
+// pas devoir deviner l'un avant l'autre.
+function detectDelimiterAndHeaderLine(lines) {
+  const scanLimit = Math.min(lines.length, MAX_HEADER_SCAN_LINES);
+  let best = { delimiter: ',', headerLine: 1, count: 0 };
   for (const candidate of CSV_DELIMITER_CANDIDATES) {
-    const count = firstLine.split(candidate).length - 1;
-    if (count > bestCount) {
-      bestCount = count;
-      best = candidate;
+    for (let i = 0; i < scanLimit; i++) {
+      const count = lines[i].split(candidate).length;
+      if (count > best.count) {
+        best = { delimiter: candidate, headerLine: i + 1, count };
+      }
     }
   }
   return best;
@@ -34,9 +44,9 @@ function detectCsvDelimiter(firstLine) {
 
 function parseCsvBuffer(buffer) {
   const content = buffer.toString('utf8');
-  const firstLine = content.split('\n')[0] || '';
-  const delimiter = detectCsvDelimiter(firstLine);
-  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true });
+  const lines = content.split(/\r\n|\n/);
+  const { delimiter, headerLine } = detectDelimiterAndHeaderLine(lines);
+  return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, from_line: headerLine });
 }
 
 // Convertit une cellule exceljs en valeur simple : les dates natives Excel sont ramenées à
@@ -51,6 +61,26 @@ function cellToValue(cell) {
     if ('richText' in raw) return raw.richText.map((part) => part.text).join('');
   }
   return raw;
+}
+
+// Même logique que detectDelimiterAndHeaderLine, côté Excel : repère la première ligne, parmi
+// les premières du classeur, qui a le plus de cellules remplies — une ligne de titre au-dessus
+// des vraies colonnes n'occupe presque toujours qu'une seule cellule.
+function findExcelHeaderRowNumber(worksheet) {
+  const scanLimit = Math.min(worksheet.rowCount || MAX_HEADER_SCAN_LINES, MAX_HEADER_SCAN_LINES);
+  let bestRow = 1;
+  let bestCount = -1;
+  for (let rowNumber = 1; rowNumber <= scanLimit; rowNumber++) {
+    let count = 0;
+    worksheet.getRow(rowNumber).eachCell({ includeEmpty: false }, () => {
+      count += 1;
+    });
+    if (count > bestCount) {
+      bestCount = count;
+      bestRow = rowNumber;
+    }
+  }
+  return bestRow;
 }
 
 async function parseExcelBuffer(buffer, requestedSheetName) {
@@ -71,14 +101,16 @@ async function parseExcelBuffer(buffer, requestedSheetName) {
     throw error;
   }
 
+  const headerRowNumber = findExcelHeaderRowNumber(worksheet);
+
   const headers = [];
-  worksheet.getRow(1).eachCell({ includeEmpty: false }, (cell, colNumber) => {
+  worksheet.getRow(headerRowNumber).eachCell({ includeEmpty: false }, (cell, colNumber) => {
     headers[colNumber] = String(cellToValue(cell) ?? '').trim();
   });
 
   const rows = [];
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-    if (rowNumber === 1) return;
+    if (rowNumber <= headerRowNumber) return;
     const rowObject = {};
     let hasValue = false;
     headers.forEach((header, colNumber) => {
