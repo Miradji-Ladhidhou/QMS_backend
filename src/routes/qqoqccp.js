@@ -42,51 +42,58 @@ router.get('/:id', async (req, res) => {
   res.json(data);
 });
 
-// POST /api/qqoqccp — création
-router.post(
-  '/',
-  [
-    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
-    body('qui').optional({ values: 'falsy' }).trim(),
-    body('quoi').optional({ values: 'falsy' }).trim(),
-    body('ou_').optional({ values: 'falsy' }).trim(),
-    body('quand_').optional({ values: 'falsy' }).trim(),
-    body('comment_').optional({ values: 'falsy' }).trim(),
-    body('combien').optional({ values: 'falsy' }).trim(),
-    body('pourquoi').optional({ values: 'falsy' }).trim(),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
-    }
+const CREATE_VALIDATORS = [
+  body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+  body('qui').optional({ values: 'falsy' }).trim(),
+  body('quoi').optional({ values: 'falsy' }).trim(),
+  body('ou_').optional({ values: 'falsy' }).trim(),
+  body('quand_').optional({ values: 'falsy' }).trim(),
+  body('comment_').optional({ values: 'falsy' }).trim(),
+  body('combien').optional({ values: 'falsy' }).trim(),
+  body('pourquoi').optional({ values: 'falsy' }).trim(),
+];
 
-    const { title, qui, quoi, ou_: ou, quand_: quand, comment_: comment, combien, pourquoi } = req.body;
-
-    const { data, error } = await supabase
-      .from('qqoqccp_analyses')
-      .insert({
-        tenant_id: req.tenantId,
-        title,
-        qui: qui || null,
-        quoi: quoi || null,
-        ou_: ou || null,
-        quand_: quand || null,
-        comment_: comment || null,
-        combien: combien || null,
-        pourquoi: pourquoi || null,
-        created_by: req.user.id,
-      })
-      .select()
-      .single();
-
-    if (error) {
-      return res.status(500).json({ error: "Erreur lors de la création de l'analyse QQOQCCP." });
-    }
-
-    res.status(201).json(data);
+// Logique d'insertion partagée par POST / (création classique) et POST /quick-start (alias
+// sémantique utilisé côté frontend pour "je démarre un diagnostic qui va mener à une CAPA")
+// — même validation, même comportement, juste deux points d'entrée.
+async function createAnalysis(req, res) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
   }
-);
+
+  const { title, qui, quoi, ou_: ou, quand_: quand, comment_: comment, combien, pourquoi } = req.body;
+
+  const { data, error } = await supabase
+    .from('qqoqccp_analyses')
+    .insert({
+      tenant_id: req.tenantId,
+      title,
+      qui: qui || null,
+      quoi: quoi || null,
+      ou_: ou || null,
+      quand_: quand || null,
+      comment_: comment || null,
+      combien: combien || null,
+      pourquoi: pourquoi || null,
+      created_by: req.user.id,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: "Erreur lors de la création de l'analyse QQOQCCP." });
+  }
+
+  res.status(201).json(data);
+}
+
+// POST /api/qqoqccp — création
+router.post('/', CREATE_VALIDATORS, createAnalysis);
+
+// POST /api/qqoqccp/quick-start — alias sémantique de POST /, pour un diagnostic destiné à
+// déboucher sur une CAPA (voir qqoqccp_analyses.linked_capa_id / capas.qqoqccp_analysis_id).
+router.post('/quick-start', CREATE_VALIDATORS, createAnalysis);
 
 // PATCH /api/qqoqccp/:id — met à jour le titre et/ou n'importe lequel des 7 champs
 router.patch(
