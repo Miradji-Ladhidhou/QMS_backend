@@ -8,6 +8,9 @@ const router = Router();
 
 const QQOQCCP_FIELDS = ['qui', 'quoi', 'ou_', 'quand_', 'comment_', 'combien', 'pourquoi'];
 const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS];
+// Mêmes valeurs que capas.js (CAPA_LEVELS) — dupliquées ici plutôt qu'importées : le prompt
+// scope les changements à ce fichier, et cette route ne doit pas modifier capas.js.
+const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
 
@@ -198,6 +201,96 @@ router.post('/:id/generate', async (req, res) => {
 
   res.json(data);
 });
+
+// POST /api/qqoqccp/:id/create-capa — crée une CAPA à partir de cette analyse et lie les
+// deux dans les deux sens. Règles de validation identiques à POST /api/capas (capas.js) pour
+// les champs communs, plus root_cause/corrective_action/preventive_action (mêmes règles que
+// PATCH /api/capas/:id pour ces trois-là, absents de POST /api/capas à l'origine).
+router.post(
+  '/:id/create-capa',
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('service').optional({ values: 'falsy' }).trim(),
+    body('ref_document').optional({ values: 'falsy' }).isUUID().withMessage('Document de référence invalide.'),
+    body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
+    body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
+    body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
+    body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+    body('root_cause').optional({ values: 'falsy' }).trim(),
+    body('corrective_action').optional({ values: 'falsy' }).trim(),
+    body('preventive_action').optional({ values: 'falsy' }).trim(),
+  ],
+  async (req, res) => {
+    const { data: analysis, error: fetchError } = await supabase
+      .from('qqoqccp_analyses')
+      .select('id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !analysis) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const {
+      title,
+      service,
+      ref_document: refDocument,
+      severity,
+      priority,
+      assigned_to: assignedTo,
+      due_date: dueDate,
+      root_cause: rootCause,
+      corrective_action: correctiveAction,
+      preventive_action: preventiveAction,
+    } = req.body;
+
+    // Pas de numérotation manuelle : la base s'en charge déjà (voir set_capa_number côté
+    // schema.sql), comme pour POST /api/capas.
+    const { data: capa, error: capaError } = await supabase
+      .from('capas')
+      .insert({
+        tenant_id: req.tenantId,
+        title,
+        service: service || null,
+        ref_document: refDocument || null,
+        severity: severity || undefined,
+        priority: priority || undefined,
+        assigned_to: assignedTo || null,
+        due_date: dueDate || null,
+        root_cause: rootCause || null,
+        corrective_action: correctiveAction || null,
+        preventive_action: preventiveAction || null,
+        qqoqccp_analysis_id: analysis.id,
+        created_by: req.user.id,
+      })
+      .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+      .single();
+
+    if (capaError) {
+      return res.status(500).json({ error: 'Erreur lors de la création de la CAPA.' });
+    }
+
+    const { error: linkError } = await supabase
+      .from('qqoqccp_analyses')
+      .update({ linked_capa_id: capa.id, status: 'validated' })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', analysis.id);
+
+    if (linkError) {
+      // La CAPA existe déjà et est valide : on ne fait pas échouer la requête pour autant,
+      // mais on le signale — l'analyse ne pointera pas vers elle tant que ce n'est pas corrigé.
+      console.error("Échec de la mise à jour de l'analyse QQOQCCP après création de la CAPA :", linkError.message);
+    }
+
+    res.status(201).json(capa);
+  }
+);
 
 // DELETE /api/qqoqccp/:id — suppression
 router.delete('/:id', async (req, res) => {
