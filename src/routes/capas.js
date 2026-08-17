@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { sendImmediateNotification } from '../services/notificationHelpers.js';
+import { notifyCapaAssigned } from '../services/capaNotifications.js';
 
 const router = Router();
 
@@ -29,32 +29,6 @@ const PATCHABLE_FIELDS = [
 const DEFAULT_PRIORITY_DELAYS = { critical: 30, high: 60, medium: 90, low: 120 };
 
 router.use(requireAuth);
-
-// Notification immédiate (n'attend pas le batch quotidien) quand une CAPA est assignée.
-// Réutilise le toggle "email_capa_overdue" : le modèle de préférences (Chantier 3.2) n'a
-// pas de case dédiée "assignation", et c'est la plus proche sémantiquement.
-async function notifyCapaAssigned(tenantId, capa) {
-  if (!capa.assigned_to) return;
-
-  await sendImmediateNotification({
-    tenantId,
-    userId: capa.assigned_to,
-    prefField: 'email_capa_overdue',
-    notificationType: 'capa_assigned',
-    referenceId: capa.id,
-    templateName: 'capaOverdue',
-    subject: `Une CAPA vous a été assignée : ${capa.number}`,
-    variables: {
-      capaNumber: capa.number,
-      capaTitle: capa.title,
-      dueDate: capa.due_date || '—',
-      capaUrl: `${process.env.FRONTEND_URL}/capas/${capa.id}`,
-    },
-    notificationTitle: 'CAPA assignée',
-    notificationMessage: `${capa.number} — ${capa.title}`,
-    notificationLink: `/capas/${capa.id}`,
-  });
-}
 
 async function closeOverdueCapas(tenantId) {
   const today = new Date().toISOString().slice(0, 10);
@@ -134,9 +108,14 @@ router.get('/', async (req, res) => {
 
 // GET /api/capas/:id — détail avec commentaires de suivi
 router.get('/:id', async (req, res) => {
+  // qqoqccp_analysis!capas_qqoqccp_analysis_id_fkey : deux FK existent entre capas et
+  // qqoqccp_analyses (voir B1), PostgREST refuse sinon l'embed (ambigu). many-to-one via
+  // capas.qqoqccp_analysis_id = "L'analyse à l'origine de cette CAPA", objet singulier.
   const { data: capa, error } = await supabase
     .from('capas')
-    .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+    .select(
+      '*, assigned:users!capas_assigned_to_fkey(id, full_name), qqoqccp_analysis:qqoqccp_analyses!capas_qqoqccp_analysis_id_fkey(id, title, ai_synthesis)'
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();

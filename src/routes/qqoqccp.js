@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
+import { notifyCapaAssigned } from '../services/capaNotifications.js';
 
 const router = Router();
 
@@ -33,7 +34,11 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('qqoqccp_analyses')
-    .select('*')
+    // Deux FK existent maintenant entre les deux tables (linked_capa_id et
+    // qqoqccp_analysis_id, voir B1) : sans préciser laquelle suivre, PostgREST refuse
+    // l'embed (ambigu). many-to-one via linked_capa_id = "LA capa que cette analyse
+    // référence", un objet singulier — c'est le sens de "navigation inverse" recherché ici.
+    .select('*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -274,6 +279,12 @@ router.post(
 
     if (capaError) {
       return res.status(500).json({ error: 'Erreur lors de la création de la CAPA.' });
+    }
+
+    if (capa.assigned_to) {
+      notifyCapaAssigned(req.tenantId, capa).catch((err) =>
+        console.error("Échec de la notification d'assignation CAPA :", err.message)
+      );
     }
 
     const { error: linkError } = await supabase
