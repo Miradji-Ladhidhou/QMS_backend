@@ -3,16 +3,16 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
-import { computeGroup, describeCalculation, groupRowsByPeriod } from '../services/kpiCalculation.js';
+import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 
 const router = Router();
 
 const KPI_FREQUENCIES = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
 const KPI_TARGET_DIRECTIONS = ['min', 'max'];
-// Le type de calcul précis (ratio, sum, average, count, count_grouped) vit dans
+// Le type de calcul précis (ratio, sum, average, min, max, count, count_grouped) vit dans
 // kpi_calculation_configs.calc_type — ici on distingue seulement saisie manuelle vs calculée.
 const KPI_CALCULATION_TYPES = ['manual', 'import'];
-const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'count', 'count_grouped'];
+export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped'];
 const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type'];
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
@@ -406,8 +406,8 @@ router.post(
   [
     body('calc_type').isIn(KPI_CALC_TYPES).withMessage('Type de calcul invalide.'),
     body('source_column').optional({ values: 'falsy' }).trim(),
-    body('filter_column').optional({ values: 'falsy' }).trim(),
-    body('filter_value').optional({ values: 'falsy' }).trim(),
+    body('filters').optional().isArray().withMessage('filters doit être un tableau.'),
+    body('filter_logic').optional({ values: 'falsy' }).isIn(['all', 'any']).withMessage('filter_logic invalide.'),
     body('group_by_column').optional({ values: 'falsy' }).trim(),
     body('period_column').optional({ values: 'falsy' }).trim(),
   ],
@@ -431,16 +431,20 @@ router.post(
     const {
       calc_type: calcType,
       source_column: sourceColumn,
-      filter_column: filterColumn,
-      filter_value: filterValue,
+      filters = [],
+      filter_logic: filterLogic = 'all',
       group_by_column: groupByColumn,
       period_column: periodColumn,
     } = req.body;
 
-    if (calcType === 'ratio' && (!filterColumn || !filterValue)) {
-      return res.status(400).json({ error: 'filter_column et filter_value sont requis pour un calcul de type ratio.' });
+    const filtersError = validateFilters(filters);
+    if (filtersError) {
+      return res.status(400).json({ error: filtersError });
     }
-    if ((calcType === 'sum' || calcType === 'average') && !sourceColumn) {
+    if (calcType === 'ratio' && filters.length === 0) {
+      return res.status(400).json({ error: 'Au moins une condition (filters) est requise pour un calcul de type ratio.' });
+    }
+    if ((calcType === 'sum' || calcType === 'average' || calcType === 'min' || calcType === 'max') && !sourceColumn) {
       return res.status(400).json({ error: `source_column est requis pour un calcul de type ${calcType}.` });
     }
     if (calcType === 'count_grouped' && !groupByColumn) {
@@ -451,7 +455,7 @@ router.post(
     // dernier import de ce KPI, mais un futur fichier pourrait tout de même les contenir
     // (colonnes renommées entre-temps, ou config créée avant le premier import).
     let warning = null;
-    const referencedColumns = [sourceColumn, filterColumn, groupByColumn, periodColumn].filter(Boolean);
+    const referencedColumns = [sourceColumn, groupByColumn, periodColumn, ...filters.map((f) => f.column)].filter(Boolean);
     if (referencedColumns.length > 0) {
       const { data: lastImport } = await supabase
         .from('kpi_raw_imports')
@@ -464,7 +468,7 @@ router.post(
 
       if (lastImport) {
         const knownColumns = new Set(lastImport.detected_columns || []);
-        const unknownColumns = referencedColumns.filter((column) => !knownColumns.has(column));
+        const unknownColumns = [...new Set(referencedColumns)].filter((column) => !knownColumns.has(column));
         if (unknownColumns.length > 0) {
           warning = `Colonne(s) absente(s) du dernier import de ce KPI : ${unknownColumns.join(', ')}. Un futur fichier pourrait néanmoins les contenir.`;
         }
@@ -479,8 +483,8 @@ router.post(
           kpi_id: kpi.id,
           calc_type: calcType,
           source_column: sourceColumn || null,
-          filter_column: filterColumn || null,
-          filter_value: filterValue || null,
+          filters,
+          filter_logic: filterLogic,
           group_by_column: groupByColumn || null,
           period_column: periodColumn || null,
           updated_at: new Date().toISOString(),

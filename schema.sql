@@ -233,22 +233,25 @@ create table kpi_raw_rows (
 );
 
 -- La "recette" de calcul appliquée aux lignes brutes d'un KPI pour produire sa valeur
--- (kpi_records.value) à chaque période. Un même mécanisme générique couvre plusieurs
--- besoins : ratio (part des lignes dont filter_column = filter_value), sum/average d'une
--- colonne numérique, count (nombre de lignes, avec filtre optionnel), count_grouped
--- (comptage par valeur distincte de group_by_column, ex: nombre de non-conformités par
--- utilisateur). period_column est vide quand la période n'est pas déductible du fichier
--- et doit être précisée manuellement à chaque import plutôt que lue colonne par colonne.
--- Une seule recette active par KPI (unique (kpi_id)) : POST /api/kpis/:id/calculation-config
--- fait un upsert dessus plutôt que d'accumuler des configurations concurrentes.
+-- (kpi_records.value) à chaque période. calc_type est l'agrégation appliquée aux lignes
+-- retenues : ratio (leur part parmi le total), sum/average/min/max d'une colonne numérique
+-- (source_column), count (leur nombre), count_grouped (comptage par valeur distincte de
+-- group_by_column). filters (jsonb, tableau de {column, operator, value}) sélectionne ces
+-- lignes — combinées selon filter_logic ('all' = ET, 'any' = OU) — et s'applique à TOUTE
+-- agrégation, pas seulement ratio (ex : moyenne d'une colonne restreinte aux lignes où un
+-- autre champ vaut une valeur donnée). period_column est vide quand la période n'est pas
+-- déductible du fichier et doit être précisée manuellement à chaque import plutôt que lue
+-- colonne par colonne. Une seule recette active par KPI (unique (kpi_id)) :
+-- POST /api/kpis/:id/calculation-config fait un upsert dessus plutôt que d'accumuler des
+-- configurations concurrentes.
 create table kpi_calculation_configs (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
   kpi_id            uuid not null references kpis (id) on delete cascade,
-  calc_type         text not null check (calc_type in ('ratio', 'sum', 'average', 'count', 'count_grouped')),
+  calc_type         text not null check (calc_type in ('ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped')),
   source_column     text,
-  filter_column     text,
-  filter_value      text,
+  filters           jsonb not null default '[]'::jsonb,
+  filter_logic      text not null default 'all' check (filter_logic in ('all', 'any')),
   group_by_column   text,
   period_column     text,
   created_at        timestamptz not null default now(),

@@ -5,8 +5,8 @@ import ExcelJS from 'exceljs';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
-import { RECORDS_SELECT } from './kpis.js';
-import { computeGroup, groupRowsByPeriod, normalizeAnyDate } from '../services/kpiCalculation.js';
+import { KPI_CALC_TYPES, RECORDS_SELECT } from './kpis.js';
+import { groupRowsByPeriod, normalizeAnyDate, summarizeGroups, validateFilters } from '../services/kpiCalculation.js';
 
 const router = Router();
 
@@ -271,64 +271,19 @@ router.post(
     }
 
     const groups = groupRowsByPeriod(rawRows, config.period_column, manualPeriodDate);
+    const { periods, rowsProcessed, rowsRejected } = summarizeGroups(config, groups);
 
-    const periods = [];
-    const upsertRows = [];
-    let rowsProcessed = 0;
-    let rowsRejected = 0;
-
-    for (const [periodKey, groupRows] of groups.entries()) {
-      const isRawFallback = periodKey.startsWith('__raw__:');
-      const periodDate = isRawFallback ? null : periodKey;
-      const periodLabel = isRawFallback ? periodKey.slice('__raw__:'.length) : periodKey;
-
-      const result = computeGroup(config, groupRows);
-      rowsProcessed += groupRows.length;
-      rowsRejected += result.rejectedDetails?.length || 0;
-
-      if (config.calc_type === 'count_grouped') {
-        periods.push({
-          period_label: periodLabel,
-          period_date: periodDate,
-          persisted: false,
-          grouped_counts: result.groupedCounts,
-          rows_total: groupRows.length,
-        });
-        continue;
-      }
-
-      const persisted = periodDate !== null && result.value !== null;
-      periods.push({
-        period_label: periodLabel,
-        period_date: periodDate,
-        persisted,
-        value: result.value,
-        rows_total: groupRows.length,
-        rows_valid: result.rowsValid,
-        rows_rejected: result.rejectedDetails.length,
-        rejected_details: result.rejectedDetails,
-        ...(persisted
-          ? {}
-          : {
-              skip_reason:
-                periodDate === null
-                  ? "Valeur de période non convertible en date : résultat calculé mais non enregistré dans l'historique."
-                  : 'Aucune valeur numérique valide dans ce groupe.',
-            }),
-      });
-
-      if (persisted) {
-        upsertRows.push({
-          tenant_id: req.tenantId,
-          kpi_id: targetKpiId,
-          period_date: periodDate,
-          value: result.value,
-          source: 'import',
-          source_import_id: importRow.id,
-          recorded_by: req.user.id,
-        });
-      }
-    }
+    const upsertRows = periods
+      .filter((period) => period.persisted)
+      .map((period) => ({
+        tenant_id: req.tenantId,
+        kpi_id: targetKpiId,
+        period_date: period.period_date,
+        value: period.value,
+        source: 'import',
+        source_import_id: importRow.id,
+        recorded_by: req.user.id,
+      }));
 
     let records = [];
     if (!dryRun && upsertRows.length > 0) {
@@ -353,6 +308,109 @@ router.post(
       rows_rejected: rowsRejected,
       periods,
       records,
+    });
+  }
+);
+
+// POST /api/kpi-imports/:importId/evaluate — aperçu live d'une recette EN COURS DE
+// CONSTRUCTION : reçoit une config ad hoc dans le corps de la requête (jamais lue ni écrite
+// dans kpi_calculation_configs) et retourne le même format que l'apply en dry_run. Permet au
+// wizard de recalculer à chaque changement de champ sans exiger d'enregistrer une recette
+// pour "essayer" — contrairement à POST .../apply, qui lit toujours la recette sauvegardée.
+router.post(
+  '/:importId/evaluate',
+  [
+    body('calc_type').isIn(KPI_CALC_TYPES).withMessage('Type de calcul invalide.'),
+    body('source_column').optional({ values: 'falsy' }).trim(),
+    body('filters').optional().isArray().withMessage('filters doit être un tableau.'),
+    body('filter_logic').optional({ values: 'falsy' }).isIn(['all', 'any']).withMessage('filter_logic invalide.'),
+    body('group_by_column').optional({ values: 'falsy' }).trim(),
+    body('period_column').optional({ values: 'falsy' }).trim(),
+    body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const {
+      calc_type: calcType,
+      source_column: sourceColumn,
+      filters = [],
+      filter_logic: filterLogic = 'all',
+      group_by_column: groupByColumn,
+      period_column: periodColumn,
+      period_date: periodDateInput,
+    } = req.body;
+
+    const filtersError = validateFilters(filters);
+    if (filtersError) {
+      return res.status(400).json({ error: filtersError });
+    }
+    if (calcType === 'ratio' && filters.length === 0) {
+      return res.status(400).json({ error: 'Au moins une condition (filters) est requise pour un calcul de type ratio.' });
+    }
+    if ((calcType === 'sum' || calcType === 'average' || calcType === 'min' || calcType === 'max') && !sourceColumn) {
+      return res.status(400).json({ error: `source_column est requis pour un calcul de type ${calcType}.` });
+    }
+    if (calcType === 'count_grouped' && !groupByColumn) {
+      return res.status(400).json({ error: 'group_by_column est requis pour un calcul de type count_grouped.' });
+    }
+
+    const { data: importRow, error: importError } = await supabase
+      .from('kpi_raw_imports')
+      .select('id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.importId)
+      .single();
+
+    if (importError || !importRow) {
+      return res.status(404).json({ error: 'Import introuvable.' });
+    }
+
+    const { data: rawRows, error: rowsError } = await supabase
+      .from('kpi_raw_rows')
+      .select('row_index, row_data')
+      .eq('tenant_id', req.tenantId)
+      .eq('import_id', importRow.id)
+      .order('row_index', { ascending: true });
+
+    if (rowsError) {
+      return res.status(500).json({ error: 'Erreur lors de la récupération des lignes importées.' });
+    }
+    if (!rawRows || rawRows.length === 0) {
+      return res.status(400).json({ error: 'Cet import ne contient aucune ligne.' });
+    }
+
+    let manualPeriodDate = null;
+    if (!periodColumn) {
+      manualPeriodDate = normalizeAnyDate(periodDateInput);
+      if (!manualPeriodDate) {
+        return res.status(400).json({
+          error: "Aucune colonne de période sélectionnée : indiquez period_date (yyyy-MM-dd) pour l'aperçu.",
+        });
+      }
+    }
+
+    const config = {
+      calc_type: calcType,
+      source_column: sourceColumn || null,
+      filters,
+      filter_logic: filterLogic,
+      group_by_column: groupByColumn || null,
+      period_column: periodColumn || null,
+    };
+    const groups = groupRowsByPeriod(rawRows, config.period_column, manualPeriodDate);
+    const { periods, rowsProcessed, rowsRejected } = summarizeGroups(config, groups);
+
+    res.status(200).json({
+      import_id: importRow.id,
+      calc_type: calcType,
+      rows_total: rawRows.length,
+      rows_processed: rowsProcessed,
+      rows_rejected: rowsRejected,
+      periods,
     });
   }
 );
