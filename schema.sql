@@ -145,6 +145,29 @@ create table capa_comments (
   created_at  timestamptz not null default now()
 );
 
+create table qqoqccp_analyses (
+  id                     uuid primary key default gen_random_uuid(),
+  tenant_id              uuid not null references tenants (id) on delete cascade,
+  title                  text not null,
+  qui                    text,
+  quoi                   text,
+  -- "ou" et "quand" seuls entreraient en conflit avec les mots-clés SQL OR/quand-réservés
+  -- selon le contexte : suffixés d'un underscore, et gardés cohérents partout dans le code.
+  ou_                    text,
+  quand_                 text,
+  -- "comment" est déjà utilisé ailleurs dans le projet (capa_comments.comment) : suffixé
+  -- d'un underscore ici pour éviter toute confusion de copier-coller entre les deux.
+  comment_               text,
+  combien                text,
+  pourquoi               text,
+  ai_synthesis           text,
+  ai_suggested_actions   jsonb,
+  status                 text not null default 'draft' check (status in ('draft', 'ai_generated', 'validated')),
+  created_by             uuid references users (id) on delete set null,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now()
+);
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -439,6 +462,8 @@ create index idx_capas_due_date on capas (due_date);
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
+create index idx_qqoqccp_analyses_tenant_id on qqoqccp_analyses (tenant_id);
+
 create index idx_trainings_tenant_id on trainings (tenant_id);
 
 create index idx_training_records_tenant_id on training_records (tenant_id);
@@ -674,6 +699,7 @@ alter table capas enable row level security;
 alter table capa_counters enable row level security;
 alter table capa_priority_delays enable row level security;
 alter table capa_comments enable row level security;
+alter table qqoqccp_analyses enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -735,6 +761,11 @@ create policy capa_priority_delays_isolation on capa_priority_delays
   with check (tenant_id = auth_tenant_id());
 
 create policy capa_comments_isolation on capa_comments
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy qqoqccp_analyses_isolation on qqoqccp_analyses
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
