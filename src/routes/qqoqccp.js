@@ -238,6 +238,7 @@ router.post(
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('service').optional({ values: 'falsy' }).trim(),
+    body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('ref_document').optional({ values: 'falsy' }).isUUID().withMessage('Document de référence invalide.'),
     body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
@@ -267,6 +268,7 @@ router.post(
     const {
       title,
       service,
+      service_id: serviceId,
       ref_document: refDocument,
       severity,
       priority,
@@ -289,6 +291,7 @@ router.post(
         tenant_id: req.tenantId,
         title,
         service: service || null,
+        service_id: serviceId || null,
         ref_document: refDocument || null,
         severity: severity || undefined,
         priority: priority || undefined,
