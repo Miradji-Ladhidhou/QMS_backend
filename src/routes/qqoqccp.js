@@ -213,6 +213,7 @@ router.post('/:id/generate', async (req, res) => {
       ai_suggested_actions: {
         root_causes: suggestion.root_causes,
         suggested_actions: suggestion.suggested_actions,
+        preventive_actions: suggestion.preventive_actions,
         overall_priority: suggestion.overall_priority,
       },
       status: 'ai_generated',

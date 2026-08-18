@@ -8,7 +8,8 @@ const SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à analyser 
 À partir des 7 réponses fournies par l'utilisateur, produis :
 - synthesis : une synthèse concise du problème (2 à 3 phrases)
 - root_causes : un tableau de chaînes de caractères, les causes racines probables
-- suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical'
+- suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical' — des actions CORRECTIVES, pour traiter la non-conformité déjà survenue
+- preventive_actions : un tableau de chaînes de caractères — des actions PRÉVENTIVES, distinctes des actions correctives, pour empêcher que ce problème (ou un problème similaire) ne se reproduise
 - overall_priority : une seule valeur parmi 'low', 'medium', 'high', 'critical'
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
@@ -16,6 +17,7 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette 
   "synthesis": "string",
   "root_causes": ["string", "string"],
   "suggested_actions": [{"title": "string", "description": "string", "suggested_priority": "medium"}],
+  "preventive_actions": ["string", "string"],
   "overall_priority": "medium"
 }`;
 
