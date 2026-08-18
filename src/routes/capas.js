@@ -90,15 +90,23 @@ router.put(
   }
 );
 
-// GET /api/capas — liste avec le responsable assigné, statuts en retard mis à jour
+// GET /api/capas — liste avec le responsable assigné, statuts en retard mis à jour.
+// Un member ne peut pas traiter une CAPA une fois créée (voir PATCH /:id) : la liste par
+// défaut ne lui montre donc que celles qui lui sont assignées, pas tout le tenant.
 router.get('/', async (req, res) => {
   await closeOverdueCapas(req.tenantId);
 
-  const { data, error } = await supabase
+  let query = supabase
     .from('capas')
     .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
+
+  if (req.userRole === 'member') {
+    query = query.eq('assigned_to', req.user.id);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les CAPA.' });
