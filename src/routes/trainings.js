@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
 
 const router = Router();
 
@@ -76,24 +77,21 @@ router.get('/', async (req, res) => {
 
 // GET /api/trainings/matrix — vue croisée personnel x formations (comptes ET salariés sans
 // compte, voir employees.js).
-router.get('/matrix', async (req, res) => {
+// Partagée entre GET /matrix (JSON) et GET /matrix/pdf (export imprimable) pour ne jamais
+// laisser les deux vues diverger sur la logique de statut (à jour/bientôt/expiré/jamais).
+async function buildMatrix(tenantId) {
   const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: trainings, error: trainingsError }] =
     await Promise.all([
-      supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId),
-      supabase.from('employees').select('id, full_name').eq('tenant_id', req.tenantId).eq('is_active', true),
-      supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', req.tenantId),
+      supabase.from('users').select('id, full_name').eq('tenant_id', tenantId),
+      supabase.from('employees').select('id, full_name').eq('tenant_id', tenantId).eq('is_active', true),
+      supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', tenantId),
     ]);
 
   if (usersError || employeesError || trainingsError) {
-    return res.status(500).json({ error: 'Impossible de construire la matrice des formations.' });
+    throw new Error('Impossible de construire la matrice des formations.');
   }
 
-  let latestByPair;
-  try {
-    latestByPair = await fetchLatestTrainingRecords(req.tenantId);
-  } catch (err) {
-    return res.status(500).json({ error: err.message });
-  }
+  const latestByPair = await fetchLatestTrainingRecords(tenantId);
 
   const today = new Date().toISOString().slice(0, 10);
   const soonThreshold = isoDateInDays(RENEWAL_WINDOW_DAYS);
@@ -103,7 +101,7 @@ router.get('/matrix', async (req, res) => {
     ...employees.map((employee) => ({ id: employee.id, full_name: employee.full_name, kind: 'employee' })),
   ];
 
-  const matrix = trainings.map((training) => ({
+  return trainings.map((training) => ({
     training: { id: training.id, title: training.title },
     people: people.map((person) => {
       const key = `${training.id}:${person.kind === 'user' ? 'u' : 'e'}:${person.id}`;
@@ -135,8 +133,33 @@ router.get('/matrix', async (req, res) => {
       };
     }),
   }));
+}
 
-  res.json(matrix);
+router.get('/matrix', async (req, res) => {
+  try {
+    const matrix = await buildMatrix(req.tenantId);
+    res.json(matrix);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/trainings/matrix/pdf — même matrice, mise en page imprimable (grille personnel ×
+// formations paysage, paginée si trop large/haute). Placée juste après /matrix : chemin à
+// deux segments, ne rentre pas en conflit avec une éventuelle route /:id ailleurs dans ce
+// fichier (même raisonnement que /:id/pdf dans qqoqccp.js).
+router.get('/matrix/pdf', async (req, res) => {
+  try {
+    const matrix = await buildMatrix(req.tenantId);
+    const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+    const pdfBuffer = await buildSkillMatrixPdf({ tenantName: tenant?.name, matrix });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="matrice-competences-${new Date().toISOString().slice(0, 10)}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // GET /api/trainings/upcoming-renewals — renouvellements à échéance sous 60 jours

@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
 
 const router = Router();
 
@@ -49,6 +50,29 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// GET /api/qqoqccp/:id/pdf — rapport imprimable d'une analyse (7 questions, synthèse IA si
+// générée, CAPA liée si existante). Chemin à deux segments : ne rentre jamais en conflit
+// avec GET /:id ci-dessus, contrairement à /report dans kpis.js qui devait être placé avant.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: analysis, error } = await supabase
+    .from('qqoqccp_analyses')
+    .select('*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !analysis) {
+    return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+  const pdfBuffer = await buildQqoqccpPdf({ tenantName: tenant?.name, analysis });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="qqoqccp-${analysis.id}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 const CREATE_VALIDATORS = [
