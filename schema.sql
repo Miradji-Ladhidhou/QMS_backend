@@ -490,6 +490,25 @@ create table category_permissions (
   unique (category_id, subject_type, subject_id)
 );
 
+-- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
+-- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).
+-- L'assigné est optionnel, et au plus l'un des deux (compte OU personnel sans compte),
+-- jamais les deux — même logique que training_records.
+create table tasks (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants (id) on delete cascade,
+  title                 text not null,
+  description           text,
+  due_date              date not null,
+  status                text not null default 'todo' check (status in ('todo', 'done')),
+  assigned_to           uuid references users (id) on delete set null,
+  assigned_employee_id  uuid references employees (id) on delete set null,
+  created_by            uuid references users (id) on delete set null,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now(),
+  constraint tasks_assignee_check check (not (assigned_to is not null and assigned_employee_id is not null))
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -510,6 +529,11 @@ $$;
 create index idx_users_tenant_id on users (tenant_id);
 
 create index idx_employees_tenant_id on employees (tenant_id);
+
+create index idx_tasks_tenant_id on tasks (tenant_id);
+create index idx_tasks_due_date on tasks (due_date);
+create index idx_tasks_assigned_to on tasks (assigned_to);
+create index idx_tasks_assigned_employee_id on tasks (assigned_employee_id);
 
 create index idx_document_categories_tenant_id on document_categories (tenant_id);
 
@@ -636,6 +660,9 @@ create trigger trg_capas_updated_at before update on capas
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
+  for each row execute function set_updated_at();
+
+create trigger trg_tasks_updated_at before update on tasks
   for each row execute function set_updated_at();
 
 create trigger trg_kpis_updated_at before update on kpis
@@ -770,6 +797,7 @@ $$;
 alter table tenants enable row level security;
 alter table users enable row level security;
 alter table employees enable row level security;
+alter table tasks enable row level security;
 alter table document_categories enable row level security;
 alter table documents enable row level security;
 alter table document_versions enable row level security;
@@ -811,6 +839,11 @@ create policy users_isolation on users
   with check (tenant_id = auth_tenant_id());
 
 create policy employees_isolation on employees
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy tasks_isolation on tasks
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

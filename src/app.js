@@ -17,7 +17,9 @@ import notificationsRoutes from './routes/notifications.js';
 import groupsRoutes from './routes/groups.js';
 import servicesRoutes from './routes/services.js';
 import employeesRoutes from './routes/employees.js';
+import tasksRoutes from './routes/tasks.js';
 import dashboardRoutes from './routes/dashboard.js';
+import planningRoutes from './routes/planning.js';
 import superAdminRoutes from './routes/superAdmin.js';
 
 // Séparé de index.js pour être importable par les tests d'intégration (supertest) sans
@@ -52,7 +54,9 @@ app.use('/api/notifications', notificationsRoutes);
 app.use('/api/groups', groupsRoutes);
 app.use('/api/services', servicesRoutes);
 app.use('/api/employees', employeesRoutes);
+app.use('/api/tasks', tasksRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/planning', planningRoutes);
 app.use('/api/super-admin', superAdminRoutes);
 
 export default app;

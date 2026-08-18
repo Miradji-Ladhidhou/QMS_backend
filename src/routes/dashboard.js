@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
+import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '../services/serviceScope.js';
 
 const router = Router();
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Mêmes fenêtres que documents.js (/alerts) et trainings.js (/upcoming-renewals), pour
 // rester cohérent avec les indicateurs déjà affichés ailleurs dans l'application.
@@ -26,32 +26,6 @@ function countCapasByStatus(capas) {
     }
   }
   return counts;
-}
-
-async function fetchUserServiceIds(tenantId, userId) {
-  const { data, error } = await supabase
-    .from('user_services')
-    .select('service_id')
-    .eq('tenant_id', tenantId)
-    .eq('user_id', userId);
-
-  if (error) return [];
-  return data.map((row) => row.service_id);
-}
-
-// Les formations n'ont pas de service_id propre, mais leurs réalisations sont rattachées à
-// un utilisateur — filtrer "par service" revient à filtrer sur les membres de l'équipe.
-async function fetchServiceUserIds(tenantId, serviceIds) {
-  if (serviceIds.length === 0) return [];
-
-  const { data, error } = await supabase
-    .from('user_services')
-    .select('user_id')
-    .eq('tenant_id', tenantId)
-    .in('service_id', serviceIds);
-
-  if (error) return [];
-  return [...new Set(data.map((row) => row.user_id))];
 }
 
 // userIds === null : pas de filtre (tout le tenant). userIds === [] : filtre vide (aucun
@@ -120,10 +94,8 @@ async function countDocumentsToReview(tenantId) {
 //   les documents n'ont pas de porteur individuel dans le schéma, pas de métrique
 //   personnelle à calculer ici
 router.get('/stats', async (req, res) => {
-  const rawServiceId = req.query.service_id;
-  const requestedServiceIds = rawServiceId === undefined ? [] : [].concat(rawServiceId);
-
-  if (requestedServiceIds.some((id) => typeof id !== 'string' || !UUID_RE.test(id))) {
+  const requestedServiceIds = parseServiceIdsParam(req.query.service_id);
+  if (!requestedServiceIds) {
     return res.status(400).json({ error: 'Service invalide.' });
   }
 
@@ -148,12 +120,12 @@ router.get('/stats', async (req, res) => {
   }
 
   // admin / manager : détermine le(s) service(s) à filtrer — null signifie "tout le tenant".
-  let serviceIds = null;
-  if (requestedServiceIds.length > 0) {
-    serviceIds = requestedServiceIds;
-  } else if (req.userRole === 'manager') {
-    serviceIds = await fetchUserServiceIds(req.tenantId, req.user.id);
-  }
+  const serviceIds = await resolveServiceScope({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    requestedServiceIds,
+  });
 
   let capas = [];
   if (!serviceIds || serviceIds.length > 0) {
