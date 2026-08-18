@@ -4,7 +4,7 @@ import { parse } from 'csv-parse/sync';
 import ExcelJS from 'exceljs';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import { KPI_CALC_TYPES, RECORDS_SELECT } from './kpis.js';
 import { groupRowsByPeriod, normalizeAnyDate, summarizeGroups, validateFilters } from '../services/kpiCalculation.js';
 
@@ -184,8 +184,10 @@ router.get('/:importId', async (req, res) => {
 // POST /api/kpi-imports — dépose un fichier CSV/Excel de structure arbitraire. Ne calcule
 // rien : détecte les colonnes et stocke chaque ligne telle quelle en JSONB (kpi_raw_rows),
 // pour que la recette de calcul (kpi_calculation_configs) soit choisie ensuite, en toute
-// connaissance des colonnes réellement présentes dans le fichier.
-router.post('/', upload.single('file'), async (req, res) => {
+// connaissance des colonnes réellement présentes dans le fichier. admin/manager uniquement,
+// comme la création/modification d'un KPI (kpis.js) — même périmètre que le wizard qui
+// pilote cette route côté frontend.
+router.post('/', requireRole('admin', 'manager'), upload.single('file'), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'Un fichier est requis.' });
   }
@@ -286,6 +288,7 @@ router.post('/', upload.single('file'), async (req, res) => {
 // que deux séries d'un même KPI puissent chacune avoir leur propre valeur sur une période.
 router.post(
   '/:importId/apply',
+  requireRole('admin', 'manager'),
   [
     body('config_id').isUUID().withMessage('config_id est requis.'),
     body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
@@ -411,6 +414,7 @@ router.post(
 // pour "essayer" — contrairement à POST .../apply, qui lit toujours la recette sauvegardée.
 router.post(
   '/:importId/evaluate',
+  requireRole('admin', 'manager'),
   [
     body('calc_type').isIn(KPI_CALC_TYPES).withMessage('Type de calcul invalide.'),
     body('source_column').optional({ values: 'falsy' }).trim(),

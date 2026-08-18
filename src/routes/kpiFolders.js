@@ -64,8 +64,11 @@ router.get('/:id/breadcrumb', async (req, res) => {
 });
 
 // POST /api/kpi-folders — création
+// POST /api/kpi-folders — création (admin/manager uniquement, même périmètre que
+// PATCH/DELETE ci-dessous).
 router.post(
   '/',
+  requireRole('admin', 'manager'),
   [
     body('name').trim().notEmpty().withMessage('Le nom du dossier est requis.'),
     body('parent_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier parent invalide.'),

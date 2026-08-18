@@ -97,9 +97,12 @@ router.get('/report', async (req, res) => {
   res.send(pdfBuffer);
 });
 
-// POST /api/kpis — création
+// POST /api/kpis — création (admin/manager uniquement — même périmètre que PATCH/DELETE
+// ci-dessous ; un member ne définit pas d'indicateur d'entreprise, seul le frontend
+// l'empêchait jusqu'ici via canManage, voir Kpis.jsx).
 router.post(
   '/',
+  requireRole('admin', 'manager'),
   [
     body('name').trim().notEmpty().withMessage('Le nom du KPI est requis.'),
     body('unit').optional({ values: 'falsy' }).trim(),
