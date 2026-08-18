@@ -24,13 +24,14 @@ router.get('/my-services', async (req, res) => {
   res.json(data.map((row) => row.service).filter(Boolean));
 });
 
-// GET /api/services — liste des services actifs du tenant (tous les rôles)
+// GET /api/services — liste de tous les services du tenant, actifs et inactifs (tous les
+// rôles) — la page de gestion (admin) a besoin de voir les inactifs pour les réactiver ;
+// un sélecteur d'usage courant (ex. création de CAPA) filtre lui-même sur is_active.
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('services')
     .select('id, name, is_active')
     .eq('tenant_id', req.tenantId)
-    .eq('is_active', true)
     .order('name', { ascending: true });
 
   if (error) {
@@ -64,6 +65,34 @@ router.post(
     res.status(201).json(data);
   }
 );
+
+// GET /api/services/:id/managers — managers actuellement rattachés à ce service (admin
+// uniquement) — sert la page de gestion des services, pas le filtrage dashboard (my-services).
+router.get('/:id/managers', requireRole('admin'), async (req, res) => {
+  const { data: service, error: serviceError } = await supabase
+    .from('services')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (serviceError || !service) {
+    return res.status(404).json({ error: 'Service introuvable.' });
+  }
+
+  const { data, error } = await supabase
+    .from('user_services')
+    .select('user:users(id, full_name, role)')
+    .eq('tenant_id', req.tenantId)
+    .eq('service_id', req.params.id);
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les managers rattachés.' });
+  }
+
+  const managers = data.map((row) => row.user).filter((user) => user && user.role === 'manager');
+  res.json(managers);
+});
 
 // PATCH /api/services/:id — renomme et/ou active/désactive un service (admin uniquement)
 router.patch(
