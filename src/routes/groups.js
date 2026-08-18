@@ -8,7 +8,7 @@ const router = Router();
 router.use(requireAuth);
 // Gestion des groupes réservée aux admins : ils déterminent qui accède à quelles
 // catégories restreintes, au même titre que category_permissions.
-router.use(requireRole('owner', 'admin'));
+router.use(requireRole('admin'));
 
 // GET /api/groups — liste des groupes du tenant, avec leurs membres
 router.get('/', async (req, res) => {

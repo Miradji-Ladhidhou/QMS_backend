@@ -12,7 +12,7 @@ const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS];
 // Mêmes valeurs que capas.js (CAPA_LEVELS) — dupliquées ici plutôt qu'importées : le prompt
 // scope les changements à ce fichier, et cette route ne doit pas modifier capas.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
-const MANAGER_ROLES = ['owner', 'admin', 'manager'];
+const MANAGER_ROLES = ['admin', 'manager'];
 
 router.use(requireAuth);
 
@@ -326,7 +326,7 @@ router.post(
 );
 
 // DELETE /api/qqoqccp/:id — suppression
-router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase
     .from('qqoqccp_analyses')
     .delete({ count: 'exact' })

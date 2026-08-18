@@ -589,7 +589,7 @@ router.patch(
 // explicite can_delete pour supprimer un document d'une catégorie restreinte).
 router.delete(
   '/:id',
-  requireRole('owner', 'admin', 'manager'),
+  requireRole('admin', 'manager'),
   requireCategoryPermission('delete', resolveDocumentById),
   async (req, res) => {
   // Le titre/numéro est capturé avant suppression : document_audit_log doit rester lisible

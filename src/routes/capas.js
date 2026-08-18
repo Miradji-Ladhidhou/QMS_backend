@@ -64,7 +64,7 @@ router.get('/priority-delays', async (req, res) => {
 // PUT /api/capas/priority-delays — paramétrage des délais par priorité (admin uniquement)
 router.put(
   '/priority-delays',
-  requireRole('owner', 'admin'),
+  requireRole('admin'),
   CAPA_LEVELS.map((level) => body(level).isInt({ min: 1 }).withMessage(`Délai invalide pour la priorité "${level}".`)),
   async (req, res) => {
     const errors = validationResult(req);
@@ -201,10 +201,10 @@ router.post(
 
 // PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
 // assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
-// Réservé à owner/admin/manager : un member peut ouvrir une CAPA mais pas la traiter.
+// Réservé à admin/manager : un member peut ouvrir une CAPA mais pas la traiter.
 router.patch(
   '/:id',
-  requireRole('owner', 'admin', 'manager'),
+  requireRole('admin', 'manager'),
   [
     body('status').optional({ values: 'falsy' }).isIn(CAPA_STATUSES).withMessage('Statut invalide.'),
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
@@ -264,7 +264,7 @@ router.patch(
 );
 
 // DELETE /api/capas/:id — supprime une CAPA (admin uniquement)
-router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { data, error } = await supabase
     .from('capas')
     .delete()

@@ -206,7 +206,7 @@ router.post(
 // PATCH /api/trainings/:id — corrige le titre/type/fréquence d'une formation (admin uniquement)
 router.patch(
   '/:id',
-  requireRole('owner', 'admin', 'manager'),
+  requireRole('admin', 'manager'),
   [
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
     body('type').optional({ values: 'falsy' }).trim(),
@@ -246,7 +246,7 @@ router.patch(
 );
 
 // DELETE /api/trainings/:id — supprime une formation et ses réalisations (admin uniquement)
-router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { data, error } = await supabase
     .from('trainings')
     .delete()
@@ -316,7 +316,7 @@ router.post(
 // next_due_date si la date de réalisation change (admin uniquement)
 router.patch(
   '/:id/records/:recordId',
-  requireRole('owner', 'admin', 'manager'),
+  requireRole('admin', 'manager'),
   [
     body('completed_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
     body('certificate_url').optional({ values: 'falsy' }).trim(),
@@ -371,7 +371,7 @@ router.patch(
 );
 
 // DELETE /api/trainings/:id/records/:recordId — retire une réalisation (admin uniquement)
-router.delete('/:id/records/:recordId', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+router.delete('/:id/records/:recordId', requireRole('admin', 'manager'), async (req, res) => {
   const { data, error } = await supabase
     .from('training_records')
     .delete()

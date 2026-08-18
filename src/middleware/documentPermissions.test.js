@@ -56,19 +56,6 @@ describe('hasCategoryPermission', () => {
     expect(supabase.from).not.toHaveBeenCalled();
   });
 
-  it('accorde toujours l’accès à un owner, sans même interroger la base', async () => {
-    const allowed = await hasCategoryPermission({
-      tenantId: 't1',
-      userId: 'u1',
-      userRole: 'owner',
-      categoryId: 'c1',
-      permission: 'delete',
-    });
-
-    expect(allowed).toBe(true);
-    expect(supabase.from).not.toHaveBeenCalled();
-  });
-
   it('accorde l’accès sans requête si le document n’a pas de catégorie', async () => {
     const allowed = await hasCategoryPermission({
       tenantId: 't1',

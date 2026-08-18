@@ -46,7 +46,7 @@ create table users (
   -- Ne se modifie qu'en base : aucune UI ne permet de se l'auto-attribuer.
   is_super_admin  boolean not null default false,
   full_name       text,
-  role            text not null default 'member' check (role in ('owner', 'admin', 'manager', 'member')),
+  role            text not null default 'member' check (role in ('admin', 'manager', 'member')),
   is_active       boolean not null default true,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
@@ -57,7 +57,7 @@ create table document_categories (
   tenant_id   uuid not null references tenants (id) on delete cascade,
   name        text not null,
   color       text,
-  required_approver_role text check (required_approver_role in ('owner', 'admin', 'manager', 'member')),
+  required_approver_role text check (required_approver_role in ('admin', 'manager', 'member')),
   -- false (défaut) : comportement actuel inchangé, visible par tout le tenant.
   -- true : accès réservé aux sujets ayant une entrée dans category_permissions.
   is_restricted boolean not null default false,
@@ -459,24 +459,6 @@ as $$
   select tenant_id from public.users where id = auth.uid();
 $$;
 
--- Transfère le rôle owner d'un tenant à un autre membre en une seule transaction,
--- pour ne jamais laisser un tenant sans owner ou avec deux owners en cas d'échec partiel.
-create or replace function transfer_ownership(p_tenant_id uuid, p_current_owner_id uuid, p_new_owner_id uuid)
-returns void
-language plpgsql
-security definer
-set search_path = public
-as $$
-begin
-  update users set role = 'owner' where id = p_new_owner_id and tenant_id = p_tenant_id;
-  if not found then
-    raise exception 'Nouveau propriétaire introuvable dans ce tenant.';
-  end if;
-
-  update users set role = 'admin' where id = p_current_owner_id and tenant_id = p_tenant_id;
-end;
-$$;
-
 -- =============================================================================
 -- INDEX
 -- =============================================================================
@@ -661,7 +643,7 @@ create trigger trg_set_capa_number before insert on capas
 --
 -- p_user_id / p_user_role (obligatoires, pas de valeur par défaut) appliquent les
 -- permissions granulaires du Chantier 4 : un document dans une catégorie restreinte
--- (is_restricted) n'apparaît dans les résultats que si l'appelant est owner/admin, ou
+-- (is_restricted) n'apparaît dans les résultats que si l'appelant est admin, ou
 -- dispose d'une entrée category_permissions.can_view (directement ou via un groupe).
 create or replace function search_documents(
   p_tenant_id uuid,
@@ -706,7 +688,7 @@ as $$
   where d.tenant_id = p_tenant_id
     and d.search_vector @@ query
     and (
-      p_user_role in ('owner', 'admin')
+      p_user_role = 'admin'
       or d.category_id is null
       or coalesce(dc.is_restricted, false) = false
       or exists (

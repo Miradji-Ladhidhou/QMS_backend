@@ -5,7 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { filterViewableCategories, hasCategoryPermission } from '../middleware/documentPermissions.js';
 
 const router = Router();
-const APPROVER_ROLES = ['owner', 'admin', 'manager', 'member'];
+const APPROVER_ROLES = ['admin', 'manager', 'member'];
 const SUBJECT_TYPES = ['user', 'group'];
 
 router.use(requireAuth);
@@ -187,7 +187,7 @@ router.get('/:id/permissions', async (req, res) => {
 // groupe sur la catégorie (upsert : un même sujet ne peut avoir qu'une ligne par catégorie).
 router.post(
   '/:id/permissions',
-  requireRole('owner', 'admin'),
+  requireRole('admin'),
   [
     body('subject_type').isIn(SUBJECT_TYPES).withMessage('Type de sujet invalide.'),
     body('subject_id').isUUID().withMessage('Sujet invalide.'),
@@ -249,7 +249,7 @@ router.post(
 );
 
 // DELETE /api/categories/:id/permissions/:permissionId — révoque un accès
-router.delete('/:id/permissions/:permissionId', requireRole('owner', 'admin'), async (req, res) => {
+router.delete('/:id/permissions/:permissionId', requireRole('admin'), async (req, res) => {
   const { error, count } = await supabase
     .from('category_permissions')
     .delete({ count: 'exact' })

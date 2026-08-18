@@ -157,7 +157,7 @@ router.patch(
 // POST /api/users/invite — invite un nouvel utilisateur par email (admin uniquement)
 router.post(
   '/invite',
-  requireRole('owner', 'admin'),
+  requireRole('admin'),
   [
     body('email').isEmail().withMessage('Adresse email invalide.'),
     body('full_name').trim().notEmpty().withMessage('Le nom complet est requis.'),
@@ -201,7 +201,7 @@ router.post(
 );
 
 // POST /api/users/:id/resend-invite — renvoie l'email d'invitation (admin uniquement, tant que non confirmé)
-router.post('/:id/resend-invite', requireRole('owner', 'admin'), async (req, res) => {
+router.post('/:id/resend-invite', requireRole('admin'), async (req, res) => {
   const { data: target, error: targetError } = await supabase
     .from('users')
     .select('id, full_name')
@@ -234,44 +234,10 @@ router.post('/:id/resend-invite', requireRole('owner', 'admin'), async (req, res
   res.json({ ok: true });
 });
 
-// POST /api/users/:id/transfer-ownership — le owner actuel cède son rôle à un autre membre (owner uniquement)
-router.post('/:id/transfer-ownership', requireRole('owner'), async (req, res) => {
-  if (req.params.id === req.user.id) {
-    return res.status(400).json({ error: 'Vous êtes déjà propriétaire.' });
-  }
-
-  const { data: target, error: targetError } = await supabase
-    .from('users')
-    .select('id, is_active')
-    .eq('tenant_id', req.tenantId)
-    .eq('id', req.params.id)
-    .single();
-
-  if (targetError || !target) {
-    return res.status(404).json({ error: 'Utilisateur introuvable.' });
-  }
-
-  if (!target.is_active) {
-    return res.status(400).json({ error: 'Ce compte est désactivé.' });
-  }
-
-  const { error: rpcError } = await supabase.rpc('transfer_ownership', {
-    p_tenant_id: req.tenantId,
-    p_current_owner_id: req.user.id,
-    p_new_owner_id: req.params.id,
-  });
-
-  if (rpcError) {
-    return res.status(500).json({ error: 'Erreur lors du transfert de propriété.' });
-  }
-
-  res.json({ ok: true });
-});
-
 // PATCH /api/users/:id — modifie le rôle et/ou le statut actif/inactif d'un utilisateur (admin uniquement)
 router.patch(
   '/:id',
-  requireRole('owner', 'admin'),
+  requireRole('admin'),
   [
     body('role').optional().isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
@@ -300,16 +266,10 @@ router.patch(
     const update = {};
 
     if ('role' in req.body) {
-      if (target.role === 'owner') {
-        return res.status(403).json({ error: 'Le rôle du propriétaire ne peut pas être modifié.' });
-      }
       update.role = req.body.role;
     }
 
     if ('is_active' in req.body) {
-      if (target.role === 'owner') {
-        return res.status(403).json({ error: 'Le propriétaire ne peut pas être désactivé.' });
-      }
       if (target.id === req.user.id) {
         return res.status(403).json({ error: 'Vous ne pouvez pas désactiver votre propre compte.' });
       }

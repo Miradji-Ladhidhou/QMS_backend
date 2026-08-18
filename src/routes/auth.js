@@ -82,13 +82,13 @@ router.post(
       return res.status(tenantError?.code === '23505' ? 409 : 500).json({ error: message });
     }
 
-    // 3. Création du profil utilisateur, rattaché au tenant, en tant que propriétaire — c'est
-    // la personne qui vient de créer l'entreprise, donc son seul membre à ce stade.
+    // 3. Création du profil utilisateur, rattaché au tenant, en tant qu'admin — c'est la
+    // personne qui vient de créer l'entreprise, donc son seul membre à ce stade.
     const { error: profileError } = await supabase.from('users').insert({
       id: userId,
       tenant_id: tenant.id,
       full_name: fullName,
-      role: 'owner',
+      role: 'admin',
     });
 
     if (profileError) {

@@ -1,8 +1,8 @@
 import { supabase } from '../services/supabase.js';
 
-// Un admin (ou owner) du tenant garde toujours accès à tout, quelle que soit la
+// Un admin du tenant garde toujours accès à tout, quelle que soit la
 // restriction de catégorie — bypass documenté explicitement, comme demandé.
-const ADMIN_ROLES = ['owner', 'admin'];
+const ADMIN_ROLES = ['admin'];
 
 export async function getUserGroupIds(userId) {
   const { data, error } = await supabase.from('group_members').select('group_id').eq('user_id', userId);
