@@ -169,6 +169,11 @@ router.post(
       due_date: dueDate,
     } = req.body;
 
+    // Un member peut ouvrir une CAPA mais elle lui est toujours auto-assignée : on ignore
+    // toute valeur d'assigned_to reçue du corps de la requête pour ce rôle, sans faire
+    // confiance au frontend. admin/manager gardent le comportement d'origine.
+    const finalAssignedTo = req.userRole === 'member' ? req.user.id : assignedTo || null;
+
     const { data, error } = await supabase
       .from('capas')
       .insert({
@@ -180,7 +185,7 @@ router.post(
         ref_document: refDocument || null,
         severity: severity || undefined,
         priority: priority || undefined,
-        assigned_to: assignedTo || null,
+        assigned_to: finalAssignedTo,
         due_date: dueDate || null,
         created_by: req.user.id,
       })
@@ -201,10 +206,19 @@ router.post(
 
 // PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
 // assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
-// Réservé à admin/manager : un member peut ouvrir une CAPA mais pas la traiter.
+// Réservé à admin/manager : un member peut ouvrir une CAPA mais ne peut plus la modifier une
+// fois créée, même si elle lui est assignée — seul le commentaire de suivi lui reste ouvert
+// (POST /:id/comments, non restreint).
 router.patch(
   '/:id',
-  requireRole('admin', 'manager'),
+  (req, res, next) => {
+    if (req.userRole === 'member') {
+      return res.status(403).json({
+        error: 'Seuls les administrateurs et managers peuvent modifier une CAPA après sa création.',
+      });
+    }
+    next();
+  },
   [
     body('status').optional({ values: 'falsy' }).isIn(CAPA_STATUSES).withMessage('Statut invalide.'),
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),

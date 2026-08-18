@@ -277,6 +277,10 @@ router.post(
       preventive_action: preventiveAction,
     } = req.body;
 
+    // Même règle que POST /api/capas : un member ne choisit pas l'assigné, la CAPA lui est
+    // automatiquement rattachée quelle que soit la valeur envoyée dans le corps de la requête.
+    const finalAssignedTo = req.userRole === 'member' ? req.user.id : assignedTo || null;
+
     // Pas de numérotation manuelle : la base s'en charge déjà (voir set_capa_number côté
     // schema.sql), comme pour POST /api/capas.
     const { data: capa, error: capaError } = await supabase
@@ -288,7 +292,7 @@ router.post(
         ref_document: refDocument || null,
         severity: severity || undefined,
         priority: priority || undefined,
-        assigned_to: assignedTo || null,
+        assigned_to: finalAssignedTo,
         due_date: dueDate || null,
         root_cause: rootCause || null,
         corrective_action: correctiveAction || null,
