@@ -29,9 +29,10 @@ router.get('/', async (req, res) => {
   res.json(viewable);
 });
 
-// POST /api/categories — création
+// POST /api/categories — création (admin uniquement)
 router.post(
   '/',
+  requireRole('admin'),
   [
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
@@ -65,9 +66,10 @@ router.post(
   }
 );
 
-// PUT /api/categories/:id — mise à jour
+// PUT /api/categories/:id — mise à jour (admin uniquement)
 router.put(
   '/:id',
+  requireRole('admin'),
   [
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
@@ -102,8 +104,8 @@ router.put(
   }
 );
 
-// DELETE /api/categories/:id — suppression
-router.delete('/:id', async (req, res) => {
+// DELETE /api/categories/:id — suppression (admin uniquement)
+router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { error, count } = await supabase
     .from('document_categories')
     .delete({ count: 'exact' })
