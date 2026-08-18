@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '../services/serviceScope.js';
+import { fetchCapaItems, fetchDocumentItems, fetchTrainingItems, fetchTaskItems } from '../services/planningItems.js';
 
 const router = Router();
 
@@ -81,6 +82,35 @@ async function countDocumentsToReview(tenantId) {
   return count || 0;
 }
 
+// Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js, dupliqué aussi dans
+// kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne de ses relevés ne respecte pas
+// le sens de l'objectif (target_direction). Pas de service_id sur les KPI (voir schema.sql) :
+// toujours tout le tenant, jamais scopé — comme documents.to_review.
+async function countOffTargetKpis(tenantId) {
+  const { data: kpis, error } = await supabase
+    .from('kpis')
+    .select('id, target, target_direction, records:kpi_records(value)')
+    .eq('tenant_id', tenantId);
+
+  if (error || !kpis) return 0;
+
+  let count = 0;
+  for (const kpi of kpis) {
+    if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
+    const average = kpi.records.reduce((sum, record) => sum + record.value, 0) / kpi.records.length;
+    const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
+    if (!meetsTarget) count += 1;
+  }
+  return count;
+}
+
+// Total "en retard" tous outils confondus (CAPA + documents + formations + tâches), en
+// réutilisant les mêmes fonctions que /api/planning pour ne jamais afficher un chiffre qui
+// contredirait le détail donné par la page Planning — voir services/planningItems.js.
+function countOverdueItems(itemLists) {
+  return itemLists.flat().filter((item) => item.is_overdue).length;
+}
+
 // GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings}, filtrage
 // par service selon le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le
 // paramètre : ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
@@ -112,10 +142,21 @@ router.get('/stats', async (req, res) => {
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
+    const [capaItems, trainingItems, taskItems] = await Promise.all([
+      fetchCapaItems(req.tenantId, { assignedTo: req.user.id }),
+      fetchTrainingItems(req.tenantId, { userId: req.user.id }),
+      fetchTaskItems(req.tenantId, { personalUserId: req.user.id }),
+    ]);
+    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems]);
+
     return res.json({
       capas: countCapasByStatus(capas),
       documents: { to_review: 0 },
       trainings: { to_renew: trainingsToRenew },
+      // Pas de vue personnelle pour les KPI (pas de porteur individuel, comme documents) :
+      // 0 forcé ici, le widget correspondant reste masqué pour member côté frontend.
+      kpis: { off_target: 0 },
+      overdue: { total: overdueTotal },
     });
   }
 
@@ -146,11 +187,22 @@ router.get('/stats', async (req, res) => {
 
   const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
+  const kpisOffTarget = await countOffTargetKpis(req.tenantId);
+
+  const [capaItems, documentItems, trainingItems, taskItems] = await Promise.all([
+    fetchCapaItems(req.tenantId, { serviceIds }),
+    fetchDocumentItems(req.tenantId),
+    fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
+    fetchTaskItems(req.tenantId, {}),
+  ]);
+  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems]);
 
   res.json({
     capas: countCapasByStatus(capas),
     documents: { to_review: documentsToReview },
     trainings: { to_renew: trainingsToRenew },
+    kpis: { off_target: kpisOffTarget },
+    overdue: { total: overdueTotal },
   });
 });
 

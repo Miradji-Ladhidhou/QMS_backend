@@ -120,4 +120,51 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(invalid.status).toBe(400);
   });
+
+  it('compte les KPI hors objectif pour admin/manager, toujours à 0 pour member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Taux de rebut', target: 5, target_direction: 'max' });
+    await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-08-01', value: 12 });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.kpis.off_target).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.kpis.off_target).toBe(0);
+  });
+
+  it('total "en retard" agrège CAPA + documents + formations + tâches, jamais de documents pour member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    await makeCapa(tenant.admin.token, 'En retard pour A', { assignedTo: member.id });
+    await admin.from('capas').update({ due_date: '2026-08-01' }).eq('tenant_id', tenant.tenantId).eq('title', 'En retard pour A');
+
+    await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ title: 'Tâche en retard', due_date: '2026-08-01' });
+
+    const categoryRes = await admin.from('document_categories').insert({ tenant_id: tenant.tenantId, name: 'Cat' }).select().single();
+    await admin
+      .from('documents')
+      .insert({ tenant_id: tenant.tenantId, category_id: categoryRes.data.id, number: 'DOC-1', title: 'Doc en retard', review_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    // 1 CAPA + 1 document + 1 tâche en retard : les tâches sont toujours tenant-wide pour
+    // admin/manager (pas de notion de service dessus), donc la tâche du member est incluse.
+    expect(adminRes.body.overdue.total).toBe(3);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    // Le member voit sa CAPA assignée + sa propre tâche en retard, mais jamais le document.
+    expect(memberRes.body.overdue.total).toBe(2);
+  });
 });
