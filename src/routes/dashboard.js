@@ -62,7 +62,7 @@ async function countTrainingsToRenew(tenantId, userIds) {
 
   let recordsQuery = supabase
     .from('training_records')
-    .select('training_id, user_id, completed_at, next_due_date')
+    .select('training_id, user_id, employee_id, completed_at, next_due_date')
     .eq('tenant_id', tenantId);
 
   if (userIds) {
@@ -74,7 +74,10 @@ async function countTrainingsToRenew(tenantId, userIds) {
 
   const latestByPair = new Map();
   for (const record of data) {
-    const key = `${record.training_id}:${record.user_id}`;
+    // employee_id en repli : sans lui, plusieurs salariés sans compte (user_id null)
+    // s'écraseraient tous sur la même clé "training:null" et fausseraient le compte.
+    const personKey = record.user_id ? `u:${record.user_id}` : `e:${record.employee_id}`;
+    const key = `${record.training_id}:${personKey}`;
     const existing = latestByPair.get(key);
     if (!existing || record.completed_at > existing.completed_at) {
       latestByPair.set(key, record);

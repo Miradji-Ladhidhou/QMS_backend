@@ -52,6 +52,20 @@ create table users (
   updated_at      timestamptz not null default now()
 );
 
+-- Personnel suivi pour les formations (et la matrice des compétences) sans avoir de compte
+-- QMS SaaS — beaucoup de salariés (opérateurs, personnel de terrain...) doivent être
+-- qualifiés au sens ISO 9001 sans jamais se connecter à l'application. Volontairement séparé
+-- de users : ce dernier est indissociable d'un compte auth.users (voir sa FK), ce qui exclut
+-- structurellement toute personne sans accès.
+create table employees (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  full_name   text not null,
+  email       text,
+  is_active   boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+
 create table document_categories (
   id          uuid primary key default gen_random_uuid(),
   tenant_id   uuid not null references tenants (id) on delete cascade,
@@ -218,15 +232,21 @@ create table trainings (
   updated_at        timestamptz not null default now()
 );
 
+-- La personne formée est soit un compte (user_id) soit un salarié sans compte (employee_id),
+-- jamais les deux ni aucun des deux — voir la contrainte plus bas.
 create table training_records (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references tenants (id) on delete cascade,
   training_id    uuid not null references trainings (id) on delete cascade,
-  user_id        uuid not null references users (id) on delete cascade,
+  user_id        uuid references users (id) on delete cascade,
+  employee_id    uuid references employees (id) on delete cascade,
   completed_at   date not null,
   next_due_date  date,
   certificate_url text,
-  created_at     timestamptz not null default now()
+  created_at     timestamptz not null default now(),
+  constraint training_records_person_check check (
+    (user_id is not null and employee_id is null) or (user_id is null and employee_id is not null)
+  )
 );
 
 -- Classement arborescent des KPI (ex : "Contrôle commande" > "Contrôle 2026" > les KPI de
@@ -489,6 +509,8 @@ $$;
 
 create index idx_users_tenant_id on users (tenant_id);
 
+create index idx_employees_tenant_id on employees (tenant_id);
+
 create index idx_document_categories_tenant_id on document_categories (tenant_id);
 
 create index idx_documents_tenant_id on documents (tenant_id);
@@ -523,6 +545,7 @@ create index idx_trainings_tenant_id on trainings (tenant_id);
 create index idx_training_records_tenant_id on training_records (tenant_id);
 create index idx_training_records_training_id on training_records (training_id);
 create index idx_training_records_user_id on training_records (user_id);
+create index idx_training_records_employee_id on training_records (employee_id);
 create index idx_training_records_next_due_date on training_records (next_due_date);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
@@ -746,6 +769,7 @@ $$;
 
 alter table tenants enable row level security;
 alter table users enable row level security;
+alter table employees enable row level security;
 alter table document_categories enable row level security;
 alter table documents enable row level security;
 alter table document_versions enable row level security;
@@ -782,6 +806,11 @@ create policy tenants_isolation on tenants
 
 -- users : visibles/modifiables uniquement au sein du même tenant
 create policy users_isolation on users
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy employees_isolation on employees
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

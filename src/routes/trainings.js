@@ -27,11 +27,18 @@ function isoDateInDays(days) {
   return date.toISOString().slice(0, 10);
 }
 
-// Ne garde que le dernier enregistrement par couple (formation, utilisateur)
+// Un compte (user_id) ou un salarié sans compte (employee_id), jamais les deux — voir la
+// contrainte training_records_person_check. Sert de clé stable pour grouper par personne
+// sans dépendre de laquelle des deux colonnes est renseignée.
+function personKey(record) {
+  return record.user_id ? `u:${record.user_id}` : `e:${record.employee_id}`;
+}
+
+// Ne garde que le dernier enregistrement par couple (formation, personne)
 async function fetchLatestTrainingRecords(tenantId) {
   const { data: records, error } = await supabase
     .from('training_records')
-    .select('training_id, user_id, completed_at, next_due_date')
+    .select('training_id, user_id, employee_id, completed_at, next_due_date')
     .eq('tenant_id', tenantId);
 
   if (error) {
@@ -40,7 +47,7 @@ async function fetchLatestTrainingRecords(tenantId) {
 
   const latestByPair = new Map();
   for (const record of records) {
-    const key = `${record.training_id}:${record.user_id}`;
+    const key = `${record.training_id}:${personKey(record)}`;
     const existing = latestByPair.get(key);
     if (!existing || record.completed_at > existing.completed_at) {
       latestByPair.set(key, record);
@@ -54,7 +61,9 @@ async function fetchLatestTrainingRecords(tenantId) {
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('trainings')
-    .select('*, records:training_records(id, user_id, completed_at, next_due_date, certificate_url, user:users(id, full_name))')
+    .select(
+      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name))'
+    )
     .eq('tenant_id', req.tenantId)
     .order('title', { ascending: true });
 
@@ -65,14 +74,17 @@ router.get('/', async (req, res) => {
   res.json(data);
 });
 
-// GET /api/trainings/matrix — vue croisée utilisateurs x formations
+// GET /api/trainings/matrix — vue croisée personnel x formations (comptes ET salariés sans
+// compte, voir employees.js).
 router.get('/matrix', async (req, res) => {
-  const [{ data: users, error: usersError }, { data: trainings, error: trainingsError }] = await Promise.all([
-    supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId),
-    supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', req.tenantId),
-  ]);
+  const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: trainings, error: trainingsError }] =
+    await Promise.all([
+      supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId),
+      supabase.from('employees').select('id, full_name').eq('tenant_id', req.tenantId).eq('is_active', true),
+      supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', req.tenantId),
+    ]);
 
-  if (usersError || trainingsError) {
+  if (usersError || employeesError || trainingsError) {
     return res.status(500).json({ error: 'Impossible de construire la matrice des formations.' });
   }
 
@@ -86,14 +98,20 @@ router.get('/matrix', async (req, res) => {
   const today = new Date().toISOString().slice(0, 10);
   const soonThreshold = isoDateInDays(RENEWAL_WINDOW_DAYS);
 
+  const people = [
+    ...users.map((user) => ({ id: user.id, full_name: user.full_name, kind: 'user' })),
+    ...employees.map((employee) => ({ id: employee.id, full_name: employee.full_name, kind: 'employee' })),
+  ];
+
   const matrix = trainings.map((training) => ({
     training: { id: training.id, title: training.title },
-    users: users.map((user) => {
-      const record = latestByPair.get(`${training.id}:${user.id}`);
+    people: people.map((person) => {
+      const key = `${training.id}:${person.kind === 'user' ? 'u' : 'e'}:${person.id}`;
+      const record = latestByPair.get(key);
 
       if (!record) {
         return {
-          user: { id: user.id, full_name: user.full_name },
+          person,
           status: STATUS.NEVER_DONE,
           last_completed_at: null,
           next_due_date: null,
@@ -110,7 +128,7 @@ router.get('/matrix', async (req, res) => {
       }
 
       return {
-        user: { id: user.id, full_name: user.full_name },
+        person,
         status,
         last_completed_at: record.completed_at,
         next_due_date: record.next_due_date,
@@ -142,24 +160,34 @@ router.get('/upcoming-renewals', async (req, res) => {
   }
 
   const trainingIds = [...new Set(upcoming.map((record) => record.training_id))];
-  const userIds = [...new Set(upcoming.map((record) => record.user_id))];
+  const userIds = [...new Set(upcoming.map((record) => record.user_id).filter(Boolean))];
+  const employeeIds = [...new Set(upcoming.map((record) => record.employee_id).filter(Boolean))];
 
-  const [{ data: trainings, error: trainingsError }, { data: users, error: usersError }] = await Promise.all([
+  const [
+    { data: trainings, error: trainingsError },
+    { data: users, error: usersError },
+    { data: employees, error: employeesError },
+  ] = await Promise.all([
     supabase.from('trainings').select('id, title').in('id', trainingIds),
-    supabase.from('users').select('id, full_name').in('id', userIds),
+    userIds.length ? supabase.from('users').select('id, full_name').in('id', userIds) : Promise.resolve({ data: [] }),
+    employeeIds.length
+      ? supabase.from('employees').select('id, full_name').in('id', employeeIds)
+      : Promise.resolve({ data: [] }),
   ]);
 
-  if (trainingsError || usersError) {
+  if (trainingsError || usersError || employeesError) {
     return res.status(500).json({ error: 'Impossible de récupérer les renouvellements à venir.' });
   }
 
   const trainingsById = new Map(trainings.map((training) => [training.id, training]));
   const usersById = new Map(users.map((user) => [user.id, user]));
+  const employeesById = new Map(employees.map((employee) => [employee.id, employee]));
 
   const result = upcoming
     .map((record) => ({
       training: trainingsById.get(record.training_id),
-      user: usersById.get(record.user_id),
+      user: record.user_id ? usersById.get(record.user_id) : null,
+      employee: record.employee_id ? employeesById.get(record.employee_id) : null,
       last_completed_at: record.completed_at,
       next_due_date: record.next_due_date,
     }))
@@ -266,7 +294,8 @@ router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
 router.post(
   '/:id/records',
   [
-    body('user_id').isUUID().withMessage('Utilisateur invalide.'),
+    body('user_id').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur invalide.'),
+    body('employee_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne invalide.'),
     body('completed_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
     body('certificate_url').optional({ values: 'falsy' }).trim(),
   ],
@@ -274,6 +303,12 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { user_id: userId, employee_id: employeeId, certificate_url: certificateUrl } = req.body;
+
+    if ((userId && employeeId) || (!userId && !employeeId)) {
+      return res.status(400).json({ error: 'Indiquez soit un utilisateur, soit une personne du personnel, pas les deux.' });
     }
 
     const { data: training, error: trainingError } = await supabase
@@ -287,7 +322,6 @@ router.post(
       return res.status(404).json({ error: 'Formation introuvable.' });
     }
 
-    const { user_id: userId, certificate_url: certificateUrl } = req.body;
     const completedAt = req.body.completed_at || new Date().toISOString().slice(0, 10);
     const nextDueDate = training.frequency_months ? addMonths(completedAt, training.frequency_months) : null;
 
@@ -296,12 +330,13 @@ router.post(
       .insert({
         tenant_id: req.tenantId,
         training_id: training.id,
-        user_id: userId,
+        user_id: userId || null,
+        employee_id: employeeId || null,
         completed_at: completedAt,
         next_due_date: nextDueDate,
         certificate_url: certificateUrl || null,
       })
-      .select('*, user:users(id, full_name)')
+      .select('*, user:users(id, full_name), employee:employees(id, full_name)')
       .single();
 
     if (error) {
@@ -359,7 +394,7 @@ router.patch(
       .eq('tenant_id', req.tenantId)
       .eq('training_id', req.params.id)
       .eq('id', req.params.recordId)
-      .select('*, user:users(id, full_name)')
+      .select('*, user:users(id, full_name), employee:employees(id, full_name)')
       .single();
 
     if (error || !data) {
