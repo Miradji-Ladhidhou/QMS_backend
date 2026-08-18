@@ -17,6 +17,7 @@ import workflowsRoutes from './routes/workflows.js';
 import notificationsRoutes from './routes/notifications.js';
 import groupsRoutes from './routes/groups.js';
 import servicesRoutes from './routes/services.js';
+import dashboardRoutes from './routes/dashboard.js';
 import superAdminRoutes from './routes/superAdmin.js';
 import { scheduleNotificationJob } from './jobs/notificationJob.js';
 
@@ -49,6 +50,7 @@ app.use('/api/workflows', workflowsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/groups', groupsRoutes);
 app.use('/api/services', servicesRoutes);
+app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/super-admin', superAdminRoutes);
 
 const PORT = process.env.PORT || 4000;
