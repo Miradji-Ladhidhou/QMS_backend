@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -203,6 +203,65 @@ router.post(
   }
 );
 
+// PATCH /api/trainings/:id — corrige le titre/type/fréquence d'une formation (admin uniquement)
+router.patch(
+  '/:id',
+  requireRole('owner', 'admin', 'manager'),
+  [
+    body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
+    body('type').optional({ values: 'falsy' }).trim(),
+    body('frequency_months').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Fréquence invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const update = {};
+    for (const field of ['title', 'type', 'frequency_months']) {
+      if (field in req.body) {
+        update[field] = req.body[field];
+      }
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const { data, error } = await supabase
+      .from('trainings')
+      .update(update)
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Formation introuvable.' });
+    }
+
+    res.json(data);
+  }
+);
+
+// DELETE /api/trainings/:id — supprime une formation et ses réalisations (admin uniquement)
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+  const { data, error } = await supabase
+    .from('trainings')
+    .delete()
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Formation introuvable.' });
+  }
+
+  res.status(204).end();
+});
+
 // POST /api/trainings/:id/records — enregistre une réalisation, calcule next_due_date
 router.post(
   '/:id/records',
@@ -252,5 +311,81 @@ router.post(
     res.status(201).json(data);
   }
 );
+
+// PATCH /api/trainings/:id/records/:recordId — corrige une réalisation mal saisie ; recalcule
+// next_due_date si la date de réalisation change (admin uniquement)
+router.patch(
+  '/:id/records/:recordId',
+  requireRole('owner', 'admin', 'manager'),
+  [
+    body('completed_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
+    body('certificate_url').optional({ values: 'falsy' }).trim(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    if (!('completed_at' in req.body) && !('certificate_url' in req.body)) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const { data: training, error: trainingError } = await supabase
+      .from('trainings')
+      .select('id, frequency_months')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (trainingError || !training) {
+      return res.status(404).json({ error: 'Formation introuvable.' });
+    }
+
+    const update = {};
+    if ('certificate_url' in req.body) {
+      update.certificate_url = req.body.certificate_url || null;
+    }
+    if (req.body.completed_at) {
+      update.completed_at = req.body.completed_at;
+      update.next_due_date = training.frequency_months
+        ? addMonths(req.body.completed_at, training.frequency_months)
+        : null;
+    }
+
+    const { data, error } = await supabase
+      .from('training_records')
+      .update(update)
+      .eq('tenant_id', req.tenantId)
+      .eq('training_id', req.params.id)
+      .eq('id', req.params.recordId)
+      .select('*, user:users(id, full_name)')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Réalisation introuvable.' });
+    }
+
+    res.json(data);
+  }
+);
+
+// DELETE /api/trainings/:id/records/:recordId — retire une réalisation (admin uniquement)
+router.delete('/:id/records/:recordId', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+  const { data, error } = await supabase
+    .from('training_records')
+    .delete()
+    .eq('tenant_id', req.tenantId)
+    .eq('training_id', req.params.id)
+    .eq('id', req.params.recordId)
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Réalisation introuvable.' });
+  }
+
+  res.status(204).end();
+});
 
 export default router;

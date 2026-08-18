@@ -355,11 +355,18 @@ create table document_approvals (
 
 -- Piste d'audit exigée par ISO 9001 / FDA 21 CFR Part 11 : INSERT uniquement,
 -- jamais de UPDATE/DELETE (voir le trigger document_audit_log_immutable plus bas).
+-- Aucune des trois colonnes de référence (tenant_id, document_id, user_id) n'est une clé
+-- étrangère : ce journal doit survivre à la suppression du tenant, du document ou de
+-- l'utilisateur qu'il documente. Une FK ON DELETE (CASCADE ou SET NULL) aurait déclenché
+-- une cascade UPDATE/DELETE sur ces lignes, bloquée par le trigger immuable — ce qui aurait
+-- empêché toute suppression d'un tenant/document/utilisateur ayant déjà un historique
+-- (bug réel rencontré : DELETE /api/tenant et DELETE /api/documents/:id échouaient dès
+-- qu'un document avait au moins une entrée d'audit).
 create table document_audit_log (
   id          uuid primary key default gen_random_uuid(),
-  tenant_id   uuid not null references tenants (id) on delete cascade,
-  document_id uuid not null references documents (id) on delete cascade,
-  user_id     uuid references users (id) on delete set null,
+  tenant_id   uuid not null,
+  document_id uuid not null,
+  user_id     uuid,
   action      text not null,
   details     jsonb,
   created_at  timestamptz not null default now()

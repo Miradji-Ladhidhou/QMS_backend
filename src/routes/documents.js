@@ -592,6 +592,15 @@ router.delete(
   requireRole('owner', 'admin', 'manager'),
   requireCategoryPermission('delete', resolveDocumentById),
   async (req, res) => {
+  // Le titre/numéro est capturé avant suppression : document_audit_log doit rester lisible
+  // une fois le document parti (voir la note sur document_id dans schema.sql).
+  const { data: document } = await supabase
+    .from('documents')
+    .select('number, title')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
   const { error, count } = await supabase
     .from('documents')
     .delete({ count: 'exact' })
@@ -605,6 +614,14 @@ router.delete(
   if (!count) {
     return res.status(404).json({ error: 'Document introuvable.' });
   }
+
+  await logAudit({
+    tenantId: req.tenantId,
+    documentId: req.params.id,
+    userId: req.user.id,
+    action: 'deleted',
+    details: { number: document?.number, title: document?.title },
+  });
 
   res.status(204).send();
 });

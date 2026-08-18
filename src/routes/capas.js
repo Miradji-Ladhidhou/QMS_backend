@@ -263,6 +263,23 @@ router.patch(
   }
 );
 
+// DELETE /api/capas/:id — supprime une CAPA (admin uniquement)
+router.delete('/:id', requireRole('owner', 'admin', 'manager'), async (req, res) => {
+  const { data, error } = await supabase
+    .from('capas')
+    .delete()
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .select('id')
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
+  }
+
+  res.status(204).end();
+});
+
 // POST /api/capas/:id/comments — ajoute un commentaire de suivi horodaté
 router.post(
   '/:id/comments',
