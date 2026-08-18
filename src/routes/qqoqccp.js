@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -67,8 +68,9 @@ router.get('/:id/pdf', async (req, res) => {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
   }
 
-  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
-  const pdfBuffer = await buildQqoqccpPdf({ tenantName: tenant?.name, analysis });
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildQqoqccpPdf({ tenantName: tenant?.name, tenantLogo, analysis });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="qqoqccp-${analysis.id}.pdf"`);

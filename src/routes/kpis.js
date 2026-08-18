@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 
 const router = Router();
@@ -53,7 +54,8 @@ router.get('/', async (req, res) => {
 // GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
 // avant GET /:id : sinon "report" serait capturé comme un id et renverrait 404.
 router.get('/report', async (req, res) => {
-  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
 
   const { data: kpis, error } = await supabase
     .from('kpis')
@@ -88,7 +90,7 @@ router.get('/report', async (req, res) => {
     }
   }
 
-  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, kpis, detailStatsByKpi });
+  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, tenantLogo, kpis, detailStatsByKpi });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.pdf"`);

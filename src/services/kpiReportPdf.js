@@ -121,7 +121,10 @@ function drawTrendChart(doc, { x, y, width, height, records, target }) {
   });
 }
 
-function drawPageHeader(doc, tenantName) {
+// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js. Dans un try/catch
+// séparé du reste du dessin : un logo dans un format que pdfkit ne sait pas décoder (SVG,
+// WEBP...) ne doit jamais faire échouer toute la génération du rapport, juste rester absent.
+function drawPageHeader(doc, tenantName, tenantLogo) {
   doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
   doc.fillColor('#ffffff').fontSize(18).text('Rapport des indicateurs qualité (KPI)', PAGE_MARGIN, 26);
   doc.fontSize(9).fillColor(NAVY_LIGHT);
@@ -129,20 +132,28 @@ function drawPageHeader(doc, tenantName) {
   doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
   doc.fillColor(INK);
   doc.y = 104;
+
+  if (tenantLogo) {
+    try {
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+    } catch {
+      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
+    }
+  }
 }
 
-function ensureSpace(doc, tenantName, requiredHeight) {
+function ensureSpace(doc, tenantName, tenantLogo, requiredHeight) {
   const bottom = doc.page.height - doc.page.margins.bottom;
   if (doc.y + requiredHeight > bottom) {
     doc.addPage();
-    drawPageHeader(doc, tenantName);
+    drawPageHeader(doc, tenantName, tenantLogo);
   }
 }
 
 const CHART_HEIGHT = 90;
 const RECORD_ROWS_MAX = 12;
 
-function drawKpiSection(doc, tenantName, kpi, detailStats) {
+function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   const records = [...kpi.records].sort((a, b) => (a.period_date > b.period_date ? 1 : -1));
   const lastRecords = records.slice(-RECORD_ROWS_MAX);
   // Le statut et la valeur mise en avant reflètent la moyenne de toutes les périodes
@@ -158,7 +169,7 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
   // (une section qui déborde milieu de dessin se retrouve coupée n'importe où sur la page
   // suivante). Mieux vaut sur-estimer largement que de risquer une section tronquée.
   const requiredHeight = 32 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0);
-  ensureSpace(doc, tenantName, requiredHeight);
+  ensureSpace(doc, tenantName, tenantLogo, requiredHeight);
 
   const sectionTop = doc.y;
   doc.fontSize(12).fillColor(NAVY).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH - 90 });
@@ -229,9 +240,9 @@ function drawKpiSection(doc, tenantName, kpi, detailStats) {
   doc.moveDown(0.8);
 }
 
-function drawSummaryPage(doc, tenantName, kpis) {
+function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
   doc.addPage();
-  drawPageHeader(doc, tenantName);
+  drawPageHeader(doc, tenantName, tenantLogo);
   doc.fontSize(15).fillColor(NAVY).text('Synthèse', PAGE_MARGIN, doc.y);
   doc.moveDown(0.8);
 
@@ -263,7 +274,7 @@ function drawSummaryPage(doc, tenantName, kpis) {
   kpis.forEach((kpi) => {
     if (rowY > doc.page.height - doc.page.margins.bottom - 16) {
       doc.addPage();
-      drawPageHeader(doc, tenantName);
+      drawPageHeader(doc, tenantName, tenantLogo);
       rowY = doc.y;
       drawHeaderRow();
     }
@@ -293,7 +304,7 @@ function drawSummaryPage(doc, tenantName, kpis) {
 
 // Construit le PDF en mémoire (pas de fichier temporaire) : les chunks du flux pdfkit sont
 // collectés dans un buffer, résolu à l'évènement 'end' — même pattern que certificatePdf.js.
-export function buildKpiReportPdf({ tenantName, kpis, detailStatsByKpi }) {
+export function buildKpiReportPdf({ tenantName, tenantLogo, kpis, detailStatsByKpi }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -301,15 +312,15 @@ export function buildKpiReportPdf({ tenantName, kpis, detailStatsByKpi }) {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    drawPageHeader(doc, tenantName);
+    drawPageHeader(doc, tenantName, tenantLogo);
 
     if (kpis.length === 0) {
       doc.fontSize(10).fillColor(MUTED).text('Aucun KPI configuré pour ce tenant.', PAGE_MARGIN, doc.y);
     } else {
       kpis.forEach((kpi) => {
-        drawKpiSection(doc, tenantName, kpi, detailStatsByKpi[kpi.id]);
+        drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStatsByKpi[kpi.id]);
       });
-      drawSummaryPage(doc, tenantName, kpis);
+      drawSummaryPage(doc, tenantName, tenantLogo, kpis);
     }
 
     doc.end();

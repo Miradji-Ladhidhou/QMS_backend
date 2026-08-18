@@ -34,13 +34,23 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
-function drawPageHeader(doc, tenantName) {
+// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
+// dans kpiReportPdf.js.
+function drawPageHeader(doc, tenantName, tenantLogo) {
   doc.rect(0, 0, PAGE_WIDTH, 70).fill(NAVY);
   doc.fillColor('#ffffff').fontSize(16).text('Matrice des compétences', PAGE_MARGIN, 20);
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 42);
   doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 54);
   doc.fillColor(INK);
+
+  if (tenantLogo) {
+    try {
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 44, 13, { fit: [44, 44], align: 'right', valign: 'center' });
+    } catch {
+      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
+    }
+  }
 }
 
 function drawLegend(doc, y) {
@@ -107,7 +117,7 @@ function chunk(array, size) {
 // par groupe), et à l'intérieur de chaque groupe on repagine verticalement dès que les lignes
 // de personnel dépassent la hauteur restante, en réaffichant l'en-tête de colonnes à chaque
 // nouvelle page — même logique que la table de synthèse de kpiReportPdf.js.
-export function buildSkillMatrixPdf({ tenantName, matrix }) {
+export function buildSkillMatrixPdf({ tenantName, tenantLogo, matrix }) {
   return new Promise((resolve, reject) => {
     // autoFirstPage: false — sans quoi pdfkit crée une première page vide à la construction,
     // avant notre premier doc.addPage() explicite dans la boucle ci-dessous.
@@ -130,7 +140,7 @@ export function buildSkillMatrixPdf({ tenantName, matrix }) {
 
     columnGroups.forEach((group, groupIndex) => {
       doc.addPage();
-      drawPageHeader(doc, tenantName);
+      drawPageHeader(doc, tenantName, tenantLogo);
       if (groupIndex === 0) drawLegend(doc, 78);
 
       let y = groupIndex === 0 ? 96 : 90;
@@ -144,7 +154,7 @@ export function buildSkillMatrixPdf({ tenantName, matrix }) {
       people.forEach((person) => {
         if (y + ROW_HEIGHT > PAGE_HEIGHT - PAGE_MARGIN) {
           doc.addPage();
-          drawPageHeader(doc, tenantName);
+          drawPageHeader(doc, tenantName, tenantLogo);
           y = drawTableHeaderRow(doc, group, 90);
         }
         drawPersonRow(doc, person, group, findEntry, y);

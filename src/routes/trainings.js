@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -151,8 +152,9 @@ router.get('/matrix', async (req, res) => {
 router.get('/matrix/pdf', async (req, res) => {
   try {
     const matrix = await buildMatrix(req.tenantId);
-    const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
-    const pdfBuffer = await buildSkillMatrixPdf({ tenantName: tenant?.name, matrix });
+    const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+    const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+    const pdfBuffer = await buildSkillMatrixPdf({ tenantName: tenant?.name, tenantLogo, matrix });
 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="matrice-competences-${new Date().toISOString().slice(0, 10)}.pdf"`);

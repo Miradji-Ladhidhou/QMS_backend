@@ -31,7 +31,10 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
-function drawPageHeader(doc, tenantName) {
+// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
+// dans kpiReportPdf.js (un format que pdfkit ne sait pas décoder ne doit jamais faire
+// échouer toute la génération du rapport).
+function drawPageHeader(doc, tenantName, tenantLogo) {
   doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
   doc.fillColor('#ffffff').fontSize(18).text('Analyse QQOQCCP', PAGE_MARGIN, 26);
   doc.fontSize(9).fillColor(NAVY_LIGHT);
@@ -39,6 +42,14 @@ function drawPageHeader(doc, tenantName) {
   doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
   doc.fillColor(INK);
   doc.y = 104;
+
+  if (tenantLogo) {
+    try {
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+    } catch {
+      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
+    }
+  }
 }
 
 // Le PDF est construit en flux libre (doc.text sans y explicite) plutôt qu'en positions
@@ -46,16 +57,16 @@ function drawPageHeader(doc, tenantName) {
 // contrairement aux sections KPI de hauteur bornée. pdfkit déclenche 'pageAdded' à chaque
 // saut de page automatique (overflow de texte) ou manuel — on l'utilise pour redessiner le
 // bandeau d'en-tête sur toutes les pages sans avoir à estimer l'espace restant nous-mêmes.
-export function buildQqoqccpPdf({ tenantName, analysis }) {
+export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName));
+    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
 
-    drawPageHeader(doc, tenantName);
+    drawPageHeader(doc, tenantName, tenantLogo);
 
     doc.fontSize(15).fillColor(NAVY).text(analysis.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.moveDown(0.2);
