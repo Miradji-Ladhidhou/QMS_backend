@@ -98,11 +98,35 @@ create table document_versions (
   created_at   timestamptz not null default now()
 );
 
+-- Liste fermée des services, en remplacement progressif du champ texte libre
+-- capas.service (voir plus bas) — ne pas supprimer ce dernier tant que la migration
+-- des données existantes n'est pas faite.
+create table services (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  name        text not null,
+  is_active   boolean not null default true,
+  created_at  timestamptz not null default now()
+);
+
+-- Rattache un utilisateur (typiquement un manager) à un ou plusieurs services, pour le
+-- filtrage de son tableau de bord.
+create table user_services (
+  user_id     uuid not null references users (id) on delete cascade,
+  service_id  uuid not null references services (id) on delete cascade,
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  primary key (user_id, service_id)
+);
+
 create table capas (
   id                      uuid primary key default gen_random_uuid(),
   tenant_id               uuid not null references tenants (id) on delete cascade,
   number                  text,
   title                   text not null,
+  -- Remplace progressivement le champ texte libre "service" ci-dessous par une liste
+  -- fermée gérée par l'admin (table services) — les deux coexistent le temps de migrer
+  -- les données existantes ; "service" n'est pas encore supprimé.
+  service_id              uuid references services (id) on delete set null,
   service                 text,
   description             text,
   origin                  text,
@@ -476,11 +500,18 @@ create index idx_documents_search_vector on documents using gin (search_vector);
 create index idx_document_versions_document_id on document_versions (document_id);
 create index idx_document_versions_tenant_id on document_versions (tenant_id);
 
+create index idx_services_tenant_id on services (tenant_id);
+
+create index idx_user_services_tenant_id on user_services (tenant_id);
+create index idx_user_services_user_id on user_services (user_id);
+create index idx_user_services_service_id on user_services (service_id);
+
 create index idx_capas_tenant_id on capas (tenant_id);
 create index idx_capas_status on capas (status);
 create index idx_capas_assigned_to on capas (assigned_to);
 create index idx_capas_ref_document on capas (ref_document);
 create index idx_capas_due_date on capas (due_date);
+create index idx_capas_service_id on capas (service_id);
 
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
@@ -718,6 +749,8 @@ alter table users enable row level security;
 alter table document_categories enable row level security;
 alter table documents enable row level security;
 alter table document_versions enable row level security;
+alter table services enable row level security;
+alter table user_services enable row level security;
 alter table capas enable row level security;
 alter table capa_counters enable row level security;
 alter table capa_priority_delays enable row level security;
@@ -764,6 +797,16 @@ create policy documents_isolation on documents
   with check (tenant_id = auth_tenant_id());
 
 create policy document_versions_isolation on document_versions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy services_isolation on services
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy user_services_isolation on user_services
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
