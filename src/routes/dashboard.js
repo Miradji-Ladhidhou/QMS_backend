@@ -1,9 +1,9 @@
 import { Router } from 'express';
-import { query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Mêmes fenêtres que documents.js (/alerts) et trainings.js (/upcoming-renewals), pour
 // rester cohérent avec les indicateurs déjà affichés ailleurs dans l'application.
@@ -105,80 +105,78 @@ async function countDocumentsToReview(tenantId) {
 }
 
 // GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings}, filtrage
-// par service selon le rôle :
+// par service selon le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le
+// paramètre : ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : filtré automatiquement sur ses services (table user_services, prompt B2) si
-//   aucun service_id n'est fourni ; un service_id explicite hors périmètre est autorisé
-//   (vue élargie ponctuelle) sans changer son filtrage par défaut aux prochains appels —
-//   rien n'est mémorisé côté serveur, chaque appel est indépendant
+//   aucun service_id n'est fourni ; un/des service_id explicites hors périmètre sont
+//   autorisés (vue élargie ponctuelle) sans changer son filtrage par défaut aux prochains
+//   appels — rien n'est mémorisé côté serveur, chaque appel est indépendant
 // - member : uniquement ses propres CAPA assignées et ses propres formations, jamais de vue
-//   tenant ou service ; documents.to_review reste à 0 pour ce rôle — les documents n'ont pas
-//   de porteur individuel dans le schéma, pas de métrique personnelle à calculer ici
-router.get(
-  '/stats',
-  [query('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.')],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+//   tenant ou service (service_id est ignoré) ; documents.to_review reste à 0 pour ce rôle —
+//   les documents n'ont pas de porteur individuel dans le schéma, pas de métrique
+//   personnelle à calculer ici
+router.get('/stats', async (req, res) => {
+  const rawServiceId = req.query.service_id;
+  const requestedServiceIds = rawServiceId === undefined ? [] : [].concat(rawServiceId);
+
+  if (requestedServiceIds.some((id) => typeof id !== 'string' || !UUID_RE.test(id))) {
+    return res.status(400).json({ error: 'Service invalide.' });
+  }
+
+  if (req.userRole === 'member') {
+    const { data: capas, error: capasError } = await supabase
+      .from('capas')
+      .select('status')
+      .eq('tenant_id', req.tenantId)
+      .eq('assigned_to', req.user.id);
+
+    if (capasError) {
+      return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
     }
 
-    const requestedServiceId = req.query.service_id || null;
+    const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
-    if (req.userRole === 'member') {
-      const { data: capas, error: capasError } = await supabase
-        .from('capas')
-        .select('status')
-        .eq('tenant_id', req.tenantId)
-        .eq('assigned_to', req.user.id);
-
-      if (capasError) {
-        return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
-      }
-
-      const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
-
-      return res.json({
-        capas: countCapasByStatus(capas),
-        documents: { to_review: 0 },
-        trainings: { to_renew: trainingsToRenew },
-      });
-    }
-
-    // admin / manager : détermine le(s) service(s) à filtrer — null signifie "tout le tenant".
-    let serviceIds = null;
-    if (requestedServiceId) {
-      serviceIds = [requestedServiceId];
-    } else if (req.userRole === 'manager') {
-      serviceIds = await fetchUserServiceIds(req.tenantId, req.user.id);
-    }
-
-    let capas = [];
-    if (!serviceIds || serviceIds.length > 0) {
-      let capasQuery = supabase.from('capas').select('status').eq('tenant_id', req.tenantId);
-      if (serviceIds) {
-        capasQuery = capasQuery.in('service_id', serviceIds);
-      }
-      const { data, error } = await capasQuery;
-      if (error) {
-        return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
-      }
-      capas = data;
-    }
-
-    // Les documents n'ont pas de service_id (voir schema.sql) : aucun filtrage possible,
-    // le compte reste celui du tenant entier quel que soit service_id.
-    const documentsToReview = await countDocumentsToReview(req.tenantId);
-
-    const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
-    const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
-
-    res.json({
+    return res.json({
       capas: countCapasByStatus(capas),
-      documents: { to_review: documentsToReview },
+      documents: { to_review: 0 },
       trainings: { to_renew: trainingsToRenew },
     });
   }
-);
+
+  // admin / manager : détermine le(s) service(s) à filtrer — null signifie "tout le tenant".
+  let serviceIds = null;
+  if (requestedServiceIds.length > 0) {
+    serviceIds = requestedServiceIds;
+  } else if (req.userRole === 'manager') {
+    serviceIds = await fetchUserServiceIds(req.tenantId, req.user.id);
+  }
+
+  let capas = [];
+  if (!serviceIds || serviceIds.length > 0) {
+    let capasQuery = supabase.from('capas').select('status').eq('tenant_id', req.tenantId);
+    if (serviceIds) {
+      capasQuery = capasQuery.in('service_id', serviceIds);
+    }
+    const { data, error } = await capasQuery;
+    if (error) {
+      return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
+    }
+    capas = data;
+  }
+
+  // Les documents n'ont pas de service_id (voir schema.sql) : aucun filtrage possible,
+  // le compte reste celui du tenant entier quel que soit service_id.
+  const documentsToReview = await countDocumentsToReview(req.tenantId);
+
+  const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
+  const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
+
+  res.json({
+    capas: countCapasByStatus(capas),
+    documents: { to_review: documentsToReview },
+    trainings: { to_renew: trainingsToRenew },
+  });
+});
 
 export default router;
