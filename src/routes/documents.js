@@ -530,15 +530,30 @@ router.get('/:id/audit-log', requireCategoryPermission('view', resolveDocumentBy
     return res.status(404).json({ error: 'Document introuvable.' });
   }
 
-  const { data, error } = await supabase
+  const { data: logRows, error } = await supabase
     .from('document_audit_log')
-    .select('*, user:users(id, full_name)')
+    .select('*')
     .eq('document_id', document.id)
     .order('created_at', { ascending: false });
 
   if (error) {
     return res.status(500).json({ error: "Impossible de récupérer le journal d'audit." });
   }
+
+  // user_id n'est plus une clé étrangère (voir schema.sql : le journal doit survivre à la
+  // suppression du tenant/document/utilisateur qu'il documente), donc plus d'embed PostgREST
+  // possible ici — jointure faite à la main. Un user_id sans utilisateur retrouvé (compte
+  // supprimé depuis) donne simplement user: null plutôt que d'échouer.
+  const userIds = [...new Set(logRows.map((row) => row.user_id).filter(Boolean))];
+  const usersById = new Map();
+  if (userIds.length > 0) {
+    const { data: authors } = await supabase.from('users').select('id, full_name').in('id', userIds);
+    for (const author of authors || []) {
+      usersById.set(author.id, author);
+    }
+  }
+
+  const data = logRows.map((row) => ({ ...row, user: usersById.get(row.user_id) || null }));
 
   res.json(data);
 });
