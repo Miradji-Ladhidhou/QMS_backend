@@ -1,0 +1,65 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import request from 'supertest';
+import app from '../app.js';
+import { createTenant } from '../test-utils/tenant.js';
+
+let tenant;
+
+afterEach(async () => {
+  if (tenant) {
+    await tenant.cleanup();
+    tenant = undefined;
+  }
+});
+
+describe('POST /api/reports/table-pdf', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app)
+      .post('/api/reports/table-pdf')
+      .send({ title: 'Rapport', columns: [{ key: 'a', label: 'A' }], rows: [] });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si titre ou colonnes manquants', async () => {
+    tenant = await createTenant();
+
+    const noTitle = await request(app)
+      .post('/api/reports/table-pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ columns: [{ key: 'a', label: 'A' }], rows: [] });
+    expect(noTitle.status).toBe(400);
+
+    const noColumns = await request(app)
+      .post('/api/reports/table-pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Rapport', columns: [], rows: [] });
+    expect(noColumns.status).toBe(400);
+  });
+
+  it('200 avec un PDF valide, pour tout rôle authentifié (aucune restriction de rôle — voir ai.js pour le même principe)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .post('/api/reports/table-pdf')
+      .set('Authorization', `Bearer ${member.token}`)
+      .responseType('blob')
+      .send({
+        title: 'Registre des risques',
+        subtitle: '3 risques',
+        columns: [
+          { key: 'title', label: 'Titre', width: 0.6 },
+          { key: 'status', label: 'Statut', width: 0.4 },
+        ],
+        rows: [
+          { title: 'Panne serveur', status: 'Identifié' },
+          { title: 'Fournisseur unique', status: 'Traité' },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+  });
+});

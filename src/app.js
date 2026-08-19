@@ -27,6 +27,7 @@ import tasksRoutes from './routes/tasks.js';
 import dashboardRoutes from './routes/dashboard.js';
 import planningRoutes from './routes/planning.js';
 import superAdminRoutes from './routes/superAdmin.js';
+import reportsRoutes from './routes/reports.js';
 
 // Séparé de index.js pour être importable par les tests d'intégration (supertest) sans
 // démarrer un vrai serveur HTTP ni le cron de notifications.
@@ -38,7 +39,9 @@ app.set('trust proxy', true);
 
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
-app.use(express.json());
+// Limite par défaut (100kb) trop juste pour POST /api/reports/table-pdf : un export de
+// plusieurs centaines d'enregistrements formatés dépasse vite ce seuil.
+app.use(express.json({ limit: '5mb' }));
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
@@ -70,5 +73,6 @@ app.use('/api/tasks', tasksRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/planning', planningRoutes);
 app.use('/api/super-admin', superAdminRoutes);
+app.use('/api/reports', reportsRoutes);
 
 export default app;
