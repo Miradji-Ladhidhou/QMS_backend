@@ -242,4 +242,28 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     const afterAccepted = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterAccepted.body.overdue.total).toBe(0);
   });
+
+  it('total "en retard" inclut les fournisseurs en retard de réévaluation pour admin, jamais pour member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const supplier = await request(app)
+      .post('/api/suppliers')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Fournisseur en retard', next_evaluation_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.overdue.total).toBe(1);
+
+    // Pas de porteur individuel sur un fournisseur : jamais compté dans le total d'un member.
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.overdue.total).toBe(0);
+
+    await request(app)
+      .patch(`/api/suppliers/${supplier.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'inactive' });
+    const afterInactive = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterInactive.body.overdue.total).toBe(0);
+  });
 });

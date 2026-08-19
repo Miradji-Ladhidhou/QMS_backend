@@ -231,4 +231,29 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     const afterAccepted = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterAccepted.body.items.some((i) => i.type === 'risk' && i.id === risk.body.id)).toBe(false);
   });
+
+  it('inclut les fournisseurs actifs à réévaluer pour admin/manager, jamais pour member (pas de porteur individuel)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const supplier = await request(app)
+      .post('/api/suppliers')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Fournisseur planning', next_evaluation_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const item = adminRes.body.items.find((i) => i.type === 'supplier' && i.id === supplier.body.id);
+    expect(item).toBeDefined();
+    expect(item.is_overdue).toBe(true);
+
+    const memberRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.items.some((i) => i.type === 'supplier')).toBe(false);
+
+    await request(app)
+      .patch(`/api/suppliers/${supplier.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'inactive' });
+    const afterInactive = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterInactive.body.items.some((i) => i.type === 'supplier' && i.id === supplier.body.id)).toBe(false);
+  });
 });

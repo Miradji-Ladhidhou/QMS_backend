@@ -43,6 +43,36 @@ export async function fetchCapaItems(tenantId, { assignedTo, serviceIds }) {
   );
 }
 
+// Fournisseurs actifs à réévaluer — par service ou tout le tenant pour admin/manager, jamais
+// pour member (pas de porteur individuel, comme les documents : un fournisseur n'est
+// "possédé" par personne en particulier — voir suppliers.js).
+export async function fetchSupplierItems(tenantId, { serviceIds }) {
+  let query = supabase
+    .from('suppliers')
+    .select('id, name, next_evaluation_date')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'active')
+    .not('next_evaluation_date', 'is', null);
+
+  if (serviceIds) {
+    if (serviceIds.length === 0) return [];
+    query = query.in('service_id', serviceIds);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((supplier) =>
+    withOverdue({
+      type: 'supplier',
+      id: supplier.id,
+      title: `Évaluation fournisseur — ${supplier.name}`,
+      date: supplier.next_evaluation_date,
+      link: `/suppliers/${supplier.id}`,
+    })
+  );
+}
+
 // Documents à réviser — toujours tout le tenant pour admin/manager (pas de service_id sur
 // les documents, voir dashboard.js), jamais pour member (pas de porteur individuel).
 export async function fetchDocumentItems(tenantId) {

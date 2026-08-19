@@ -9,6 +9,7 @@ import {
   fetchAuditItems,
   fetchComplaintItems,
   fetchRiskItems,
+  fetchSupplierItems,
 } from '../services/planningItems.js';
 
 const router = Router();
@@ -50,7 +51,7 @@ router.get('/', async (req, res) => {
 
     const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
 
-    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
+    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { serviceIds }),
       fetchDocumentItems(req.tenantId),
       fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
@@ -58,8 +59,18 @@ router.get('/', async (req, res) => {
       fetchAuditItems(req.tenantId, { serviceIds }),
       fetchComplaintItems(req.tenantId, { serviceIds }),
       fetchRiskItems(req.tenantId, { serviceIds }),
+      fetchSupplierItems(req.tenantId, { serviceIds }),
     ]);
-    items = [...capaItems, ...documentItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems];
+    items = [
+      ...capaItems,
+      ...documentItems,
+      ...trainingItems,
+      ...taskItems,
+      ...auditItems,
+      ...complaintItems,
+      ...riskItems,
+      ...supplierItems,
+    ];
   }
 
   items.sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));

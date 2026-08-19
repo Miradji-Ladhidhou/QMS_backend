@@ -10,6 +10,7 @@ import {
   fetchAuditItems,
   fetchComplaintItems,
   fetchRiskItems,
+  fetchSupplierItems,
 } from '../services/planningItems.js';
 
 const router = Router();
@@ -200,7 +201,7 @@ router.get('/stats', async (req, res) => {
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
   const kpisOffTarget = await countOffTargetKpis(req.tenantId);
 
-  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
+  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
     fetchCapaItems(req.tenantId, { serviceIds }),
     fetchDocumentItems(req.tenantId),
     fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
@@ -208,8 +209,18 @@ router.get('/stats', async (req, res) => {
     fetchAuditItems(req.tenantId, { serviceIds }),
     fetchComplaintItems(req.tenantId, { serviceIds }),
     fetchRiskItems(req.tenantId, { serviceIds }),
+    fetchSupplierItems(req.tenantId, { serviceIds }),
   ]);
-  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems]);
+  const overdueTotal = countOverdueItems([
+    capaItems,
+    documentItems,
+    trainingItems,
+    taskItems,
+    auditItems,
+    complaintItems,
+    riskItems,
+    supplierItems,
+  ]);
 
   res.json({
     capas: countCapasByStatus(capas),

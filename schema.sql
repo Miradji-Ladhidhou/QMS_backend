@@ -377,6 +377,55 @@ create table risks (
 -- même raisonnement que les autres colonnes miroir ci-dessus.
 alter table capas add column risk_id uuid references risks (id) on delete set null;
 
+-- Évaluation fournisseurs (ISO 9001 §8.4 — maîtrise des processus/produits/services fournis
+-- par des prestataires externes). Un fournisseur (suppliers) porte plusieurs évaluations
+-- périodiques dans le temps (supplier_evaluations), même relation parent/enfant que
+-- trainings/training_records.
+create table suppliers (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants (id) on delete cascade,
+  name                  text not null,
+  category              text,
+  contact_name          text,
+  contact_email         text,
+  contact_phone         text,
+  criticality           text not null default 'medium' check (criticality in ('low', 'medium', 'high', 'critical')),
+  status                text not null default 'active' check (status in ('active', 'inactive', 'suspended')),
+  service_id            uuid references services (id) on delete set null,
+  next_evaluation_date  date,
+  created_by            uuid references users (id) on delete set null,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+
+-- Quatre critères notés 1-5 (qualité, délais, prix, réactivité), pratique courante
+-- d'évaluation fournisseur. overall_score est une generated column (moyenne arrondie à 2
+-- décimales) — même raisonnement que risks.risk_score : jamais désynchronisée d'une mise à
+-- jour partielle des 4 notes.
+create table supplier_evaluations (
+  id                   uuid primary key default gen_random_uuid(),
+  tenant_id            uuid not null references tenants (id) on delete cascade,
+  supplier_id          uuid not null references suppliers (id) on delete cascade,
+  evaluation_date      date not null,
+  quality_score        integer not null check (quality_score between 1 and 5),
+  delivery_score       integer not null check (delivery_score between 1 and 5),
+  price_score          integer not null check (price_score between 1 and 5),
+  responsiveness_score integer not null check (responsiveness_score between 1 and 5),
+  overall_score        numeric generated always as (
+    round((quality_score + delivery_score + price_score + responsiveness_score)::numeric / 4, 2)
+  ) stored,
+  decision             text not null default 'maintained' check (decision in ('maintained', 'under_watch', 'to_replace')),
+  comment              text,
+  linked_capa_id       uuid references capas (id) on delete set null,
+  evaluated_by         uuid references users (id) on delete set null,
+  created_at           timestamptz not null default now()
+);
+
+-- Évaluation fournisseur à l'origine de cette CAPA (voir aussi
+-- supplier_evaluations.linked_capa_id, l'inverse) — même raisonnement que les autres colonnes
+-- miroir ci-dessus.
+alter table capas add column supplier_evaluation_id uuid references supplier_evaluations (id) on delete set null;
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -771,6 +820,14 @@ create index idx_risks_service_id on risks (service_id);
 create index idx_risks_review_date on risks (review_date);
 create index idx_risks_score on risks (risk_score);
 
+create index idx_suppliers_tenant_id on suppliers (tenant_id);
+create index idx_suppliers_status on suppliers (status);
+create index idx_suppliers_service_id on suppliers (service_id);
+create index idx_suppliers_next_evaluation_date on suppliers (next_evaluation_date);
+
+create index idx_supplier_evaluations_tenant_id on supplier_evaluations (tenant_id);
+create index idx_supplier_evaluations_supplier_id on supplier_evaluations (supplier_id);
+
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
@@ -890,6 +947,9 @@ create trigger trg_complaints_updated_at before update on complaints
   for each row execute function set_updated_at();
 
 create trigger trg_risks_updated_at before update on risks
+  for each row execute function set_updated_at();
+
+create trigger trg_suppliers_updated_at before update on suppliers
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
@@ -1062,6 +1122,8 @@ alter table management_reviews enable row level security;
 alter table management_review_actions enable row level security;
 alter table complaints enable row level security;
 alter table risks enable row level security;
+alter table suppliers enable row level security;
+alter table supplier_evaluations enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -1179,6 +1241,16 @@ create policy complaints_isolation on complaints
   with check (tenant_id = auth_tenant_id());
 
 create policy risks_isolation on risks
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy suppliers_isolation on suppliers
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy supplier_evaluations_isolation on supplier_evaluations
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
