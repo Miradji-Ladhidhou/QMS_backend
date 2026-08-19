@@ -3,12 +3,13 @@ import Groq from 'groq-sdk';
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 const MODEL = 'openai/gpt-oss-120b';
 
-const SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à analyser un problème avec la méthode QQOQCCP (Qui, Quoi, Où, Quand, Comment, Combien, Pourquoi).
-
-À partir des 7 réponses fournies par l'utilisateur, produis :
-- synthesis : une synthèse concise du problème (2 à 3 phrases)
+// Même structure de sortie pour tous les appels IA de l'app (QQOQCCP et, depuis, tous les
+// flux "créer une CAPA depuis X" — audits, revues, réclamations, risques, fournisseurs) :
+// un seul contrat JSON, un seul composant frontend de rendu (AiCapaSuggestion.jsx) capable
+// d'afficher n'importe laquelle de ces suggestions sans distinction.
+const RESPONSE_CONTRACT = `- synthesis : une synthèse concise du problème (2 à 3 phrases)
 - root_causes : un tableau de chaînes de caractères, les causes racines probables
-- suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical' — des actions CORRECTIVES, pour traiter la non-conformité déjà survenue
+- suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical' — des actions CORRECTIVES, pour traiter le problème déjà survenu
 - preventive_actions : un tableau de chaînes de caractères — des actions PRÉVENTIVES, distinctes des actions correctives, pour empêcher que ce problème (ou un problème similaire) ne se reproduise
 - overall_priority : une seule valeur parmi 'low', 'medium', 'high', 'critical'
 
@@ -21,21 +22,21 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette 
   "overall_priority": "medium"
 }`;
 
-function buildUserPrompt({ qui, quoi, ou_, quand_, comment_, combien, pourquoi }) {
-  return `Voici les réponses recueillies pour cette analyse QQOQCCP :
-Qui : ${qui || 'non renseigné'}
-Quoi : ${quoi || 'non renseigné'}
-Où : ${ou_ || 'non renseigné'}
-Quand : ${quand_ || 'non renseigné'}
-Comment : ${comment_ || 'non renseigné'}
-Combien : ${combien || 'non renseigné'}
-Pourquoi : ${pourquoi || 'non renseigné'}`;
-}
+const QQOQCCP_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à analyser un problème avec la méthode QQOQCCP (Qui, Quoi, Où, Quand, Comment, Combien, Pourquoi).
 
-// analysisData : { qui, quoi, ou_, quand_, comment_, combien, pourquoi } — mêmes noms de
-// champs que qqoqccp_analyses (voir schema.sql), pour pouvoir passer directement une ligne
-// de la table sans transformation.
-export async function generateQqoqccpSuggestion(analysisData) {
+À partir des 7 réponses fournies par l'utilisateur, produis :
+${RESPONSE_CONTRACT}`;
+
+// Prompt générique pour les flux "créer une CAPA depuis X" (audit, revue de direction,
+// réclamation, risque, évaluation fournisseur) : contrairement à QQOQCCP, ces outils n'ont
+// pas de questionnaire structuré, juste un texte libre décrivant la situation (voir
+// buildCapaSuggestionContext dans chaque route). Même contrat de sortie malgré tout.
+const CAPA_SUGGESTION_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à préparer une action corrective/préventive (CAPA) à partir d'un problème déjà décrit dans un autre outil du système qualité (audit interne, revue de direction, réclamation client, registre des risques, ou évaluation fournisseur).
+
+À partir du contexte fourni par l'utilisateur, produis :
+${RESPONSE_CONTRACT}`;
+
+async function callGroq(systemPrompt, userPrompt) {
   if (!groq) {
     throw new Error('GROQ_API_KEY manquant : impossible de générer une suggestion IA.');
   }
@@ -45,8 +46,8 @@ export async function generateQqoqccpSuggestion(analysisData) {
     completion = await groq.chat.completions.create({
       model: MODEL,
       messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserPrompt(analysisData) },
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
       ],
       response_format: { type: 'json_object' },
     });
@@ -78,4 +79,30 @@ export async function generateQqoqccpSuggestion(analysisData) {
   } catch (err) {
     throw new Error(`Réponse Groq mal formée (JSON invalide) : ${err.message}`);
   }
+}
+
+function buildUserPrompt({ qui, quoi, ou_, quand_, comment_, combien, pourquoi }) {
+  return `Voici les réponses recueillies pour cette analyse QQOQCCP :
+Qui : ${qui || 'non renseigné'}
+Quoi : ${quoi || 'non renseigné'}
+Où : ${ou_ || 'non renseigné'}
+Quand : ${quand_ || 'non renseigné'}
+Comment : ${comment_ || 'non renseigné'}
+Combien : ${combien || 'non renseigné'}
+Pourquoi : ${pourquoi || 'non renseigné'}`;
+}
+
+// analysisData : { qui, quoi, ou_, quand_, comment_, combien, pourquoi } — mêmes noms de
+// champs que qqoqccp_analyses (voir schema.sql), pour pouvoir passer directement une ligne
+// de la table sans transformation.
+export async function generateQqoqccpSuggestion(analysisData) {
+  return callGroq(QQOQCCP_SYSTEM_PROMPT, buildUserPrompt(analysisData));
+}
+
+// context : texte libre décrivant la situation (assemblé côté route à partir du constat
+// d'audit / de l'action de revue / de la réclamation / du risque / de l'évaluation
+// fournisseur — voir routes/ai.js). Même contrat de sortie que generateQqoqccpSuggestion,
+// pour que le frontend affiche les deux avec le même composant.
+export async function generateCapaSuggestion(context) {
+  return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context);
 }

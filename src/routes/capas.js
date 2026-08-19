@@ -160,6 +160,9 @@ router.post(
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+    body('root_cause').optional({ values: 'falsy' }).trim(),
+    body('corrective_action').optional({ values: 'falsy' }).trim(),
+    body('preventive_action').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -178,6 +181,9 @@ router.post(
       priority,
       assigned_to: assignedTo,
       due_date: dueDate,
+      root_cause: rootCause,
+      corrective_action: correctiveAction,
+      preventive_action: preventiveAction,
     } = req.body;
 
     // Un member peut ouvrir une CAPA mais elle lui est toujours auto-assignée : on ignore
@@ -199,6 +205,9 @@ router.post(
         priority: priority || undefined,
         assigned_to: finalAssignedTo,
         due_date: dueDate || null,
+        root_cause: rootCause || null,
+        corrective_action: correctiveAction || null,
+        preventive_action: preventiveAction || null,
         created_by: req.user.id,
       })
       .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
