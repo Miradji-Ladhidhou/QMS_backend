@@ -149,4 +149,30 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     expect(trainingItem).toBeDefined();
     expect(trainingItem.date).toBe('2026-07-01');
   });
+
+  it('inclut les audits non clôturés ; un member ne voit que ceux qu’il mène', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const audit = await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit process production', planned_date: '2026-08-01', lead_auditor: member.id });
+
+    const adminRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const adminAuditItem = adminRes.body.items.find((i) => i.type === 'audit' && i.id === audit.body.id);
+    expect(adminAuditItem).toBeDefined();
+    expect(adminAuditItem.is_overdue).toBe(true);
+
+    const memberRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.items.some((i) => i.type === 'audit' && i.id === audit.body.id)).toBe(true);
+
+    // Un audit clôturé ne doit plus apparaître.
+    await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    const afterClose = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterClose.body.items.some((i) => i.type === 'audit' && i.id === audit.body.id)).toBe(false);
+  });
 });

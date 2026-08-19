@@ -167,4 +167,27 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     // Le member voit sa CAPA assignée + sa propre tâche en retard, mais jamais le document.
     expect(memberRes.body.overdue.total).toBe(2);
   });
+
+  it('total "en retard" inclut aussi les audits non clôturés en retard', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const audit = await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit en retard', planned_date: '2026-08-01', lead_auditor: member.id });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.overdue.total).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.overdue.total).toBe(1);
+
+    await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    const afterClose = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterClose.body.overdue.total).toBe(0);
+  });
 });

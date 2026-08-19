@@ -2,7 +2,13 @@ import { Router } from 'express';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '../services/serviceScope.js';
-import { fetchCapaItems, fetchDocumentItems, fetchTrainingItems, fetchTaskItems } from '../services/planningItems.js';
+import {
+  fetchCapaItems,
+  fetchDocumentItems,
+  fetchTrainingItems,
+  fetchTaskItems,
+  fetchAuditItems,
+} from '../services/planningItems.js';
 
 const router = Router();
 
@@ -142,12 +148,13 @@ router.get('/stats', async (req, res) => {
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
-    const [capaItems, trainingItems, taskItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id }),
+      fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id }),
     ]);
-    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems]);
+    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems]);
 
     return res.json({
       capas: countCapasByStatus(capas),
@@ -189,13 +196,14 @@ router.get('/stats', async (req, res) => {
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
   const kpisOffTarget = await countOffTargetKpis(req.tenantId);
 
-  const [capaItems, documentItems, trainingItems, taskItems] = await Promise.all([
+  const [capaItems, documentItems, trainingItems, taskItems, auditItems] = await Promise.all([
     fetchCapaItems(req.tenantId, { serviceIds }),
     fetchDocumentItems(req.tenantId),
     fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
     fetchTaskItems(req.tenantId, {}),
+    fetchAuditItems(req.tenantId, { serviceIds }),
   ]);
-  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems]);
+  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems, auditItems]);
 
   res.json({
     capas: countCapasByStatus(capas),

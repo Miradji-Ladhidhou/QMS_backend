@@ -125,6 +125,38 @@ export async function fetchTrainingItems(tenantId, { userId, userIds }) {
   });
 }
 
+// Audits internes non clôturés — scope : ceux que je mène (member), par service audité, ou
+// tout le tenant selon le mode. Contrairement à CAPA/formations, un audit reste visible en
+// lecture à tous les rôles (voir audits.js) ; ici on ne filtre que la SÉLECTION des items du
+// planning personnel d'un member sur "je suis l'auditeur", pas l'accès à la donnée elle-même.
+export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds }) {
+  let query = supabase
+    .from('audits')
+    .select('id, title, planned_date')
+    .eq('tenant_id', tenantId)
+    .in('status', ['planned', 'in_progress']);
+
+  if (leadAuditorId) {
+    query = query.eq('lead_auditor', leadAuditorId);
+  } else if (serviceIds) {
+    if (serviceIds.length === 0) return [];
+    query = query.in('service_id', serviceIds);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((audit) =>
+    withOverdue({
+      type: 'audit',
+      id: audit.id,
+      title: audit.title,
+      date: audit.planned_date,
+      link: `/audits/${audit.id}`,
+    })
+  );
+}
+
 // Tâches manuelles non terminées — personnelles (créées ou assignées à moi) pour member,
 // tout le tenant pour admin/manager (pas de notion de service sur les tâches).
 export async function fetchTaskItems(tenantId, { personalUserId }) {

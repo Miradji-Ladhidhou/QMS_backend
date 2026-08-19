@@ -222,6 +222,47 @@ create table qqoqccp_analyses (
 -- qqoqccp_analyses est définie plus bas dans ce fichier, donc pas encore créée à ce stade.
 alter table capas add column qqoqccp_analysis_id uuid references qqoqccp_analyses (id) on delete set null;
 
+-- Audits internes (ISO 9001) : planifier un audit, le mener, conclure. service_id désigne le
+-- service audité (métadonnée/filtre, pas une restriction d'accès — un audit concerne le SMQ
+-- dans son ensemble). lead_auditor est nullable : un audit peut être planifié avant d'avoir
+-- désigné qui le mène.
+create table audits (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  title          text not null,
+  audit_type     text not null default 'process' check (audit_type in ('process', 'product', 'system')),
+  scope          text,
+  service_id     uuid references services (id) on delete set null,
+  lead_auditor   uuid references users (id) on delete set null,
+  planned_date   date not null,
+  completed_date date,
+  status         text not null default 'planned' check (status in ('planned', 'in_progress', 'completed', 'closed')),
+  conclusion     text,
+  created_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+-- Constats d'un audit. linked_capa_id suit le même principe bidirectionnel que
+-- qqoqccp_analyses.linked_capa_id / capas.qqoqccp_analysis_id ci-dessus : un constat peut
+-- rester autonome (ex. simple remarque) sans jamais donner lieu à une CAPA.
+create table audit_findings (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  audit_id       uuid not null references audits (id) on delete cascade,
+  type           text not null check (type in ('major_nc', 'minor_nc', 'observation', 'strength')),
+  description    text not null,
+  linked_capa_id uuid references capas (id) on delete set null,
+  created_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+-- Constat d'audit à l'origine de cette CAPA (voir aussi audit_findings.linked_capa_id,
+-- l'inverse) — même raisonnement que qqoqccp_analysis_id ci-dessus : audit_findings est
+-- définie juste au-dessus, donc ajoutée après coup ici plutôt qu'inline dans capas.
+alter table capas add column audit_finding_id uuid references audit_findings (id) on delete set null;
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -590,6 +631,14 @@ create index idx_capas_ref_document on capas (ref_document);
 create index idx_capas_due_date on capas (due_date);
 create index idx_capas_service_id on capas (service_id);
 
+create index idx_audits_tenant_id on audits (tenant_id);
+create index idx_audits_status on audits (status);
+create index idx_audits_planned_date on audits (planned_date);
+create index idx_audits_service_id on audits (service_id);
+
+create index idx_audit_findings_tenant_id on audit_findings (tenant_id);
+create index idx_audit_findings_audit_id on audit_findings (audit_id);
+
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
@@ -691,6 +740,12 @@ create trigger trg_documents_search_vector before insert or update on documents
   for each row execute function documents_search_vector_update();
 
 create trigger trg_capas_updated_at before update on capas
+  for each row execute function set_updated_at();
+
+create trigger trg_audits_updated_at before update on audits
+  for each row execute function set_updated_at();
+
+create trigger trg_audit_findings_updated_at before update on audit_findings
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
@@ -857,6 +912,8 @@ alter table capa_counters enable row level security;
 alter table capa_priority_delays enable row level security;
 alter table capa_comments enable row level security;
 alter table qqoqccp_analyses enable row level security;
+alter table audits enable row level security;
+alter table audit_findings enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -944,6 +1001,16 @@ create policy capa_comments_isolation on capa_comments
   with check (tenant_id = auth_tenant_id());
 
 create policy qqoqccp_analyses_isolation on qqoqccp_analyses
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy audits_isolation on audits
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy audit_findings_isolation on audit_findings
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
