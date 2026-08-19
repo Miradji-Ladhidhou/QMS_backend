@@ -14,7 +14,6 @@ const PATCHABLE_FIELDS = [
   'severity',
   'assigned_to',
   'due_date',
-  'service',
   'service_id',
   'description',
   'root_cause',
@@ -24,6 +23,16 @@ const PATCHABLE_FIELDS = [
   'effectiveness_notes',
   'comment',
 ];
+
+// Colonnes explicites (sans "service", le champ texte libre historique) plutôt que '*' :
+// aliaser l'embed services(...) en "service" à côté d'un '*' qui contient déjà une colonne
+// service texte du même nom provoquerait une collision de clé côté PostgREST. "service" reste
+// en base (non supprimée, voir schema.sql) mais l'API ne la lit/écrit plus nulle part — seul
+// service_id fait foi désormais, résolu ici en {id, name} comme pour audits/risks/complaints/
+// suppliers (voir leurs routes GET respectives, même pattern déjà en place chez eux).
+const CAPA_COLUMNS =
+  'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id';
+const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, full_name), service:services(id, name)`;
 
 // Délai de traitement par défaut (en jours depuis la création) quand le tenant n'a pas
 // paramétré ses propres valeurs via PUT /api/capas/priority-delays.
@@ -98,7 +107,7 @@ router.get('/', async (req, res) => {
 
   let query = supabase
     .from('capas')
-    .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+    .select(CAPA_SELECT)
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
@@ -123,7 +132,7 @@ router.get('/:id', async (req, res) => {
   const { data: capa, error } = await supabase
     .from('capas')
     .select(
-      '*, assigned:users!capas_assigned_to_fkey(id, full_name), qqoqccp_analysis:qqoqccp_analyses!capas_qqoqccp_analysis_id_fkey(id, title, ai_synthesis)'
+      `${CAPA_SELECT}, qqoqccp_analysis:qqoqccp_analyses!capas_qqoqccp_analysis_id_fkey(id, title, ai_synthesis)`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -151,7 +160,6 @@ router.post(
   '/',
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
-    body('service').optional({ values: 'falsy' }).trim(),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('description').optional({ values: 'falsy' }).trim(),
     body('origin').optional({ values: 'falsy' }).trim(),
@@ -172,7 +180,6 @@ router.post(
 
     const {
       title,
-      service,
       service_id: serviceId,
       description,
       origin,
@@ -196,7 +203,6 @@ router.post(
       .insert({
         tenant_id: req.tenantId,
         title,
-        service: service || null,
         service_id: serviceId || null,
         description: description || null,
         origin: origin || null,
@@ -210,7 +216,7 @@ router.post(
         preventive_action: preventiveAction || null,
         created_by: req.user.id,
       })
-      .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+      .select(CAPA_SELECT)
       .single();
 
     if (error) {
@@ -246,7 +252,6 @@ router.patch(
     body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
-    body('service').optional({ values: 'falsy' }).trim(),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('description').optional({ values: 'falsy' }).trim(),
     body('root_cause').optional({ values: 'falsy' }).trim(),
@@ -282,7 +287,7 @@ router.patch(
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+      .select(CAPA_SELECT)
       .single();
 
     if (error || !data) {

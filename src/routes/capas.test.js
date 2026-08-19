@@ -55,12 +55,78 @@ describe('POST /api/capas', () => {
       .send({ title: 'CAPA avec service', service_id: service.body.id });
     expect(ok.status).toBe(201);
     expect(ok.body.service_id).toBe(service.body.id);
+    // Régression : service_id doit être résolu en {id, name} dans la réponse (voir
+    // CAPA_SELECT dans capas.js) — sans quoi la liste/le formulaire d'édition affichent un
+    // service vide malgré service_id correctement enregistré.
+    expect(ok.body.service).toEqual({ id: service.body.id, name: 'Qualité' });
 
     const bad = await request(app)
       .post('/api/capas')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ title: 'CAPA service invalide', service_id: 'not-a-uuid' });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe('service_id : résolution en {id, name} et modification via GET/PATCH', () => {
+  it('GET /api/capas et GET /api/capas/:id renvoient service résolu, null si aucun service', async () => {
+    tenant = await createTenant();
+    const service = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Logistique' });
+
+    const withService = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Avec service', service_id: service.body.id });
+    const withoutService = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Sans service' });
+
+    const list = await request(app).get('/api/capas').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const listedWithService = list.body.find((c) => c.id === withService.body.id);
+    const listedWithoutService = list.body.find((c) => c.id === withoutService.body.id);
+    expect(listedWithService.service).toEqual({ id: service.body.id, name: 'Logistique' });
+    expect(listedWithoutService.service).toBeNull();
+
+    const detail = await request(app)
+      .get(`/api/capas/${withService.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detail.body.service).toEqual({ id: service.body.id, name: 'Logistique' });
+  });
+
+  it('PATCH service_id met à jour, résout le nouveau service, et permet de le retirer', async () => {
+    tenant = await createTenant();
+    const serviceA = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Service A' });
+    const serviceB = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Service B' });
+
+    const capa = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA', service_id: serviceA.body.id });
+
+    const patched = await request(app)
+      .patch(`/api/capas/${capa.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ service_id: serviceB.body.id });
+    expect(patched.status).toBe(200);
+    expect(patched.body.service).toEqual({ id: serviceB.body.id, name: 'Service B' });
+
+    const cleared = await request(app)
+      .patch(`/api/capas/${capa.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ service_id: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.service_id).toBeNull();
+    expect(cleared.body.service).toBeNull();
   });
 });
 
