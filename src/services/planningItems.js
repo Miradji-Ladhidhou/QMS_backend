@@ -157,6 +157,39 @@ export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds }) 
   );
 }
 
+// Risques/opportunités non clôturés/acceptés avec une date de revue — scope : ceux dont je
+// suis responsable (member), par service, ou tout le tenant selon le mode. Même principe de
+// transparence que les audits (voir risks.js) : la lecture reste ouverte à tous les rôles,
+// seule la SÉLECTION des items du planning personnel d'un member change ici.
+export async function fetchRiskItems(tenantId, { ownerId, serviceIds }) {
+  let query = supabase
+    .from('risks')
+    .select('id, title, review_date')
+    .eq('tenant_id', tenantId)
+    .not('review_date', 'is', null)
+    .not('status', 'in', '(accepted,closed)');
+
+  if (ownerId) {
+    query = query.eq('owner', ownerId);
+  } else if (serviceIds) {
+    if (serviceIds.length === 0) return [];
+    query = query.in('service_id', serviceIds);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((risk) =>
+    withOverdue({
+      type: 'risk',
+      id: risk.id,
+      title: risk.title,
+      date: risk.review_date,
+      link: `/risks/${risk.id}`,
+    })
+  );
+}
+
 // Audits internes non clôturés — scope : ceux que je mène (member), par service audité, ou
 // tout le tenant selon le mode. Contrairement à CAPA/formations, un audit reste visible en
 // lecture à tous les rôles (voir audits.js) ; ici on ne filtre que la SÉLECTION des items du

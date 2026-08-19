@@ -8,19 +8,20 @@ import {
   fetchTaskItems,
   fetchAuditItems,
   fetchComplaintItems,
+  fetchRiskItems,
 } from '../services/planningItems.js';
 
 const router = Router();
 router.use(requireAuth);
 
-// GET /api/planning — agrège CAPA/documents/formations/tâches/audits/réclamations en une
-// liste chronologique unique, avec le même filtrage par rôle et par service que
+// GET /api/planning — agrège CAPA/documents/formations/tâches/audits/réclamations/risques en
+// une liste chronologique unique, avec le même filtrage par rôle et par service que
 // /api/dashboard/stats :
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : auto-scopé sur ses services par défaut, élargissement ponctuel possible
 // - member : uniquement ses propres éléments (CAPA/réclamations assignées, ses formations,
-//   ses tâches, les audits qu'il mène) — jamais de documents (pas de porteur individuel) ni
-//   de vue tenant/service
+//   ses tâches, les audits qu'il mène, les risques dont il est responsable) — jamais de
+//   documents (pas de porteur individuel) ni de vue tenant/service
 router.get('/', async (req, res) => {
   const requestedServiceIds = parseServiceIdsParam(req.query.service_id);
   if (!requestedServiceIds) {
@@ -30,14 +31,15 @@ router.get('/', async (req, res) => {
   let items;
 
   if (req.userRole === 'member') {
-    const [capaItems, trainingItems, taskItems, auditItems, complaintItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id }),
       fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id }),
       fetchComplaintItems(req.tenantId, { assignedTo: req.user.id }),
+      fetchRiskItems(req.tenantId, { ownerId: req.user.id }),
     ]);
-    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems];
+    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems];
   } else {
     const serviceIds = await resolveServiceScope({
       tenantId: req.tenantId,
@@ -48,15 +50,16 @@ router.get('/', async (req, res) => {
 
     const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
 
-    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems] = await Promise.all([
+    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { serviceIds }),
       fetchDocumentItems(req.tenantId),
       fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
       fetchTaskItems(req.tenantId, {}),
       fetchAuditItems(req.tenantId, { serviceIds }),
       fetchComplaintItems(req.tenantId, { serviceIds }),
+      fetchRiskItems(req.tenantId, { serviceIds }),
     ]);
-    items = [...capaItems, ...documentItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems];
+    items = [...capaItems, ...documentItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems];
   }
 
   items.sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));

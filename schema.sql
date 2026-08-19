@@ -341,6 +341,42 @@ create table complaints (
 -- même raisonnement que les autres colonnes miroir ci-dessus.
 alter table capas add column complaint_id uuid references complaints (id) on delete set null;
 
+-- Registre des risques et opportunités (ISO 9001:2015 §6.1 — approche par les risques).
+-- likelihood/impact sur une échelle 1-5 (matrice 5x5 standard), risk_score = likelihood *
+-- impact calculé par la base (generated column) : jamais désynchronisé d'une mise à jour
+-- partielle, contrairement à un calcul refait à la main côté application à chaque route.
+-- Les colonnes residual_* rejouent la même évaluation après traitement (contrôles/plan
+-- d'action) : un registre des risques sert justement à montrer qu'un risque a été réduit,
+-- pas seulement qu'il a été identifié — nullables tant que le traitement n'a pas eu lieu.
+create table risks (
+  id                  uuid primary key default gen_random_uuid(),
+  tenant_id           uuid not null references tenants (id) on delete cascade,
+  title               text not null,
+  type                text not null default 'risk' check (type in ('risk', 'opportunity')),
+  category            text,
+  description         text,
+  service_id          uuid references services (id) on delete set null,
+  owner               uuid references users (id) on delete set null,
+  likelihood          integer not null check (likelihood between 1 and 5),
+  impact              integer not null check (impact between 1 and 5),
+  risk_score          integer generated always as (likelihood * impact) stored,
+  current_controls    text,
+  treatment_plan      text,
+  residual_likelihood integer check (residual_likelihood between 1 and 5),
+  residual_impact     integer check (residual_impact between 1 and 5),
+  residual_score      integer generated always as (residual_likelihood * residual_impact) stored,
+  status              text not null default 'identified' check (status in ('identified', 'treating', 'treated', 'accepted', 'closed')),
+  review_date         date,
+  linked_capa_id      uuid references capas (id) on delete set null,
+  created_by          uuid references users (id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+
+-- Risque/opportunité à l'origine de cette CAPA (voir aussi risks.linked_capa_id, l'inverse) —
+-- même raisonnement que les autres colonnes miroir ci-dessus.
+alter table capas add column risk_id uuid references risks (id) on delete set null;
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -729,6 +765,12 @@ create index idx_complaints_assigned_to on complaints (assigned_to);
 create index idx_complaints_due_date on complaints (due_date);
 create index idx_complaints_service_id on complaints (service_id);
 
+create index idx_risks_tenant_id on risks (tenant_id);
+create index idx_risks_status on risks (status);
+create index idx_risks_service_id on risks (service_id);
+create index idx_risks_review_date on risks (review_date);
+create index idx_risks_score on risks (risk_score);
+
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
@@ -845,6 +887,9 @@ create trigger trg_management_review_actions_updated_at before update on managem
   for each row execute function set_updated_at();
 
 create trigger trg_complaints_updated_at before update on complaints
+  for each row execute function set_updated_at();
+
+create trigger trg_risks_updated_at before update on risks
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
@@ -1016,6 +1061,7 @@ alter table audit_findings enable row level security;
 alter table management_reviews enable row level security;
 alter table management_review_actions enable row level security;
 alter table complaints enable row level security;
+alter table risks enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -1128,6 +1174,11 @@ create policy management_review_actions_isolation on management_review_actions
   with check (tenant_id = auth_tenant_id());
 
 create policy complaints_isolation on complaints
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy risks_isolation on risks
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

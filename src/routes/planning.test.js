@@ -206,4 +206,29 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     const afterResolved = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterResolved.body.items.some((i) => i.type === 'complaint' && i.id === complaint.body.id)).toBe(false);
   });
+
+  it('inclut les risques non clôturés/acceptés avec une date de revue ; un member ne voit que ceux dont il est responsable', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const risk = await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque planning', likelihood: 3, impact: 3, owner: member.id, review_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const item = adminRes.body.items.find((i) => i.type === 'risk' && i.id === risk.body.id);
+    expect(item).toBeDefined();
+    expect(item.is_overdue).toBe(true);
+
+    const memberRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.items.some((i) => i.type === 'risk' && i.id === risk.body.id)).toBe(true);
+
+    await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'accepted' });
+    const afterAccepted = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterAccepted.body.items.some((i) => i.type === 'risk' && i.id === risk.body.id)).toBe(false);
+  });
 });

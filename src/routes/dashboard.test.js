@@ -219,4 +219,27 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     const afterResolved = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterResolved.body.overdue.total).toBe(0);
   });
+
+  it('total "en retard" inclut aussi les risques en retard de revue', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const risk = await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque en retard', likelihood: 3, impact: 3, owner: member.id, review_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.overdue.total).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.overdue.total).toBe(1);
+
+    await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'accepted' });
+    const afterAccepted = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterAccepted.body.overdue.total).toBe(0);
+  });
 });
