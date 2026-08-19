@@ -74,10 +74,25 @@ function drawStatusDot(doc, x, y, status) {
   doc.circle(x, y, 4).fillColor(STATUS_COLORS[status] || NEUTRAL).fill();
 }
 
+// Une date par point plutôt que seulement la première/dernière (repère visuel plus complet
+// pour un rapport imprimé — voir aussi drawMultiSeriesChart) : à plat, elles se chevaucheraient
+// dès qu'il y a plus de 4-5 points sur une largeur de graphique aussi compacte, d'où une
+// rotation à -40° (save/restore autour de chaque étiquette, seul moyen pdfkit de faire pivoter
+// un morceau de texte sans affecter le reste du dessin).
+function drawRotatedDateLabels(doc, points) {
+  doc.fontSize(5.5).fillColor(MUTED);
+  points.forEach(({ x: px, y: labelY, dateStr }) => {
+    doc.save();
+    doc.rotate(-40, { origin: [px, labelY] });
+    doc.text(dateStr, px, labelY, { lineBreak: false });
+    doc.restore();
+  });
+}
+
 // Graphique de tendance minimaliste dessiné à la main (lignes/points vectoriels pdfkit) :
 // pas de dépendance à un moteur de rendu externe (canvas natif, chromium...), donc pas de
 // risque de build cassé sur l'environnement de déploiement.
-function drawTrendChart(doc, { x, y, width, height, records, target }) {
+function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
   if (records.length < 2) {
     doc
       .fontSize(8)
@@ -101,8 +116,10 @@ function drawTrendChart(doc, { x, y, width, height, records, target }) {
   minValue -= margin;
   maxValue += margin;
 
-  const plotLeft = x + 28;
-  const plotWidth = width - 28;
+  // 34 (au lieu de 28) : marge pour "100.0 %" et autres libellés avec unité, qui débordaient
+  // d'une gouttière pensée pour de simples nombres nus.
+  const plotLeft = x + 34;
+  const plotWidth = width - 34;
   const plotTop = y + 2;
   const plotHeight = height - 16;
 
@@ -118,8 +135,8 @@ function drawTrendChart(doc, { x, y, width, height, records, target }) {
     .stroke();
 
   doc.fontSize(6).fillColor(MUTED);
-  doc.text(maxValue.toFixed(1), x, plotTop - 2, { width: 26, align: 'right' });
-  doc.text(minValue.toFixed(1), x, plotTop + plotHeight - 4, { width: 26, align: 'right' });
+  doc.text(`${maxValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop - 2, { width: 32, align: 'right', lineBreak: false });
+  doc.text(`${minValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop + plotHeight - 4, { width: 32, align: 'right', lineBreak: false });
 
   if (target !== null && target !== undefined) {
     const targetY = scaleY(target);
@@ -144,15 +161,15 @@ function drawTrendChart(doc, { x, y, width, height, records, target }) {
     doc.circle(scaleX(index), scaleY(record.value), 1.4).fillColor(NAVY).fill();
   });
 
-  doc.fontSize(6).fillColor(MUTED);
-  doc.text(formatDateShort(records[0].period_date), plotLeft - 12, plotTop + plotHeight + 3, {
-    width: 44,
-    align: 'left',
-  });
-  doc.text(formatDateShort(records[records.length - 1].period_date), plotLeft + plotWidth - 32, plotTop + plotHeight + 3, {
-    width: 44,
-    align: 'right',
-  });
+  // Une date par point (pas seulement la première/dernière) : voir drawRotatedDateLabels.
+  drawRotatedDateLabels(
+    doc,
+    records.map((record, index) => ({
+      x: scaleX(index),
+      y: plotTop + plotHeight + 4,
+      dateStr: formatDateShort(record.period_date),
+    }))
+  );
 }
 
 // Variante multi-lignes de drawTrendChart pour un KPI à plusieurs séries : même style dessiné
@@ -161,7 +178,7 @@ function drawTrendChart(doc, { x, y, width, height, records, target }) {
 // manquant sur une période casse la ligne au lieu de l'interpoler (connectNulls={false} côté
 // frontend) — d'où moveTo() plutôt que lineTo() dès qu'une période n'a pas de valeur pour
 // cette série.
-function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target }) {
+function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, unit }) {
   const allRecords = seriesList.flatMap((s) => s.records);
   if (allRecords.length < 2) {
     doc
@@ -186,10 +203,15 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target }) 
   minValue -= margin;
   maxValue += margin;
 
-  const periods = [...new Set(allRecords.map((r) => r.period_date))].sort();
+  // Plafonné aux RECORD_ROWS_MAX dernières périodes, comme drawTrendChart (lastRecords côté
+  // mono-série) : chaque point porte désormais sa propre date en pied de graphique (voir
+  // drawRotatedDateLabels), un historique complet non plafonné deviendrait illisible.
+  const allPeriods = [...new Set(allRecords.map((r) => r.period_date))].sort();
+  const periods = allPeriods.slice(-RECORD_ROWS_MAX);
 
-  const plotLeft = x + 28;
-  const plotWidth = width - 28;
+  // 34 (au lieu de 28) : marge pour "100.0 %" et autres libellés avec unité.
+  const plotLeft = x + 34;
+  const plotWidth = width - 34;
   const plotTop = y + 2;
   const plotHeight = height - 16;
 
@@ -204,8 +226,8 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target }) 
     .stroke();
 
   doc.fontSize(6).fillColor(MUTED);
-  doc.text(maxValue.toFixed(1), x, plotTop - 2, { width: 26, align: 'right' });
-  doc.text(minValue.toFixed(1), x, plotTop + plotHeight - 4, { width: 26, align: 'right' });
+  doc.text(`${maxValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop - 2, { width: 32, align: 'right', lineBreak: false });
+  doc.text(`${minValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop + plotHeight - 4, { width: 32, align: 'right', lineBreak: false });
 
   if (target !== null && target !== undefined) {
     const targetY = scaleY(target);
@@ -243,12 +265,15 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target }) 
     });
   });
 
-  doc.fontSize(6).fillColor(MUTED);
-  doc.text(formatDateShort(periods[0]), plotLeft - 12, plotTop + plotHeight + 3, { width: 44, align: 'left' });
-  doc.text(formatDateShort(periods[periods.length - 1]), plotLeft + plotWidth - 32, plotTop + plotHeight + 3, {
-    width: 44,
-    align: 'right',
-  });
+  // Une date par période (pas seulement la première/dernière) : voir drawRotatedDateLabels.
+  drawRotatedDateLabels(
+    doc,
+    periods.map((period, index) => ({
+      x: scaleX(index),
+      y: plotTop + plotHeight + 4,
+      dateStr: formatDateShort(period),
+    }))
+  );
 }
 
 // Rangée de badges (pastille couleur + libellé + moyenne), avec retour à la ligne automatique
@@ -346,7 +371,15 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     const averagesY = drawSeriesAverages(doc, PAGE_MARGIN, sectionTop + 30, CONTENT_WIDTH, seriesList, kpi.unit);
 
     const chartY = averagesY + 4;
-    drawMultiSeriesChart(doc, { x: PAGE_MARGIN, y: chartY, width: CONTENT_WIDTH, height: CHART_HEIGHT, seriesList, target: kpi.target });
+    drawMultiSeriesChart(doc, {
+      x: PAGE_MARGIN,
+      y: chartY,
+      width: CONTENT_WIDTH,
+      height: CHART_HEIGHT,
+      seriesList,
+      target: kpi.target,
+      unit: kpi.unit,
+    });
 
     doc.y = chartY + CHART_HEIGHT + 6;
 
@@ -396,7 +429,15 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   doc.fontSize(9).fillColor('#555555').text(`${targetLine}    —    ${averageValueLine}`, PAGE_MARGIN, sectionTop + 16);
 
   const chartY = sectionTop + 32;
-  drawTrendChart(doc, { x: PAGE_MARGIN, y: chartY, width: 230, height: CHART_HEIGHT, records: lastRecords, target: kpi.target });
+  drawTrendChart(doc, {
+    x: PAGE_MARGIN,
+    y: chartY,
+    width: 230,
+    height: CHART_HEIGHT,
+    records: lastRecords,
+    target: kpi.target,
+    unit: kpi.unit,
+  });
 
   const tableX = PAGE_MARGIN + 250;
   const tableWidth = CONTENT_WIDTH - 250;
