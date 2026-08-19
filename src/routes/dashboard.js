@@ -120,18 +120,45 @@ function countOverdueItems(itemLists) {
   return itemLists.flat().filter((item) => item.is_overdue).length;
 }
 
-// GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings}, filtrage
-// par service selon le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le
-// paramètre : ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
+// Même principe pour les widgets par outil (audits/réclamations/risques/fournisseurs) :
+// "active" = déjà filtré par la fonction fetchXItems correspondante (non clôturé/résolu avec
+// une échéance), "overdue" = le sous-ensemble en retard — mêmes items que ceux listés dans
+// /api/planning pour cet outil, jamais un chiffre recalculé indépendamment.
+function countActiveAndOverdue(items) {
+  return { active: items.length, overdue: items.filter((item) => item.is_overdue).length };
+}
+
+// Revues de direction non closes ("draft" = pas encore passée en "completed", voir
+// schema.sql). Pas de service_id sur management_reviews : toujours tout le tenant, jamais
+// scopé par service — comme documents/kpis. Pas de fetchManagementReviewItems dans
+// planningItems.js (une revue de direction n'a pas d'échéance individuelle exploitée par le
+// planning), donc une requête dédiée ici plutôt qu'une réutilisation.
+async function countManagementReviewsDraft(tenantId) {
+  const { count, error } = await supabase
+    .from('management_reviews')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', tenantId)
+    .eq('status', 'draft');
+
+  if (error) return 0;
+  return count || 0;
+}
+
+// GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings, kpis, audits,
+// complaints, risks, suppliers, management_reviews, overdue}, filtrage par service selon le
+// rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
+// ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : filtré automatiquement sur ses services (table user_services, prompt B2) si
 //   aucun service_id n'est fourni ; un/des service_id explicites hors périmètre sont
 //   autorisés (vue élargie ponctuelle) sans changer son filtrage par défaut aux prochains
 //   appels — rien n'est mémorisé côté serveur, chaque appel est indépendant
-// - member : uniquement ses propres CAPA assignées et ses propres formations, jamais de vue
-//   tenant ou service (service_id est ignoré) ; documents.to_review reste à 0 pour ce rôle —
-//   les documents n'ont pas de porteur individuel dans le schéma, pas de métrique
-//   personnelle à calculer ici
+// - member : uniquement ses propres CAPA/formations/audits (en tant qu'auditeur)/
+//   réclamations (assignées)/risques (dont il est responsable), jamais de vue tenant ou
+//   service (service_id est ignoré) ; documents.to_review, kpis.off_target,
+//   suppliers.active/overdue et management_reviews.draft restent à 0 pour ce rôle — ces 4
+//   outils n'ont pas de porteur individuel dans le schéma, pas de métrique personnelle à
+//   calculer ici (mêmes widgets masqués côté frontend pour member)
 router.get('/stats', async (req, res) => {
   const requestedServiceIds = parseServiceIdsParam(req.query.service_id);
   if (!requestedServiceIds) {
@@ -168,6 +195,16 @@ router.get('/stats', async (req, res) => {
       // Pas de vue personnelle pour les KPI (pas de porteur individuel, comme documents) :
       // 0 forcé ici, le widget correspondant reste masqué pour member côté frontend.
       kpis: { off_target: 0 },
+      // Audits/réclamations/risques : un member peut être personnellement auditeur/assigné/
+      // responsable (voir fetchAuditItems/fetchComplaintItems/fetchRiskItems ci-dessus), donc
+      // ces compteurs ont un sens même pour ce rôle — contrairement à documents/kpis.
+      audits: countActiveAndOverdue(auditItems),
+      complaints: countActiveAndOverdue(complaintItems),
+      risks: countActiveAndOverdue(riskItems),
+      // Fournisseurs/revues de direction : pas de porteur individuel (comme documents/kpis) —
+      // 0 forcé, widgets masqués pour member côté frontend.
+      suppliers: { active: 0, overdue: 0 },
+      management_reviews: { draft: 0 },
       overdue: { total: overdueTotal },
     });
   }
@@ -200,6 +237,7 @@ router.get('/stats', async (req, res) => {
   const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
   const kpisOffTarget = await countOffTargetKpis(req.tenantId);
+  const managementReviewsDraft = await countManagementReviewsDraft(req.tenantId);
 
   const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
     fetchCapaItems(req.tenantId, { serviceIds }),
@@ -227,6 +265,11 @@ router.get('/stats', async (req, res) => {
     documents: { to_review: documentsToReview },
     trainings: { to_renew: trainingsToRenew },
     kpis: { off_target: kpisOffTarget },
+    audits: countActiveAndOverdue(auditItems),
+    complaints: countActiveAndOverdue(complaintItems),
+    risks: countActiveAndOverdue(riskItems),
+    suppliers: countActiveAndOverdue(supplierItems),
+    management_reviews: { draft: managementReviewsDraft },
     overdue: { total: overdueTotal },
   });
 });

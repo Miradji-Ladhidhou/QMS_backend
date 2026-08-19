@@ -266,4 +266,86 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     const afterInactive = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterInactive.body.overdue.total).toBe(0);
   });
+
+  it('widgets par outil (audits/réclamations/risques) : personnels pour member, tout le tenant pour admin', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+
+    await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit A', planned_date: '2026-12-01', lead_auditor: memberA.id });
+    await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit B', planned_date: '2026-12-01', lead_auditor: memberB.id });
+
+    await request(app)
+      .post('/api/complaints')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        customer_name: 'Client A',
+        received_date: '2026-08-01',
+        due_date: '2026-12-01',
+        description: 'Réclamation A',
+        assigned_to: memberA.id,
+      });
+
+    const risk = await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque A', likelihood: 4, impact: 4, owner: memberA.id, review_date: '2026-08-01' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.audits).toEqual({ active: 2, overdue: 0 });
+    expect(adminRes.body.complaints).toEqual({ active: 1, overdue: 0 });
+    expect(adminRes.body.risks).toEqual({ active: 1, overdue: 1 });
+
+    const memberARes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${memberA.token}`);
+    expect(memberARes.body.audits).toEqual({ active: 1, overdue: 0 });
+    expect(memberARes.body.complaints).toEqual({ active: 1, overdue: 0 });
+    expect(memberARes.body.risks).toEqual({ active: 1, overdue: 1 });
+
+    const memberBRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${memberB.token}`);
+    expect(memberBRes.body.audits).toEqual({ active: 1, overdue: 0 });
+    expect(memberBRes.body.complaints).toEqual({ active: 0, overdue: 0 });
+    expect(memberBRes.body.risks).toEqual({ active: 0, overdue: 0 });
+
+    await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    const afterClosed = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterClosed.body.risks).toEqual({ active: 0, overdue: 0 });
+  });
+
+  it('fournisseurs et revues de direction : uniquement pour admin/manager, toujours à 0 pour member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    await request(app)
+      .post('/api/suppliers')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Fournisseur A', next_evaluation_date: '2026-08-01' });
+
+    const review = await request(app)
+      .post('/api/management-reviews')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Revue S2 2026', review_date: '2026-12-01' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.suppliers).toEqual({ active: 1, overdue: 1 });
+    expect(adminRes.body.management_reviews).toEqual({ draft: 1 });
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.suppliers).toEqual({ active: 0, overdue: 0 });
+    expect(memberRes.body.management_reviews).toEqual({ draft: 0 });
+
+    await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed' });
+    const afterCompleted = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterCompleted.body.management_reviews).toEqual({ draft: 0 });
+  });
 });
