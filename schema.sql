@@ -263,6 +263,52 @@ create table audit_findings (
 -- définie juste au-dessus, donc ajoutée après coup ici plutôt qu'inline dans capas.
 alter table capas add column audit_finding_id uuid references audit_findings (id) on delete set null;
 
+-- Revue de direction (ISO 9001 §9.3) : synthèse périodique formalisée. snapshot fige au
+-- moment de la clôture (status = 'completed') une photo chiffrée de l'état du SMQ
+-- (audits/CAPA/KPI/documents/formations, voir services/qmsSnapshot.js) — un historique de
+-- revue doit rester lisible même si les compteurs réels évoluent ensuite ; jsonb plutôt que
+-- des colonnes dédiées, la forme du snapshot peut évoluer sans migration.
+-- Les 4 champs texte suivent les catégories d'éléments d'entrée de la norme (statut des
+-- actions de la revue précédente, évolutions du contexte, adéquation des ressources,
+-- opportunités d'amélioration) — la performance du SMQ elle-même (§9.3.2 c) n'est pas un
+-- champ texte à remplir à la main, elle vient du snapshot automatique.
+create table management_reviews (
+  id                       uuid primary key default gen_random_uuid(),
+  tenant_id                uuid not null references tenants (id) on delete cascade,
+  title                    text not null,
+  review_date              date not null,
+  status                   text not null default 'draft' check (status in ('draft', 'completed')),
+  participants             text,
+  previous_actions_status  text,
+  context_changes          text,
+  resource_adequacy        text,
+  improvement_opportunities text,
+  conclusions              text,
+  snapshot                 jsonb,
+  created_by               uuid references users (id) on delete set null,
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now()
+);
+
+-- Actions décidées en sortie de revue (§9.3.3). Même principe bidirectionnel que
+-- audit_findings.linked_capa_id ci-dessus : une action peut rester autonome (ex. décision
+-- sans CAPA formelle) sans jamais donner lieu à une CAPA.
+create table management_review_actions (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  review_id      uuid not null references management_reviews (id) on delete cascade,
+  description    text not null,
+  linked_capa_id uuid references capas (id) on delete set null,
+  created_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+-- Action de revue de direction à l'origine de cette CAPA (voir aussi
+-- management_review_actions.linked_capa_id, l'inverse) — même raisonnement que
+-- audit_finding_id ci-dessus.
+alter table capas add column management_review_action_id uuid references management_review_actions (id) on delete set null;
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -639,6 +685,12 @@ create index idx_audits_service_id on audits (service_id);
 create index idx_audit_findings_tenant_id on audit_findings (tenant_id);
 create index idx_audit_findings_audit_id on audit_findings (audit_id);
 
+create index idx_management_reviews_tenant_id on management_reviews (tenant_id);
+create index idx_management_reviews_review_date on management_reviews (review_date);
+
+create index idx_management_review_actions_tenant_id on management_review_actions (tenant_id);
+create index idx_management_review_actions_review_id on management_review_actions (review_id);
+
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
@@ -746,6 +798,12 @@ create trigger trg_audits_updated_at before update on audits
   for each row execute function set_updated_at();
 
 create trigger trg_audit_findings_updated_at before update on audit_findings
+  for each row execute function set_updated_at();
+
+create trigger trg_management_reviews_updated_at before update on management_reviews
+  for each row execute function set_updated_at();
+
+create trigger trg_management_review_actions_updated_at before update on management_review_actions
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
@@ -914,6 +972,8 @@ alter table capa_comments enable row level security;
 alter table qqoqccp_analyses enable row level security;
 alter table audits enable row level security;
 alter table audit_findings enable row level security;
+alter table management_reviews enable row level security;
+alter table management_review_actions enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -1011,6 +1071,16 @@ create policy audits_isolation on audits
   with check (tenant_id = auth_tenant_id());
 
 create policy audit_findings_isolation on audit_findings
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy management_reviews_isolation on management_reviews
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy management_review_actions_isolation on management_review_actions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
