@@ -53,15 +53,30 @@ router.get('/', async (req, res) => {
 
 // GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
 // avant GET /:id : sinon "report" serait capturé comme un id et renverrait 404.
+// ?folder_id= optionnel, mêmes valeurs que GET / ('root' ou un uuid) : sans lui, le rapport
+// couvre tout le tenant (comportement historique, conservé pour un appel externe éventuel) ;
+// avec lui, le rapport se limite exactement aux KPI du dossier actuellement affiché à l'écran
+// — la page KPI le fournit désormais systématiquement (voir handleGenerateReport côté
+// frontend) pour que le PDF corresponde toujours à ce que l'utilisateur regarde, plutôt que de
+// toujours tout exporter en vrac quel que soit le dossier ouvert.
 router.get('/report', async (req, res) => {
+  const { folder_id: folderId } = req.query;
+
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
 
-  const { data: kpis, error } = await supabase
+  let query = supabase
     .from('kpis')
-    .select(`*, records:kpi_records(${RECORDS_SELECT})`)
-    .eq('tenant_id', req.tenantId)
-    .order('name', { ascending: true });
+    // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
+    // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
+    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`)
+    .eq('tenant_id', req.tenantId);
+
+  if (folderId) {
+    query = folderId === 'root' ? query.is('folder_id', null) : query.eq('folder_id', folderId);
+  }
+
+  const { data: kpis, error } = await query.order('name', { ascending: true });
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de générer le rapport.' });
@@ -90,7 +105,7 @@ router.get('/report', async (req, res) => {
     }
   }
 
-  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, tenantLogo, kpis, detailStatsByKpi });
+  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, tenantLogo, kpis, detailStatsByKpi, scoped: Boolean(folderId) });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.pdf"`);
