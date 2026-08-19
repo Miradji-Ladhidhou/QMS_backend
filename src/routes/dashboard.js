@@ -8,6 +8,7 @@ import {
   fetchTrainingItems,
   fetchTaskItems,
   fetchAuditItems,
+  fetchComplaintItems,
 } from '../services/planningItems.js';
 
 const router = Router();
@@ -148,13 +149,14 @@ router.get('/stats', async (req, res) => {
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
-    const [capaItems, trainingItems, taskItems, auditItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id }),
       fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id }),
+      fetchComplaintItems(req.tenantId, { assignedTo: req.user.id }),
     ]);
-    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems]);
+    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems, complaintItems]);
 
     return res.json({
       capas: countCapasByStatus(capas),
@@ -196,14 +198,15 @@ router.get('/stats', async (req, res) => {
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
   const kpisOffTarget = await countOffTargetKpis(req.tenantId);
 
-  const [capaItems, documentItems, trainingItems, taskItems, auditItems] = await Promise.all([
+  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems] = await Promise.all([
     fetchCapaItems(req.tenantId, { serviceIds }),
     fetchDocumentItems(req.tenantId),
     fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
     fetchTaskItems(req.tenantId, {}),
     fetchAuditItems(req.tenantId, { serviceIds }),
+    fetchComplaintItems(req.tenantId, { serviceIds }),
   ]);
-  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems, auditItems]);
+  const overdueTotal = countOverdueItems([capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems]);
 
   res.json({
     capas: countCapasByStatus(capas),

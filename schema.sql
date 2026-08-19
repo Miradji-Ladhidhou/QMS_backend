@@ -309,6 +309,38 @@ create table management_review_actions (
 -- audit_finding_id ci-dessus.
 alter table capas add column management_review_action_id uuid references management_review_actions (id) on delete set null;
 
+-- Réclamations clients. due_date est une échéance de réponse (SLA), pas une date de
+-- résolution — elle alimente le planning/le total "en retard" comme les autres outils (voir
+-- services/planningItems.js). linked_capa_id suit le même principe bidirectionnel qu'ailleurs
+-- dans ce fichier : lien direct (comme qqoqccp_analyses), pas de sous-table de "constats"
+-- comme pour les audits — une réclamation est déjà l'unité atomique de ce module.
+create table complaints (
+  id                uuid primary key default gen_random_uuid(),
+  tenant_id         uuid not null references tenants (id) on delete cascade,
+  customer_name     text not null,
+  customer_contact  text,
+  received_date     date not null,
+  due_date          date,
+  description       text not null,
+  product_service   text,
+  severity          text not null default 'medium' check (severity in ('low', 'medium', 'high', 'critical')),
+  status            text not null default 'received' check (status in ('received', 'investigating', 'resolved', 'closed')),
+  service_id        uuid references services (id) on delete set null,
+  assigned_to       uuid references users (id) on delete set null,
+  root_cause        text,
+  resolution        text,
+  resolution_date   date,
+  customer_satisfied boolean,
+  linked_capa_id    uuid references capas (id) on delete set null,
+  created_by        uuid references users (id) on delete set null,
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+-- Réclamation à l'origine de cette CAPA (voir aussi complaints.linked_capa_id, l'inverse) —
+-- même raisonnement que les autres colonnes miroir ci-dessus.
+alter table capas add column complaint_id uuid references complaints (id) on delete set null;
+
 create table trainings (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -691,6 +723,12 @@ create index idx_management_reviews_review_date on management_reviews (review_da
 create index idx_management_review_actions_tenant_id on management_review_actions (tenant_id);
 create index idx_management_review_actions_review_id on management_review_actions (review_id);
 
+create index idx_complaints_tenant_id on complaints (tenant_id);
+create index idx_complaints_status on complaints (status);
+create index idx_complaints_assigned_to on complaints (assigned_to);
+create index idx_complaints_due_date on complaints (due_date);
+create index idx_complaints_service_id on complaints (service_id);
+
 create index idx_capa_comments_tenant_id on capa_comments (tenant_id);
 create index idx_capa_comments_capa_id on capa_comments (capa_id);
 
@@ -804,6 +842,9 @@ create trigger trg_management_reviews_updated_at before update on management_rev
   for each row execute function set_updated_at();
 
 create trigger trg_management_review_actions_updated_at before update on management_review_actions
+  for each row execute function set_updated_at();
+
+create trigger trg_complaints_updated_at before update on complaints
   for each row execute function set_updated_at();
 
 create trigger trg_trainings_updated_at before update on trainings
@@ -974,6 +1015,7 @@ alter table audits enable row level security;
 alter table audit_findings enable row level security;
 alter table management_reviews enable row level security;
 alter table management_review_actions enable row level security;
+alter table complaints enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table kpi_folders enable row level security;
@@ -1081,6 +1123,11 @@ create policy management_reviews_isolation on management_reviews
   with check (tenant_id = auth_tenant_id());
 
 create policy management_review_actions_isolation on management_review_actions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy complaints_isolation on complaints
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

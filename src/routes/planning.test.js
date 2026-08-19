@@ -175,4 +175,35 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     const afterClose = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterClose.body.items.some((i) => i.type === 'audit' && i.id === audit.body.id)).toBe(false);
   });
+
+  it('inclut les réclamations non résolues avec échéance ; un member ne voit que les siennes', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const complaint = await request(app)
+      .post('/api/complaints')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        customer_name: 'Client planning',
+        received_date: '2026-08-01',
+        due_date: '2026-08-01',
+        description: 'Retard de livraison',
+        assigned_to: member.id,
+      });
+
+    const adminRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const item = adminRes.body.items.find((i) => i.type === 'complaint' && i.id === complaint.body.id);
+    expect(item).toBeDefined();
+    expect(item.is_overdue).toBe(true);
+
+    const memberRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.items.some((i) => i.type === 'complaint' && i.id === complaint.body.id)).toBe(true);
+
+    await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved' });
+    const afterResolved = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterResolved.body.items.some((i) => i.type === 'complaint' && i.id === complaint.body.id)).toBe(false);
+  });
 });

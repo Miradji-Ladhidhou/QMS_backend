@@ -125,6 +125,38 @@ export async function fetchTrainingItems(tenantId, { userId, userIds }) {
   });
 }
 
+// Réclamations non résolues/clôturées avec une échéance de réponse — même scope que CAPA
+// (assigné à moi, par service, ou tout le tenant), même famille de règles côté rôle
+// (complaints.js reflète capas.js : member = ses réclamations assignées uniquement).
+export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds }) {
+  let query = supabase
+    .from('complaints')
+    .select('id, customer_name, due_date')
+    .eq('tenant_id', tenantId)
+    .not('due_date', 'is', null)
+    .not('status', 'in', '(resolved,closed)');
+
+  if (assignedTo) {
+    query = query.eq('assigned_to', assignedTo);
+  } else if (serviceIds) {
+    if (serviceIds.length === 0) return [];
+    query = query.in('service_id', serviceIds);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((complaint) =>
+    withOverdue({
+      type: 'complaint',
+      id: complaint.id,
+      title: `Réclamation — ${complaint.customer_name}`,
+      date: complaint.due_date,
+      link: `/complaints/${complaint.id}`,
+    })
+  );
+}
+
 // Audits internes non clôturés — scope : ceux que je mène (member), par service audité, ou
 // tout le tenant selon le mode. Contrairement à CAPA/formations, un audit reste visible en
 // lecture à tous les rôles (voir audits.js) ; ici on ne filtre que la SÉLECTION des items du

@@ -190,4 +190,33 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     const afterClose = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterClose.body.overdue.total).toBe(0);
   });
+
+  it('total "en retard" inclut aussi les réclamations non résolues en retard', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const complaint = await request(app)
+      .post('/api/complaints')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        customer_name: 'Client en retard',
+        received_date: '2026-08-01',
+        due_date: '2026-08-01',
+        description: 'Réclamation en retard',
+        assigned_to: member.id,
+      });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.overdue.total).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.overdue.total).toBe(1);
+
+    await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved' });
+    const afterResolved = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterResolved.body.overdue.total).toBe(0);
+  });
 });
