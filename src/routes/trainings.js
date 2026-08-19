@@ -141,6 +141,10 @@ router.get('/matrix', async (req, res) => {
     const matrix = await buildMatrix(req.tenantId);
     res.json(matrix);
   } catch (err) {
+    // err.message est déjà un texte français sûr (voir buildMatrix/fetchLatestTrainingRecords
+    // plus haut, jamais un message brut de Supabase) — mais rien n'était logué côté serveur
+    // jusqu'ici en cas d'échec, seul le client le voyait.
+    console.error('Échec de construction de la matrice des compétences :', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -160,6 +164,7 @@ router.get('/matrix/pdf', async (req, res) => {
     res.setHeader('Content-Disposition', `inline; filename="matrice-competences-${new Date().toISOString().slice(0, 10)}.pdf"`);
     res.send(pdfBuffer);
   } catch (err) {
+    console.error('Échec de génération du PDF de la matrice des compétences :', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -170,6 +175,7 @@ router.get('/upcoming-renewals', async (req, res) => {
   try {
     latestByPair = await fetchLatestTrainingRecords(req.tenantId);
   } catch (err) {
+    console.error('Échec de récupération des renouvellements de formation :', err);
     return res.status(500).json({ error: err.message });
   }
 

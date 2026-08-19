@@ -6,12 +6,20 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
 
 const router = Router();
+// Un logo n'a besoin d'être qu'une image matricielle — exclut notamment image/svg+xml : un
+// SVG peut embarquer du <script>, et le type stocké ici est ensuite servi tel quel comme
+// content-type public (voir POST /logo), donc directement exécutable si on l'acceptait.
+const ALLOWED_LOGO_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
 // defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
 // corrompt (mojibake) les noms de fichiers accentués envoyés en UTF-8 par le navigateur.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 5 * 1024 * 1024 },
   defParamCharset: 'utf8',
+  fileFilter: (req, file, cb) => {
+    cb(null, ALLOWED_LOGO_TYPES.has(file.mimetype));
+  },
 });
 const LOGO_BUCKET = 'tenant-logos';
 
@@ -61,7 +69,7 @@ router.patch(
 // POST /api/tenant/logo — upload du logo vers Supabase Storage (admin uniquement)
 router.post('/logo', requireRole('admin'), upload.single('file'), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'Un fichier est requis.' });
+    return res.status(400).json({ error: 'Un fichier image est requis (PNG, JPEG, WEBP ou GIF).' });
   }
 
   const logoPath = `${req.tenantId}/logo-${Date.now()}-${sanitizeFileName(req.file.originalname)}`;

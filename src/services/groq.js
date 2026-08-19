@@ -66,7 +66,12 @@ async function callGroq(systemPrompt, userPrompt) {
     if (err instanceof Groq.APIConnectionError) {
       throw new Error("Erreur réseau lors de l'appel à Groq.");
     }
-    throw new Error(`Échec de l'appel à Groq : ${err.message}`);
+    // Catégorie imprévue (ni quota, ni auth, ni réseau/timeout) : err.message vient du SDK
+    // Groq, pas d'un texte qu'on a écrit — jamais renvoyé tel quel au client (voir routes/ai.js
+    // et routes/qqoqccp.js, qui affichent directement le message de cette erreur), on ne garde
+    // ici que le détail utile côté serveur pour le diagnostic.
+    console.error('Échec inattendu de l’appel à Groq :', err);
+    throw new Error("Échec de l'appel à Groq. Réessayez dans quelques instants.");
   }
 
   const raw = completion.choices?.[0]?.message?.content;
@@ -77,7 +82,8 @@ async function callGroq(systemPrompt, userPrompt) {
   try {
     return JSON.parse(raw);
   } catch (err) {
-    throw new Error(`Réponse Groq mal formée (JSON invalide) : ${err.message}`);
+    console.error('Réponse Groq mal formée (JSON invalide) :', err, raw);
+    throw new Error('Réponse Groq mal formée : impossible de générer une suggestion.');
   }
 }
 

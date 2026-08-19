@@ -28,6 +28,26 @@ const upload = multer({
 const DOCUMENT_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
 const STORAGE_BUCKET = 'qms-documents';
 
+// Un document peut légitimement être de presque n'importe quel type (Word, Excel, PDF,
+// image scannée...) — on ne rejette donc aucun upload sur son type. En revanche le bucket est
+// public (getPublicUrl) et le type stocké vient tel quel du client (file.mimetype) : un fichier
+// HTML/SVG/JS uploadé avec ce content-type s'ouvrirait et s'exécuterait dans le navigateur au
+// lieu de se télécharger — XSS stocké. On neutralise seulement ces types "actifs" en les
+// stockant comme flux binaire générique (toujours téléchargé, jamais rendu/exécuté), sans
+// bloquer l'upload lui-même.
+const ACTIVE_CONTENT_TYPES = new Set([
+  'text/html',
+  'application/xhtml+xml',
+  'image/svg+xml',
+  'application/javascript',
+  'text/javascript',
+  'application/x-javascript',
+]);
+
+function safeStorageContentType(mimetype) {
+  return ACTIVE_CONTENT_TYPES.has(mimetype) ? 'application/octet-stream' : mimetype;
+}
+
 router.use(requireAuth);
 
 function bumpVersion(version) {
@@ -41,10 +61,11 @@ function bumpVersion(version) {
 async function uploadToStorage(path, file) {
   const { error } = await supabase.storage
     .from(STORAGE_BUCKET)
-    .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
+    .upload(path, file.buffer, { contentType: safeStorageContentType(file.mimetype), upsert: false });
 
   if (error) {
-    throw new Error(`Échec de l'upload du fichier : ${error.message}`);
+    console.error("Échec de l'upload d'un document vers le storage :", error);
+    throw new Error("Échec de l'upload du fichier.");
   }
 }
 

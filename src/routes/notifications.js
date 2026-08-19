@@ -116,7 +116,8 @@ router.post(
       const result = await sendEmail(to, `[Test QMS SaaS] ${template}`, html);
       res.json({ sent: true, template, result });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      console.error("Échec de l'envoi de l'email de test :", err);
+      res.status(500).json({ error: "Impossible d'envoyer l'email de test." });
     }
   }
 );
