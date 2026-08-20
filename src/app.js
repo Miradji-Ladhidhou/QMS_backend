@@ -50,8 +50,12 @@ const app = express();
 
 // Nécessaire pour que req.ip reflète l'IP réelle du client derrière un reverse proxy
 // (Render, etc.) plutôt que celle du proxy — utilisé pour la signature électronique et le
-// rate limiting ci-dessous (express-rate-limit s'appuie sur req.ip).
-app.set('trust proxy', true);
+// rate limiting ci-dessous (express-rate-limit s'appuie sur req.ip). `true` fait confiance à
+// TOUTE la chaîne X-Forwarded-For fournie par le client, ce qui permet de usurper une IP et de
+// contourner le rate limiting (ERR_ERL_PERMISSIVE_TRUST_PROXY) — `1` ne fait confiance qu'au
+// premier hop (le proxy Render lui-même), ce qui suffit puisqu'il n'y a qu'un seul proxy devant
+// l'app.
+app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));

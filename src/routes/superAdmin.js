@@ -1,10 +1,20 @@
 import { Router } from 'express';
+import fs from 'fs';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
 import { logSuperAdminAction } from '../services/superAdminAudit.js';
+import {
+  runDatabaseBackup,
+  restoreFromFile,
+  getBackupPathByFilename,
+} from '../services/backupService.js';
+import { uploadBackupToDrive, listDriveBackups, downloadFromDrive } from '../services/googleDriveService.js';
+import { slugify } from './auth.js';
+import { ASSIGNABLE_ROLES, sendInviteEmail } from './users.js';
 
 const router = Router();
+const PLANS = ['free', 'starter', 'pro', 'enterprise'];
 
 router.use(requireAuth);
 router.use(requireSuperAdmin);
@@ -121,40 +131,334 @@ router.get('/tenants/:id', async (req, res) => {
   res.json({ tenant, users, module_counts: moduleCounts, recent_actions: recentActions });
 });
 
-// PATCH /api/super-admin/tenants/:id — suspend ou réactive un tenant. Ne supprime ni ne
-// modifie aucune autre donnée : requireAuth bloque simplement ses utilisateurs tant que
-// is_suspended est vrai (voir middleware/auth.js).
-router.patch(
-  '/tenants/:id',
-  [body('is_suspended').isBoolean().withMessage('Valeur invalide.')],
+// POST /api/super-admin/tenants — crée un tenant vide (aucun utilisateur). Repli sur un slug
+// suffixé en cas de collision, même logique que POST /auth/register.
+router.post(
+  '/tenants',
+  [
+    body('name').trim().notEmpty().withMessage('Le nom est requis.'),
+    body('plan').optional({ values: 'falsy' }).isIn(PLANS).withMessage('Plan invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { data, error } = await supabase
-      .from('tenants')
-      .update({ is_suspended: req.body.is_suspended })
-      .eq('id', req.params.id)
-      .select('id, name, slug, plan, is_suspended, created_at')
-      .single();
+    const { name, plan } = req.body;
+    const baseSlug = slugify(name);
 
-    if (error || !data) {
-      return res.status(404).json({ error: 'Tenant introuvable.' });
+    let tenant = null;
+    let tenantError = null;
+
+    for (let attempt = 0; attempt < 5 && !tenant; attempt += 1) {
+      const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
+      const { data, error } = await supabase
+        .from('tenants')
+        .insert({ name, slug, plan: plan || 'free' })
+        .select('id, name, slug, plan, is_suspended, created_at')
+        .single();
+
+      if (!error) {
+        tenant = data;
+      } else if (error.code === '23505') {
+        tenantError = error;
+      } else {
+        tenantError = error;
+        break;
+      }
+    }
+
+    if (!tenant) {
+      const message =
+        tenantError?.code === '23505'
+          ? "Impossible de générer un identifiant unique pour ce tenant, réessayez."
+          : 'Erreur lors de la création du tenant.';
+      return res.status(tenantError?.code === '23505' ? 409 : 500).json({ error: message });
     }
 
     await logSuperAdminAction({
       actorId: req.user.id,
-      action: req.body.is_suspended ? 'tenant_suspended' : 'tenant_reactivated',
+      action: 'tenant_created',
+      targetType: 'tenant',
+      targetId: tenant.id,
+      details: { tenant_name: tenant.name },
+    });
+
+    res.status(201).json({ ...tenant, user_count: 0 });
+  }
+);
+
+// PATCH /api/super-admin/tenants/:id — modifie n'importe quel champ du tenant (nom, slug,
+// plan, suspension). requireAuth bloque simplement les utilisateurs d'un tenant suspendu,
+// aucune autre donnée n'est touchée (voir middleware/auth.js).
+router.patch(
+  '/tenants/:id',
+  [
+    body('name').optional().trim().notEmpty().withMessage('Le nom ne peut pas être vide.'),
+    body('slug').optional().trim().notEmpty().withMessage('Le slug ne peut pas être vide.'),
+    body('plan').optional().isIn(PLANS).withMessage('Plan invalide.'),
+    body('is_suspended').optional().isBoolean().withMessage('Valeur invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    if (req.body.is_suspended === true && req.tenantId === req.params.id) {
+      return res.status(403).json({ error: 'Vous ne pouvez pas suspendre votre propre tenant.' });
+    }
+
+    const update = {};
+    for (const field of ['name', 'slug', 'plan', 'is_suspended']) {
+      if (field in req.body) update[field] = req.body[field];
+    }
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const { data, error } = await supabase
+      .from('tenants')
+      .update(update)
+      .eq('id', req.params.id)
+      .select('id, name, slug, plan, is_suspended, created_at')
+      .single();
+
+    if (error) {
+      if (error.code === '23505') {
+        return res.status(409).json({ error: 'Ce slug est déjà utilisé par un autre tenant.' });
+      }
+      return res.status(404).json({ error: 'Tenant introuvable.' });
+    }
+    if (!data) {
+      return res.status(404).json({ error: 'Tenant introuvable.' });
+    }
+
+    let action = 'tenant_updated';
+    if ('is_suspended' in update) {
+      action = update.is_suspended ? 'tenant_suspended' : 'tenant_reactivated';
+    }
+
+    await logSuperAdminAction({
+      actorId: req.user.id,
+      action,
       targetType: 'tenant',
       targetId: data.id,
-      details: { tenant_name: data.name },
+      details: { tenant_name: data.name, updated_fields: Object.keys(update) },
     });
 
     res.json(data);
   }
 );
+
+// DELETE /api/super-admin/tenants/:id — supprime définitivement un tenant et toutes ses
+// données (cascade SQL, voir schema.sql). Les comptes auth.users de ses membres ne sont PAS
+// supprimés ici, volontairement : le supprimer rendrait toute restauration ultérieure (voir
+// /backup, /restore-drive) impossible pour ces lignes — pg_dump --schema=public ne peut pas
+// capturer la contrainte users_id_fkey (elle référence auth.users, hors schéma dumpé), donc un
+// compte auth.users manquant fait échouer sa recréation après restauration. Un compte orphelin
+// (aucun profil public.users) est inoffensif : middleware/auth.js refuse toute requête sans
+// profil, donc ce compte ne peut plus rien faire tant qu'aucun profil ne lui est réassigné.
+router.delete('/tenants/:id', async (req, res) => {
+  if (req.tenantId === req.params.id) {
+    return res.status(403).json({ error: 'Vous ne pouvez pas supprimer votre propre tenant.' });
+  }
+
+  const { data: members } = await supabase.from('users').select('id').eq('tenant_id', req.params.id);
+
+  const { data: tenant, error } = await supabase
+    .from('tenants')
+    .delete()
+    .eq('id', req.params.id)
+    .select('id, name')
+    .single();
+
+  if (error || !tenant) {
+    return res.status(404).json({ error: 'Tenant introuvable.' });
+  }
+
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'tenant_deleted',
+    targetType: 'tenant',
+    targetId: tenant.id,
+    details: { tenant_name: tenant.name, member_count: (members || []).length },
+  });
+
+  res.json({ ok: true });
+});
+
+// POST /api/super-admin/tenants/:id/users — crée et invite un utilisateur dans n'importe quel
+// tenant. Même mécanisme que POST /users/invite (lien Supabase envoyé par email via notre
+// pipeline Resend/Gmail), simplement sans la contrainte req.tenantId de la route tenant-scopée.
+router.post(
+  '/tenants/:id/users',
+  [
+    body('email').isEmail().withMessage('Adresse email invalide.'),
+    body('full_name').trim().notEmpty().withMessage('Le nom complet est requis.'),
+    body('role').optional({ values: 'falsy' }).isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
+    body('is_super_admin').optional().isBoolean().withMessage('Valeur invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: tenant } = await supabase.from('tenants').select('id, name').eq('id', req.params.id).single();
+    if (!tenant) {
+      return res.status(404).json({ error: 'Tenant introuvable.' });
+    }
+
+    const { email, full_name: fullName, role, is_super_admin: isSuperAdmin } = req.body;
+
+    let inviteResult;
+    try {
+      inviteResult = await sendInviteEmail({ email, fullName, tenantId: tenant.id });
+    } catch (err) {
+      console.error("[super-admin] échec de l'envoi de l'invitation :", err);
+      return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+    }
+
+    if (inviteResult.error) {
+      if (/already registered|already exists/i.test(inviteResult.error.message)) {
+        return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
+      }
+      return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+    }
+
+    const userId = inviteResult.userId;
+
+    const { data: profile, error: profileError } = await supabase
+      .from('users')
+      .insert({
+        id: userId,
+        tenant_id: tenant.id,
+        full_name: fullName,
+        role: role || 'member',
+        is_super_admin: Boolean(isSuperAdmin),
+      })
+      .select('id, full_name, role, is_active, is_super_admin, created_at')
+      .single();
+
+    if (profileError) {
+      await supabase.auth.admin.deleteUser(userId);
+      return res.status(500).json({ error: 'Erreur lors de la création du profil utilisateur.' });
+    }
+
+    await logSuperAdminAction({
+      actorId: req.user.id,
+      action: 'user_created',
+      targetType: 'user',
+      targetId: userId,
+      details: { email, tenant_name: tenant.name },
+    });
+
+    res.status(201).json({ ...profile, email });
+  }
+);
+
+// PATCH /api/super-admin/users/:id — modifie n'importe quel utilisateur, tous tenants
+// confondus (rôle, statut actif, statut super admin, ou transfert vers un autre tenant).
+router.patch(
+  '/users/:id',
+  [
+    body('full_name').optional().trim().notEmpty().withMessage('Le nom complet ne peut pas être vide.'),
+    body('role').optional().isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
+    body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('is_super_admin').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('tenant_id').optional().isUUID().withMessage('Tenant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const fields = ['full_name', 'role', 'is_active', 'is_super_admin', 'tenant_id'];
+    if (!fields.some((field) => field in req.body)) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const isSelf = req.params.id === req.user.id;
+    if (isSelf && 'is_active' in req.body && req.body.is_active === false) {
+      return res.status(403).json({ error: 'Vous ne pouvez pas désactiver votre propre compte.' });
+    }
+    if (isSelf && 'is_super_admin' in req.body && req.body.is_super_admin === false) {
+      return res.status(403).json({ error: 'Vous ne pouvez pas retirer vos propres droits super admin.' });
+    }
+
+    if ('tenant_id' in req.body) {
+      const { data: targetTenant } = await supabase.from('tenants').select('id').eq('id', req.body.tenant_id).single();
+      if (!targetTenant) {
+        return res.status(400).json({ error: 'Tenant cible introuvable.' });
+      }
+    }
+
+    const update = {};
+    for (const field of fields) {
+      if (field in req.body) update[field] = req.body[field];
+    }
+
+    const { data, error } = await supabase
+      .from('users')
+      .update(update)
+      .eq('id', req.params.id)
+      .select('id, full_name, role, is_active, is_super_admin, tenant_id, created_at')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Utilisateur introuvable.' });
+    }
+
+    await logSuperAdminAction({
+      actorId: req.user.id,
+      action: 'user_updated',
+      targetType: 'user',
+      targetId: data.id,
+      details: { updated_fields: Object.keys(update) },
+    });
+
+    res.json(data);
+  }
+);
+
+// DELETE /api/super-admin/users/:id — supprime le profil d'un utilisateur (public.users), tous
+// tenants confondus. Le compte auth.users est laissé intact, volontairement — même raison que
+// DELETE /tenants/:id ci-dessus : le supprimer casserait toute restauration ultérieure pour
+// cette ligne. Sans profil, ce compte ne peut plus rien faire (voir middleware/auth.js).
+router.delete('/users/:id', async (req, res) => {
+  if (req.params.id === req.user.id) {
+    return res.status(403).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
+  }
+
+  const { data: target, error: targetError } = await supabase
+    .from('users')
+    .select('id, full_name, tenant_id')
+    .eq('id', req.params.id)
+    .single();
+
+  if (targetError || !target) {
+    return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  }
+
+  const { error: deleteError } = await supabase.from('users').delete().eq('id', target.id);
+  if (deleteError) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression du profil.' });
+  }
+
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'user_deleted',
+    targetType: 'user',
+    targetId: target.id,
+    details: { full_name: target.full_name, tenant_id: target.tenant_id },
+  });
+
+  res.json({ ok: true });
+});
 
 // GET /api/super-admin/audit-log — journal plateforme, le plus récent en premier. ?limit=
 // borné à 200 : cette route n'a pas vocation à devenir un export complet (voir plutôt
@@ -246,5 +550,178 @@ router.get('/health', async (req, res) => {
     checked_at: new Date().toISOString(),
   });
 });
+
+// POST /api/super-admin/backup — sauvegarde locale (schéma public uniquement, voir
+// backupService) téléchargeable ensuite via GET /backups/:filename.
+router.post('/backup', async (req, res) => {
+  let backup;
+  try {
+    backup = await runDatabaseBackup();
+  } catch (err) {
+    console.error('[super-admin] échec de la sauvegarde :', err.message);
+    return res.status(err.statusCode || 500).json({ error: 'Erreur lors de la sauvegarde.' });
+  }
+
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'db_backup_created',
+    targetType: 'platform',
+    details: { filename: backup.filename, size_bytes: backup.sizeBytes, destination: 'local' },
+  });
+
+  res.json({
+    filename: backup.filename,
+    size_bytes: backup.sizeBytes,
+    created_at: backup.createdAt,
+    download_url: `/super-admin/backups/${backup.filename}`,
+  });
+});
+
+// GET /api/super-admin/backups/:filename — téléchargement d'une sauvegarde locale.
+router.get('/backups/:filename', async (req, res) => {
+  const filePath = getBackupPathByFilename(req.params.filename);
+  if (!filePath) {
+    return res.status(400).json({ error: 'Nom de fichier invalide.' });
+  }
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Sauvegarde introuvable.' });
+  }
+
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'db_backup_downloaded',
+    targetType: 'platform',
+    details: { filename: req.params.filename },
+  });
+
+  res.download(filePath, req.params.filename);
+});
+
+// POST /api/super-admin/backup-drive — sauvegarde locale puis envoi sur Google Drive.
+router.post('/backup-drive', async (req, res) => {
+  let backup;
+  try {
+    backup = await runDatabaseBackup();
+  } catch (err) {
+    console.error('[super-admin] échec de la sauvegarde :', err.message);
+    return res.status(err.statusCode || 500).json({ error: 'Erreur lors de la sauvegarde.' });
+  }
+
+  let driveFile;
+  try {
+    driveFile = await uploadBackupToDrive(backup.filePath, backup.filename);
+  } catch (err) {
+    console.error('[super-admin] échec de l\'envoi sur Drive :', err.message);
+    return res.status(err.statusCode || 500).json({ error: "Erreur lors de l'envoi sur Google Drive." });
+  }
+
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'db_backup_created',
+    targetType: 'platform',
+    details: {
+      filename: backup.filename,
+      size_bytes: backup.sizeBytes,
+      destination: 'google_drive',
+      drive_file_id: driveFile.id,
+    },
+  });
+
+  res.json({
+    filename: backup.filename,
+    size_bytes: backup.sizeBytes,
+    created_at: backup.createdAt,
+    drive: { file_id: driveFile.id, name: driveFile.name, web_view_link: driveFile.webViewLink },
+  });
+});
+
+// GET /api/super-admin/drive-backups — liste des sauvegardes présentes sur Google Drive.
+router.get('/drive-backups', async (req, res) => {
+  try {
+    const files = await listDriveBackups(30);
+    res.json(
+      files.map((file) => ({
+        id: file.id,
+        name: file.name,
+        size_bytes: file.size ? Number(file.size) : null,
+        created_at: file.createdTime,
+        web_view_link: file.webViewLink,
+      }))
+    );
+  } catch (err) {
+    console.error('[super-admin] échec de la liste des sauvegardes Drive :', err.message);
+    res.status(err.statusCode || 500).json({ error: 'Impossible de récupérer les sauvegardes Google Drive.' });
+  }
+});
+
+// POST /api/super-admin/restore-drive — restaure la base (schéma public) depuis une sauvegarde
+// Google Drive. Irréversible : écrase toutes les données actuelles de tous les tenants. Une
+// sauvegarde locale de sécurité est prise juste avant, au cas où le fichier restauré serait
+// corrompu ou inadapté — elle n'annule pas la restauration en cas d'erreur.
+router.post(
+  '/restore-drive',
+  [body('file_id').trim().notEmpty().withMessage('file_id est requis.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { file_id: fileId } = req.body;
+
+    // Le token OAuth Drive a le scope large `drive`, pas `drive.file` — sans ce contrôle,
+    // n'importe quel fichier accessible à ce compte Google (pas seulement nos sauvegardes)
+    // pourrait être téléchargé puis exécuté tel quel comme script SQL sur la base.
+    let driveFile;
+    try {
+      const backups = await listDriveBackups(30);
+      driveFile = backups.find((file) => file.id === fileId);
+    } catch (err) {
+      console.error('[super-admin] échec de la vérification du fichier Drive :', err.message);
+      return res.status(500).json({ error: 'Impossible de vérifier ce fichier sur Google Drive.' });
+    }
+    if (!driveFile) {
+      return res.status(404).json({ error: 'Ce fichier ne fait pas partie des sauvegardes du dossier configuré.' });
+    }
+
+    try {
+      await runDatabaseBackup();
+    } catch (err) {
+      console.error('[super-admin] échec de la sauvegarde de sécurité pré-restauration :', err.message);
+      return res.status(500).json({ error: 'Sauvegarde de sécurité impossible : restauration annulée par précaution.' });
+    }
+
+    let tempPath;
+    let reconcileResult;
+    try {
+      tempPath = await downloadFromDrive(fileId, driveFile.name);
+      reconcileResult = await restoreFromFile(tempPath);
+    } catch (err) {
+      console.error('[super-admin] échec de la restauration :', err.message);
+      return res.status(err.statusCode || 500).json({ error: 'Erreur lors de la restauration.' });
+    } finally {
+      if (tempPath && fs.existsSync(tempPath)) {
+        try {
+          fs.unlinkSync(tempPath);
+        } catch {
+          // fichier temporaire déjà absent
+        }
+      }
+    }
+
+    await logSuperAdminAction({
+      actorId: req.user.id,
+      action: 'db_restored_from_drive',
+      targetType: 'platform',
+      details: {
+        filename: driveFile.name,
+        drive_file_id: fileId,
+        orphaned_profiles_removed: reconcileResult?.orphanedProfilesRemoved || 0,
+      },
+    });
+
+    res.json({ ok: true, orphaned_profiles_removed: reconcileResult?.orphanedProfilesRemoved || 0 });
+  }
+);
 
 export default router;

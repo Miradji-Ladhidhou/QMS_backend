@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase.js';
 
 const router = Router();
 
-function slugify(text) {
+export function slugify(text) {
   return text
     .toString()
     .normalize('NFD')

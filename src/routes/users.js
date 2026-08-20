@@ -2,9 +2,11 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { sendEmail } from '../services/email.js';
+import { renderTemplate } from '../services/renderTemplate.js';
 
 const router = Router();
-const ASSIGNABLE_ROLES = ['admin', 'manager', 'member'];
+export const ASSIGNABLE_ROLES = ['admin', 'manager', 'member'];
 const DIGEST_FREQUENCIES = ['immediate', 'daily', 'weekly'];
 const NOTIFICATION_PREFERENCE_FIELDS = [
   'email_documents_to_review',
@@ -154,6 +156,36 @@ router.patch(
   }
 );
 
+// Génère un lien d'invitation Supabase (sans envoi via GoTrue — son SMTP n'est pas configuré,
+// ni en local ni forcément en prod) puis l'envoie nous-mêmes via Resend, avec notre propre
+// template, comme le reste des notifications de l'app.
+export async function sendInviteEmail({ email, fullName, tenantId }) {
+  const { data: linkData, error: linkError } = await supabase.auth.admin.generateLink({
+    type: 'invite',
+    email,
+    options: {
+      data: { full_name: fullName },
+      redirectTo: `${process.env.FRONTEND_URL}/reset-password`,
+    },
+  });
+
+  if (linkError) {
+    return { error: linkError };
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', tenantId).single();
+
+  const html = renderTemplate('invite', {
+    fullName,
+    tenantName: tenant?.name || 'QMS SaaS',
+    inviteUrl: linkData.properties.action_link,
+  });
+
+  await sendEmail(email, `Invitation à rejoindre ${tenant?.name || 'QMS SaaS'}`, html);
+
+  return { userId: linkData.user.id };
+}
+
 // POST /api/users/invite — invite un nouvel utilisateur par email (admin uniquement)
 router.post(
   '/invite',
@@ -171,18 +203,22 @@ router.post(
 
     const { email, full_name: fullName, role } = req.body;
 
-    const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(email, {
-      data: { full_name: fullName },
-    });
+    let inviteResult;
+    try {
+      inviteResult = await sendInviteEmail({ email, fullName, tenantId: req.tenantId });
+    } catch (err) {
+      console.error("Échec de l'envoi de l'email d'invitation :", err);
+      return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+    }
 
-    if (inviteError) {
-      if (/already registered|already exists/i.test(inviteError.message)) {
+    if (inviteResult.error) {
+      if (/already registered|already exists/i.test(inviteResult.error.message)) {
         return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
       }
       return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
     }
 
-    const userId = inviteData.user.id;
+    const userId = inviteResult.userId;
 
     const { error: profileError } = await supabase.from('users').insert({
       id: userId,
@@ -223,11 +259,15 @@ router.post('/:id/resend-invite', requireRole('admin'), async (req, res) => {
     return res.status(400).json({ error: 'Cet utilisateur a déjà activé son compte.' });
   }
 
-  const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(authData.user.email, {
-    data: { full_name: target.full_name },
-  });
-
-  if (inviteError) {
+  try {
+    const inviteResult = await sendInviteEmail({
+      email: authData.user.email,
+      fullName: target.full_name,
+      tenantId: req.tenantId,
+    });
+    if (inviteResult.error) throw inviteResult.error;
+  } catch (err) {
+    console.error("Échec du renvoi de l'email d'invitation :", err);
     return res.status(500).json({ error: "Erreur lors du renvoi de l'invitation." });
   }
 
