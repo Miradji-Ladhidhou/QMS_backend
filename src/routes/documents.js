@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';
 import ExcelJS from 'exceljs';
@@ -11,6 +11,12 @@ import { sendImmediateNotification, getUserFullName } from '../services/notifica
 import { extractText } from '../services/textExtraction.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
 import { parseExcelBuffer } from '../services/excelParsing.js';
+import {
+  refreshAccessTokenIfNeeded,
+  uploadFile as uploadFileToDrive,
+  getDriveFileStream,
+  getOrCreateCategoryFolder,
+} from '../services/googleDrive.js';
 import {
   requireCategoryPermission,
   filterViewableDocuments,
@@ -50,6 +56,109 @@ const ACTIVE_CONTENT_TYPES = new Set([
 function safeStorageContentType(mimetype) {
   return ACTIVE_CONTENT_TYPES.has(mimetype) ? 'application/octet-stream' : mimetype;
 }
+
+function getTicketSecret() {
+  const secret = process.env.ENCRYPTION_KEY;
+  if (!secret) {
+    const err = new Error('ENCRYPTION_KEY est manquant.');
+    err.statusCode = 500;
+    throw err;
+  }
+  return secret;
+}
+
+// Ticket signé, à durée de vie courte, pour /:id/drive-file : cette route est atteinte par
+// une navigation navigateur classique (window.open depuis le frontend), qui ne porte pas
+// notre en-tête Authorization — elle ne peut donc pas passer par requireAuth comme le reste
+// de ce routeur. La permission de consultation est déjà vérifiée avant l'émission du ticket
+// (par requireCategoryPermission sur GET /:id/download) ; le ticket ne fait que transporter
+// cette autorisation déjà accordée jusqu'au clic effectif, sans jamais la revérifier via une
+// session — d'où sa durée de vie volontairement courte.
+const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000;
+
+function signDownloadTicket(documentId, tenantId) {
+  const expiresAt = Date.now() + DOWNLOAD_TICKET_TTL_MS;
+  const payload = `${documentId}:${tenantId}:${expiresAt}`;
+  const signature = createHmac('sha256', getTicketSecret()).update(payload).digest('hex');
+  return `${payload}.${signature}`;
+}
+
+function verifyDownloadTicket(ticket) {
+  const raw = String(ticket || '');
+  const separatorIndex = raw.lastIndexOf('.');
+  if (separatorIndex === -1) return null;
+
+  const payload = raw.slice(0, separatorIndex);
+  const signature = raw.slice(separatorIndex + 1);
+  const expected = createHmac('sha256', getTicketSecret()).update(payload).digest('hex');
+
+  const signatureBuffer = Buffer.from(signature, 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  if (signatureBuffer.length !== expectedBuffer.length || !timingSafeEqual(signatureBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  const [documentId, tenantId, expiresAtStr] = payload.split(':');
+  const expiresAt = Number(expiresAtStr);
+  if (!documentId || !tenantId || !expiresAt || Date.now() > expiresAt) return null;
+
+  return { documentId, tenantId };
+}
+
+// GET /api/documents/:id/drive-file — proxy de streaming pour les documents stockés sur
+// Google Drive, authentifié par ticket signé (voir ci-dessus) plutôt que par requireAuth.
+// Sans ce proxy, il faudrait soit un lien Drive direct en "quiconque a le lien" (contourne
+// entièrement le RBAC par catégorie de l'app pour les catégories restreintes), soit envoyer
+// le Bearer token depuis une simple navigation (impossible) — d'où ce détour.
+router.get('/:id/drive-file', async (req, res) => {
+  const verified = verifyDownloadTicket(req.query.ticket);
+  if (!verified || verified.documentId !== req.params.id) {
+    return res.status(403).json({ error: 'Lien de téléchargement invalide ou expiré.' });
+  }
+
+  const { data: document, error } = await supabase
+    .from('documents')
+    .select('id, tenant_id, file_path, file_name, storage_provider')
+    .eq('id', req.params.id)
+    .eq('tenant_id', verified.tenantId)
+    .single();
+
+  if (error || !document || document.storage_provider !== 'google_drive' || !document.file_path) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const { data: connection, error: connectionError } = await supabase
+    .from('google_drive_connections')
+    .select('*')
+    .eq('tenant_id', document.tenant_id)
+    .maybeSingle();
+
+  if (connectionError || !connection) {
+    return res.status(409).json({ error: 'La connexion Google Drive de cette entreprise est introuvable.' });
+  }
+
+  let accessToken;
+  try {
+    accessToken = await refreshAccessTokenIfNeeded(connection);
+  } catch (refreshError) {
+    console.error('Échec du rafraîchissement du token Google Drive (proxy de téléchargement) :', refreshError.message);
+    return res.status(409).json({ error: 'La connexion Google Drive a expiré — reconnectez-vous depuis Paramètres > Documents.' });
+  }
+
+  try {
+    const driveStream = await getDriveFileStream(accessToken, document.file_path);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.file_name || 'document')}"`);
+    driveStream.on('error', (streamErr) => {
+      console.error('Erreur de streaming depuis Google Drive :', streamErr);
+      if (!res.headersSent) res.status(500).end();
+      else res.end();
+    });
+    driveStream.pipe(res);
+  } catch (streamError) {
+    console.error('Échec du streaming du fichier Google Drive :', streamError);
+    res.status(500).json({ error: 'Impossible de récupérer le fichier depuis Google Drive.' });
+  }
+});
 
 router.use(requireAuth);
 
@@ -96,6 +205,98 @@ async function uploadToStorage(path, file) {
     console.error("Échec de l'upload d'un document vers le storage :", error);
     throw new Error("Échec de l'upload du fichier.");
   }
+}
+
+// Résout où un nouvel upload doit atterrir pour ce tenant. Ne retombe JAMAIS silencieusement
+// sur Supabase si Google Drive est activé mais inutilisable (connexion révoquée, refresh en
+// échec) : un repli silencieux disperserait les documents entre deux stockages sans que
+// personne ne le remarque avant longtemps. err.driveConnectionError marque cette erreur pour
+// que l'appelant renvoie un message actionnable ("reconnectez-vous") plutôt qu'un 500 générique.
+async function resolveTenantStorageProvider(tenantId) {
+  const { data: settings } = await supabase
+    .from('tenant_storage_settings')
+    .select('storage_provider')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (!settings || settings.storage_provider !== 'google_drive') {
+    return { provider: 'supabase' };
+  }
+
+  const { data: connection, error } = await supabase
+    .from('google_drive_connections')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (error || !connection) {
+    const err = new Error(
+      "Google Drive est activé pour votre entreprise mais aucune connexion n'a été trouvée — reconnectez-vous depuis Paramètres > Documents."
+    );
+    err.driveConnectionError = true;
+    throw err;
+  }
+
+  try {
+    const accessToken = await refreshAccessTokenIfNeeded(connection);
+    return { provider: 'google_drive', connection, accessToken };
+  } catch (refreshError) {
+    console.error('Échec du rafraîchissement du token Google Drive (upload) :', refreshError.message);
+    const err = new Error(
+      'La connexion Google Drive a expiré ou a été révoquée — reconnectez-vous depuis Paramètres > Documents.'
+    );
+    err.driveConnectionError = true;
+    throw err;
+  }
+}
+
+// Dossier de destination sur Drive pour une catégorie donnée : dossier racine si le document
+// n'a pas de catégorie, sinon son sous-dossier dédié — créé au premier upload de cette
+// catégorie puis mis en cache dans category_folder_ids pour éviter un appel Drive
+// (list-then-create) à chaque upload suivant de la même catégorie.
+async function resolveDriveDestinationFolder(connection, accessToken, categoryId) {
+  if (!categoryId) return connection.root_folder_id;
+
+  const cached = connection.category_folder_ids?.[categoryId];
+  if (cached) return cached;
+
+  const { data: category } = await supabase.from('document_categories').select('name').eq('id', categoryId).single();
+  const categoryName = category?.name || 'Sans catégorie';
+
+  const folderId = await getOrCreateCategoryFolder(accessToken, connection.root_folder_id, categoryName);
+
+  const updatedCache = { ...(connection.category_folder_ids || {}), [categoryId]: folderId };
+  const { error: cacheError } = await supabase
+    .from('google_drive_connections')
+    .update({ category_folder_ids: updatedCache })
+    .eq('id', connection.id);
+  if (cacheError) {
+    console.error('Échec de mise en cache du dossier Drive de catégorie :', cacheError.message);
+  }
+  connection.category_folder_ids = updatedCache;
+
+  return folderId;
+}
+
+// Point d'entrée unique pour tout upload de fichier document, quel que soit l'appelant
+// (création, nouvelle version). storage est déjà résolu (resolveTenantStorageProvider) avant
+// l'appel — cette fonction exécute le choix déjà tranché, elle n'en fait aucun elle-même, pour
+// qu'un changement de provider tenant pendant qu'une requête est en vol ne puisse jamais faire
+// dévier un même document entre deux branches.
+async function uploadDocumentFile({ storage, file, categoryId, supabasePath }) {
+  if (storage.provider === 'google_drive') {
+    const folderId = await resolveDriveDestinationFolder(storage.connection, storage.accessToken, categoryId);
+    const driveFileId = await uploadFileToDrive(storage.accessToken, {
+      name: file.originalname,
+      mimeType: safeStorageContentType(file.mimetype),
+      buffer: file.buffer,
+      parentFolderId: folderId,
+    });
+    return { filePath: driveFileId, fileName: file.originalname, storageProvider: 'google_drive' };
+  }
+
+  await uploadToStorage(supabasePath, file);
+  return { filePath: supabasePath, fileName: file.originalname, storageProvider: null };
 }
 
 // GET /api/documents — liste des documents du tenant, avec leur catégorie. Les documents
@@ -385,15 +586,29 @@ router.post(
     let filePath = null;
     let fileName = null;
     let extractedText = null;
+    let storageProvider = null;
 
     if (req.file) {
-      filePath = `${req.tenantId}/${documentId}/${sanitizeFileName(req.file.originalname)}`;
-      fileName = req.file.originalname;
+      let storage;
+      try {
+        storage = await resolveTenantStorageProvider(req.tenantId);
+      } catch (storageError) {
+        return res.status(409).json({ error: storageError.message });
+      }
 
       try {
-        await uploadToStorage(filePath, req.file);
+        const uploadResult = await uploadDocumentFile({
+          storage,
+          file: req.file,
+          categoryId: categoryId || null,
+          supabasePath: `${req.tenantId}/${documentId}/${sanitizeFileName(req.file.originalname)}`,
+        });
+        filePath = uploadResult.filePath;
+        fileName = uploadResult.fileName;
+        storageProvider = uploadResult.storageProvider;
       } catch (uploadError) {
-        return res.status(500).json({ error: uploadError.message });
+        console.error("Échec de l'upload d'un document :", uploadError);
+        return res.status(500).json({ error: uploadError.message || "Échec de l'upload du fichier." });
       }
 
       extractedText = await extractText(req.file);
@@ -426,6 +641,7 @@ router.post(
         review_frequency_months: reviewFrequencyMonths ? Number(reviewFrequencyMonths) : null,
         file_path: filePath,
         file_name: fileName,
+        storage_provider: storageProvider,
         extracted_text: extractedText,
         created_by: req.user.id,
       })
@@ -464,13 +680,18 @@ router.post(
     return res.status(404).json({ error: 'Document introuvable.' });
   }
 
-  // Archive la version courante avant de la remplacer
+  // Archive la version courante avant de la remplacer — storage_provider capturé ICI (avant
+  // que la mise à jour ci-dessous n'écrase documents.storage_provider) : un tenant peut
+  // changer de provider entre deux versions, et sans cette capture une ancienne version
+  // stockée sur Drive deviendrait irrésolvable une fois documents.storage_provider écrasé par
+  // la nouvelle valeur.
   const { error: archiveError } = await supabase.from('document_versions').insert({
     document_id: document.id,
     tenant_id: req.tenantId,
     version: document.version,
     file_path: document.file_path,
     file_name: document.file_name,
+    storage_provider: document.storage_provider,
     status: document.status,
     change_note: req.body.change_note || null,
     changed_by: req.user.id,
@@ -481,12 +702,25 @@ router.post(
   }
 
   const newVersion = bumpVersion(document.version);
-  const filePath = `${req.tenantId}/${document.id}/${newVersion}-${sanitizeFileName(req.file.originalname)}`;
 
+  let storage;
   try {
-    await uploadToStorage(filePath, req.file);
+    storage = await resolveTenantStorageProvider(req.tenantId);
+  } catch (storageError) {
+    return res.status(409).json({ error: storageError.message });
+  }
+
+  let uploadResult;
+  try {
+    uploadResult = await uploadDocumentFile({
+      storage,
+      file: req.file,
+      categoryId: document.category_id || null,
+      supabasePath: `${req.tenantId}/${document.id}/${newVersion}-${sanitizeFileName(req.file.originalname)}`,
+    });
   } catch (uploadError) {
-    return res.status(500).json({ error: uploadError.message });
+    console.error("Échec de l'upload d'une nouvelle version de document :", uploadError);
+    return res.status(500).json({ error: uploadError.message || "Échec de l'upload du fichier." });
   }
 
   const extractedText = await extractText(req.file);
@@ -496,8 +730,9 @@ router.post(
   // rien changer aux tenants qui n'utilisent pas cette fonctionnalité.
   const update = {
     version: newVersion,
-    file_path: filePath,
-    file_name: req.file.originalname,
+    file_path: uploadResult.filePath,
+    file_name: uploadResult.fileName,
+    storage_provider: uploadResult.storageProvider,
     extracted_text: extractedText,
     status: 'draft',
     approved_by: null,
@@ -662,7 +897,7 @@ router.post(
 router.get('/:id/download', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error } = await supabase
     .from('documents')
-    .select('id, file_path, file_name')
+    .select('id, file_path, file_name, storage_provider')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -675,7 +910,13 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
     return res.status(404).json({ error: 'Aucun fichier associé à ce document.' });
   }
 
-  const { data: publicUrlData } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(document.file_path);
+  // Branche sur le provider PROPRE au document, pas le réglage actuel du tenant : un tenant
+  // qui a activé Drive après coup a toujours d'anciens documents stockés sur Supabase, et
+  // inversement après une désactivation.
+  const url =
+    document.storage_provider === 'google_drive'
+      ? `${req.protocol}://${req.get('host')}/api/documents/${document.id}/drive-file?ticket=${signDownloadTicket(document.id, req.tenantId)}`
+      : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(document.file_path).data.publicUrl;
 
   await logAudit({
     tenantId: req.tenantId,
@@ -685,7 +926,7 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
     details: { file_name: document.file_name },
   });
 
-  res.json({ url: publicUrlData.publicUrl });
+  res.json({ url });
 });
 
 // GET /api/documents/:id/audit-log — historique complet et immuable des actions

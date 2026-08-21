@@ -142,7 +142,12 @@ create table document_versions (
   status       text,
   change_note  text,
   changed_by   uuid references users (id) on delete set null,
-  created_at   timestamptz not null default now()
+  created_at   timestamptz not null default now(),
+  -- Même signification que documents.storage_provider (voir Prompt B3/B1), figée au moment de
+  -- l'archivage : un tenant qui change de provider en cours de route peut très bien avoir
+  -- archivé cette version-là quand elle était encore sur l'autre — sans cette colonne, on
+  -- perdrait cette information dès la première nouvelle version après un changement.
+  storage_provider text
 );
 
 -- Liste fermée des services, en remplacement progressif du champ texte libre

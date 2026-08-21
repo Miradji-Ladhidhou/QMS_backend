@@ -81,3 +81,57 @@ describe('GET /api/documents/:id/audit-log', () => {
     expect(entry.user_id).toBe(secondAdmin.id);
   });
 });
+
+// Prompt B3 : l'upload doit basculer sur Google Drive UNIQUEMENT si tenant_storage_settings
+// vaut 'google_drive' pour ce tenant. Un tenant tout neuf n'a aucune ligne dans cette table
+// (comportement par défaut, voir schema.sql) — ces tests verrouillent qu'il continue d'uploader
+// sur Supabase exactement comme avant B3, sans aucun changement observable.
+describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive configuré)', () => {
+  it("POST /api/documents avec un fichier : storage_provider reste null (Supabase), comportement inchangé", async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-B3-001')
+      .field('title', 'Document avec fichier')
+      .attach('file', Buffer.from('contenu de test'), 'test.txt');
+
+    expect(res.status).toBe(201);
+    expect(res.body.storage_provider).toBeNull();
+    expect(res.body.file_path).toBe(`${tenant.tenantId}/${res.body.id}/test.txt`);
+
+    const download = await request(app)
+      .get(`/api/documents/${res.body.id}/download`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(download.status).toBe(200);
+    expect(download.body.url).toContain('/storage/v1/object/public/');
+  });
+
+  it("POST /api/documents/:id/versions : l'ancienne version archivée garde son storage_provider (null), la nouvelle aussi", async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-B3-002')
+      .field('title', 'Document versionné')
+      .attach('file', Buffer.from('v1'), 'v1.txt');
+
+    const versioned = await request(app)
+      .post(`/api/documents/${created.body.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', Buffer.from('v2'), 'v2.txt');
+
+    expect(versioned.status).toBe(201);
+    expect(versioned.body.storage_provider).toBeNull();
+
+    const { data: archived } = await admin
+      .from('document_versions')
+      .select('storage_provider')
+      .eq('document_id', created.body.id)
+      .single();
+    expect(archived.storage_provider).toBeNull();
+  });
+});

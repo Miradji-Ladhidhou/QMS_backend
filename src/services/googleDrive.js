@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { Readable } from 'node:stream';
 import { google } from 'googleapis';
 import { supabase } from './supabase.js';
 import { encrypt, decrypt } from './encryption.js';
@@ -130,6 +131,27 @@ export async function getOrCreateCategoryFolder(accessToken, rootFolderId, categ
     fields: 'id',
   });
   return response.data.id;
+}
+
+// Upload direct depuis un buffer en mémoire (le fichier reçu via multer n'est jamais écrit sur
+// disque) — Readable.from() l'expose comme flux, requis par l'API Drive qui n'accepte pas un
+// buffer brut en media.body.
+export async function uploadFile(accessToken, { name, mimeType, buffer, parentFolderId }) {
+  const drive = driveClientFromAccessToken(accessToken);
+  const response = await drive.files.create({
+    resource: { name, parents: [parentFolderId] },
+    media: { mimeType, body: Readable.from(buffer) },
+    fields: 'id',
+  });
+  return response.data.id;
+}
+
+// responseType: 'stream' évite de charger tout le fichier en mémoire côté backend avant de le
+// retransmettre — le flux est directement piped vers la réponse HTTP par l'appelant.
+export async function getDriveFileStream(accessToken, fileId) {
+  const drive = driveClientFromAccessToken(accessToken);
+  const response = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'stream' });
+  return response.data;
 }
 
 // Renvoie un access_token toujours valide pour cette connexion : le déchiffre tel quel s'il a
