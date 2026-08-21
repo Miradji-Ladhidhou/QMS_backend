@@ -26,9 +26,12 @@ const LOGO_BUCKET = 'tenant-logos';
 // pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
 const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
 
+// Number(months) en filet de sécurité : date.getMonth() + "1" concatène ("71") au lieu
+// d'additionner, ce que Date.setMonth interprète ensuite comme un nombre de mois valide et
+// projette des années dans le futur sans jamais planter (voir le bug "2031" corrigé ici).
 function addMonthsIso(dateStr, months) {
   const date = new Date(dateStr);
-  date.setMonth(date.getMonth() + months);
+  date.setMonth(date.getMonth() + Number(months));
   return date.toISOString().slice(0, 10);
 }
 
@@ -87,7 +90,13 @@ router.patch(
     body('document_review_frequency_months')
       .optional({ nullable: true, values: 'falsy' })
       .isInt({ min: 1 })
-      .withMessage('Fréquence de révision invalide.'),
+      .withMessage('Fréquence de révision invalide.')
+      // .toInt() : express-validator laisse req.body tel quel par défaut (chaîne venant du
+      // formulaire) — sans ça, backfillReviewDates() reçoit une chaîne et
+      // date.getMonth() + "1" fait de la concaténation ("71") plutôt qu'une addition,
+      // ce qui a fait planter setMonth() sur une année totalement fausse (bug rencontré :
+      // "1 mois" affichait une date de révision en 2031).
+      .toInt(),
   ],
   async (req, res) => {
     const errors = validationResult(req);

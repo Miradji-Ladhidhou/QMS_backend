@@ -235,7 +235,7 @@ router.post(
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('type').optional({ values: 'falsy' }).trim(),
-    body('frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence invalide.'),
+    body('frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence invalide.').toInt(),
     body('location').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('instructor').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
@@ -280,7 +280,7 @@ router.patch(
   [
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
     body('type').optional({ values: 'falsy' }).trim(),
-    body('frequency_months').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Fréquence invalide.'),
+    body('frequency_months').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Fréquence invalide.').toInt(),
     body('location').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('instructor').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),

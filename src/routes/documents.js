@@ -61,9 +61,12 @@ function bumpVersion(version) {
   return `${version}.1`;
 }
 
+// Number(months) en filet de sécurité : date.getMonth() + "1" concatène des chaînes ("71")
+// au lieu d'additionner, ce qui projette la date des années dans le futur sans jamais planter
+// (voir le bug "2031" corrigé dans tenant.js, même helper dupliqué).
 function addMonthsIso(dateStr, months) {
   const date = new Date(dateStr);
-  date.setMonth(date.getMonth() + months);
+  date.setMonth(date.getMonth() + Number(months));
   return date.toISOString().slice(0, 10);
 }
 
@@ -361,7 +364,7 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
     body('review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
-    body('review_frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence de révision invalide.'),
+    body('review_frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence de révision invalide.').toInt(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -784,7 +787,8 @@ router.patch(
     body('review_frequency_months')
       .optional({ nullable: true, values: 'falsy' })
       .isInt({ min: 1 })
-      .withMessage('Fréquence de révision invalide.'),
+      .withMessage('Fréquence de révision invalide.')
+      .toInt(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
