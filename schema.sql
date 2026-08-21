@@ -450,12 +450,15 @@ create table trainings (
   title             text not null,
   type              text,
   frequency_months  integer,
-  -- Affichés sur la fiche de participation (voir attendanceSheetPdf.js) — tous libres/texte :
-  -- une session peut durer "3h30" ou "2 jours", et lieu/formateur n'ont pas de format à
-  -- contraindre côté base.
+  -- Affichés sur la fiche de participation et le certificat (voir attendanceSheetPdf.js et
+  -- trainingCertificatePdf.js) — tous libres/texte : une session peut durer "3h30" ou "2
+  -- jours", et lieu/formateur n'ont pas de format à contraindre côté base.
   location          text,
   instructor        text,
   duration          text,
+  -- Objet/contenu de la formation : sans ce champ, un document imprimé ne dit rien de ce
+  -- qu'elle couvre réellement, seulement son titre — insuffisant pour un audit.
+  description       text,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
 );

@@ -14,12 +14,40 @@ const PAGE_WIDTH = 841.89; // A4 paysage
 const PAGE_HEIGHT = 595.28;
 const MARGIN = 40;
 
+const NOT_SET = 'non renseigné';
+
 function formatDate(dateStr) {
   return new Date(`${dateStr}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js.
-export function buildTrainingCertificatePdf({ tenantName, tenantLogo, personName, trainingTitle, completedAt, nextDueDate }) {
+function formatDateTime(date) {
+  return date.toLocaleString('fr-FR');
+}
+
+// Référence courte et stable dérivée de l'id de la réalisation — relie sans ambiguïté un
+// certificat imprimé à son enregistrement en base.
+function certificateReference(recordId) {
+  return `CERT-${recordId.slice(0, 8).toUpperCase()}`;
+}
+
+// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js. Type/durée/formateur/
+// lieu/description affichent "non renseigné" quand absents plutôt que d'être omis : un
+// certificat qui tait discrètement ce qu'il ne sait pas est moins fiable pour un audit qu'un
+// certificat qui le dit explicitement.
+export function buildTrainingCertificatePdf({
+  tenantName,
+  tenantLogo,
+  recordId,
+  personName,
+  trainingTitle,
+  trainingType,
+  duration,
+  instructor,
+  location,
+  description,
+  completedAt,
+  nextDueDate,
+}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: 0, size: [PAGE_WIDTH, PAGE_HEIGHT] });
     const chunks = [];
@@ -34,48 +62,62 @@ export function buildTrainingCertificatePdf({ tenantName, tenantLogo, personName
 
     if (tenantLogo) {
       try {
-        doc.image(tenantLogo, PAGE_WIDTH / 2 - 25, MARGIN + 30, { fit: [50, 50], align: 'center' });
+        doc.image(tenantLogo, PAGE_WIDTH / 2 - 25, MARGIN + 26, { fit: [46, 46], align: 'center' });
       } catch {
         // Format non supporté par pdfkit ou fichier corrompu : certificat sans logo, pas d'erreur.
       }
     }
 
-    doc.fillColor(MUTED).fontSize(11).text((tenantName || 'Entreprise').toUpperCase(), MARGIN, MARGIN + 92, {
+    doc.fillColor(MUTED).fontSize(11).text((tenantName || 'Entreprise').toUpperCase(), MARGIN, MARGIN + 84, {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
       characterSpacing: 1.5,
     });
 
-    doc.fillColor(NAVY).fontSize(34).text('Certificat de réussite', MARGIN, MARGIN + 130, {
+    doc.fillColor(NAVY).fontSize(30).text('Certificat de réussite', MARGIN, MARGIN + 118, {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
     });
 
-    doc.moveDown(1.5);
-    doc.fillColor(INK).fontSize(13).text('Ce certificat est décerné à', {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
-
-    doc.moveDown(0.4);
-    doc.fillColor(NAVY).fontSize(26).text(personName, {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
-
-    doc.moveDown(0.6);
-    doc.fillColor(INK).fontSize(13).text('pour avoir suivi avec succès la formation', {
+    doc.moveDown(1.1);
+    doc.fillColor(INK).fontSize(12).text('Ce certificat est décerné à', {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
     });
 
     doc.moveDown(0.3);
-    doc.fillColor(NAVY).fontSize(18).text(trainingTitle, MARGIN + 60, doc.y, {
+    doc.fillColor(NAVY).fontSize(23).text(personName, {
+      width: PAGE_WIDTH - MARGIN * 2,
+      align: 'center',
+    });
+
+    doc.moveDown(0.5);
+    doc.fillColor(INK).fontSize(12).text('pour avoir suivi avec succès la formation', {
+      width: PAGE_WIDTH - MARGIN * 2,
+      align: 'center',
+    });
+
+    doc.moveDown(0.25);
+    doc.fillColor(NAVY).fontSize(16).text(trainingTitle, MARGIN + 60, doc.y, {
       width: PAGE_WIDTH - (MARGIN + 60) * 2,
       align: 'center',
     });
 
-    doc.moveDown(0.8);
+    doc.moveDown(0.5);
+    doc.fillColor(MUTED).fontSize(10).text(
+      `Type : ${trainingType || NOT_SET}  ·  Durée : ${duration || NOT_SET}  ·  Formateur : ${instructor || NOT_SET}  ·  Lieu : ${location || NOT_SET}`,
+      { width: PAGE_WIDTH - MARGIN * 2, align: 'center' }
+    );
+
+    if (description) {
+      doc.moveDown(0.4);
+      doc
+        .fillColor(MUTED)
+        .fontSize(9)
+        .text(description, MARGIN + 100, doc.y, { width: PAGE_WIDTH - (MARGIN + 100) * 2, align: 'center' });
+    }
+
+    doc.moveDown(0.6);
     doc.fillColor(MUTED).fontSize(11).text(
       nextDueDate
         ? `Réalisée le ${formatDate(completedAt)} — renouvellement à prévoir avant le ${formatDate(nextDueDate)}`
@@ -95,6 +137,14 @@ export function buildTrainingCertificatePdf({ tenantName, tenantLogo, personName
     doc.fillColor(MUTED).fontSize(9).text(tenantName || 'Entreprise', PAGE_WIDTH / 2 - signatureWidth / 2, signatureY + 6, {
       width: signatureWidth,
       align: 'center',
+    });
+
+    // Référence + date d'émission, discrètes, en pied de page — traçabilité de l'audit.
+    doc.fillColor(MUTED).fontSize(7);
+    doc.text(certificateReference(recordId), MARGIN + 16, PAGE_HEIGHT - MARGIN - 20);
+    doc.text(`Émis le ${formatDateTime(new Date())}`, MARGIN, PAGE_HEIGHT - MARGIN - 20, {
+      width: PAGE_WIDTH - MARGIN * 2 - 16,
+      align: 'right',
     });
 
     doc.end();

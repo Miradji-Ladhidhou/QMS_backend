@@ -239,6 +239,7 @@ router.post(
     body('location').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('instructor').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
+    body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -246,7 +247,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { title, type, frequency_months: frequencyMonths, location, instructor, duration } = req.body;
+    const { title, type, frequency_months: frequencyMonths, location, instructor, duration, description } = req.body;
 
     const { data, error } = await supabase
       .from('trainings')
@@ -258,6 +259,7 @@ router.post(
         location: location || null,
         instructor: instructor || null,
         duration: duration || null,
+        description: description || null,
       })
       .select()
       .single();
@@ -282,6 +284,7 @@ router.patch(
     body('location').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('instructor').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),
+    body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -290,7 +293,7 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration']) {
+    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration', 'description']) {
       if (field in req.body) {
         update[field] = req.body[field] || null;
       }
@@ -600,7 +603,7 @@ router.post(
 
     const { data: training, error: trainingError } = await supabase
       .from('trainings')
-      .select('id, title, type, location, instructor, duration')
+      .select('id, title, type, location, instructor, duration, description')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -628,8 +631,10 @@ router.post(
       const pdfBuffer = await buildAttendanceSheetPdf({
         tenantName: tenant?.name,
         tenantLogo,
+        trainingId: training.id,
         trainingTitle: training.title,
         trainingType: training.type,
+        description: training.description,
         location: training.location,
         instructor: training.instructor,
         duration: training.duration,
@@ -653,7 +658,7 @@ router.get('/:id/records/:recordId/certificate/pdf', async (req, res) => {
   const { data: record, error } = await supabase
     .from('training_records')
     .select(
-      'completed_at, next_due_date, training:trainings(title), user:users(full_name), employee:employees(full_name)'
+      'id, completed_at, next_due_date, training:trainings(title, type, duration, instructor, location, description), user:users(full_name), employee:employees(full_name)'
     )
     .eq('tenant_id', req.tenantId)
     .eq('training_id', req.params.id)
@@ -672,8 +677,14 @@ router.get('/:id/records/:recordId/certificate/pdf', async (req, res) => {
     const pdfBuffer = await buildTrainingCertificatePdf({
       tenantName: tenant?.name,
       tenantLogo,
+      recordId: record.id,
       personName,
       trainingTitle: record.training?.title || '',
+      trainingType: record.training?.type,
+      duration: record.training?.duration,
+      instructor: record.training?.instructor,
+      location: record.training?.location,
+      description: record.training?.description,
       completedAt: record.completed_at,
       nextDueDate: record.next_due_date,
     });

@@ -18,8 +18,20 @@ const HEADER_ROW_HEIGHT = 22;
 const NAME_COL_WIDTH = CONTENT_WIDTH * 0.32;
 const JOB_TITLE_COL_WIDTH = CONTENT_WIDTH * 0.24;
 
+const NOT_SET = 'Non renseigné';
+
 function formatDate(dateStr) {
   return new Date(`${dateStr}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function formatDateTime(date) {
+  return date.toLocaleString('fr-FR');
+}
+
+// Référence courte et stable dérivée de l'id de formation — permet de relier sans ambiguïté
+// une fiche imprimée à la formation en base, même sans système de numérotation dédié.
+function attendanceSheetReference(trainingId, date) {
+  return `FP-${trainingId.slice(0, 8).toUpperCase()}-${date}`;
 }
 
 function drawPageHeader(doc, tenantName, tenantLogo, trainingTitle) {
@@ -40,11 +52,16 @@ function drawPageHeader(doc, tenantName, tenantLogo, trainingTitle) {
 }
 
 // rows : [{ name, jobTitle }] — jobTitle peut être vide (personne sans fonction renseignée).
+// Type/durée/formateur/lieu/description sont toujours affichés (avec un repli "Non renseigné")
+// plutôt que masqués quand absents : pour un audit, un champ manquant doit se voir, pas
+// disparaître silencieusement.
 export function buildAttendanceSheetPdf({
   tenantName,
   tenantLogo,
+  trainingId,
   trainingTitle,
   trainingType,
+  description,
   location,
   instructor,
   duration,
@@ -61,22 +78,28 @@ export function buildAttendanceSheetPdf({
 
     drawPageHeader(doc, tenantName, tenantLogo, trainingTitle);
 
-    // Bloc d'informations de session — seules les infos réellement renseignées sur la
-    // formation sont affichées (une fiche imprimée avec "Lieu : —" partout serait plus
-    // trompeuse qu'utile pour un audit).
+    doc.fontSize(8).fillColor(MUTED);
+    doc.text(`Réf. ${attendanceSheetReference(trainingId, date)}`, PAGE_MARGIN, doc.y);
+    doc.text(`Document généré le ${formatDateTime(new Date())}`, PAGE_MARGIN, doc.y);
+    doc.moveDown(0.6);
+
     const sessionInfo = [
       `Date de la session : ${formatDate(date)}`,
-      trainingType ? `Type : ${trainingType}` : null,
-      duration ? `Durée : ${duration}` : null,
-      instructor ? `Formateur / intervenant : ${instructor}` : null,
-      location ? `Lieu : ${location}` : null,
-    ].filter(Boolean);
+      `Type : ${trainingType || NOT_SET}`,
+      `Durée : ${duration || NOT_SET}`,
+      `Formateur / intervenant : ${instructor || NOT_SET}`,
+      `Lieu : ${location || NOT_SET}`,
+    ];
 
     doc.fontSize(10).fillColor(INK);
     sessionInfo.forEach((line) => {
       doc.text(line, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.25);
     });
+
+    doc.moveDown(0.15);
+    doc.fontSize(9).fillColor(MUTED).text('Objet de la formation :', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.fillColor(INK).fontSize(10).text(description || NOT_SET, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.moveDown(0.75);
 
     const signatureColX = PAGE_MARGIN + NAME_COL_WIDTH + JOB_TITLE_COL_WIDTH;
