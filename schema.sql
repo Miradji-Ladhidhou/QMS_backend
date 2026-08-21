@@ -58,6 +58,9 @@ create table users (
   -- manuel ponctuel (voir /trainings/:id/records).
   training_exempt        boolean not null default false,
   training_exempt_reason text,
+  -- Affiché sur la fiche de participation (voir attendanceSheetPdf.js) — un intitulé de poste
+  -- libre, distinct de role qui n'est qu'un niveau de permission applicatif.
+  job_title       text,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -76,6 +79,8 @@ create table employees (
   -- Voir users.training_exempt — même exclusion globale, même sémantique.
   training_exempt        boolean not null default false,
   training_exempt_reason text,
+  -- Voir users.job_title — même usage (fiche de participation).
+  job_title   text,
   created_at  timestamptz not null default now()
 );
 
@@ -445,6 +450,12 @@ create table trainings (
   title             text not null,
   type              text,
   frequency_months  integer,
+  -- Affichés sur la fiche de participation (voir attendanceSheetPdf.js) — tous libres/texte :
+  -- une session peut durer "3h30" ou "2 jours", et lieu/formateur n'ont pas de format à
+  -- contraindre côté base.
+  location          text,
+  instructor        text,
+  duration          text,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now()
 );
@@ -465,6 +476,17 @@ create table training_records (
     (user_id is not null and employee_id is null) or (user_id is null and employee_id is not null)
   )
 );
+
+-- Empêche d'enregistrer deux fois la même personne pour la même formation à la même date
+-- (ex. rouvrir "Enregistrer une réalisation" et re-sélectionner quelqu'un déjà coché) — index
+-- partiel plutôt qu'une contrainte unique classique car user_id/employee_id sont mutuellement
+-- exclusifs (voir training_records_person_check) et NULL ne collisionne jamais avec NULL.
+create unique index training_records_user_unique
+  on training_records (tenant_id, training_id, user_id, completed_at)
+  where user_id is not null;
+create unique index training_records_employee_unique
+  on training_records (tenant_id, training_id, employee_id, completed_at)
+  where employee_id is not null;
 
 -- Classement arborescent des KPI (ex : "Contrôle commande" > "Contrôle 2026" > les KPI de
 -- 2026) — parent_id nul = dossier racine. on delete cascade sur parent_id : supprimer un

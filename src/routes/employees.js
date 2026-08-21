@@ -13,7 +13,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('employees')
-    .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
+    .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -31,6 +31,7 @@ router.post(
   [
     body('full_name').trim().notEmpty().withMessage('Le nom est requis.'),
     body('email').optional({ values: 'falsy' }).isEmail().withMessage('Adresse email invalide.'),
+    body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -40,8 +41,13 @@ router.post(
 
     const { data, error } = await supabase
       .from('employees')
-      .insert({ tenant_id: req.tenantId, full_name: req.body.full_name, email: req.body.email || null })
-      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
+      .insert({
+        tenant_id: req.tenantId,
+        full_name: req.body.full_name,
+        email: req.body.email || null,
+        job_title: req.body.job_title || null,
+      })
+      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
       .single();
 
     if (error) {
@@ -62,6 +68,7 @@ router.patch(
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
     body('training_exempt').optional().isBoolean().withMessage('Valeur invalide.'),
     body('training_exempt_reason').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
+    body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -69,7 +76,7 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const patchableFields = ['full_name', 'email', 'is_active', 'training_exempt', 'training_exempt_reason'];
+    const patchableFields = ['full_name', 'email', 'is_active', 'training_exempt', 'training_exempt_reason', 'job_title'];
     if (!patchableFields.some((field) => field in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
@@ -80,13 +87,14 @@ router.patch(
     if ('is_active' in req.body) update.is_active = req.body.is_active;
     if ('training_exempt' in req.body) update.training_exempt = req.body.training_exempt;
     if ('training_exempt_reason' in req.body) update.training_exempt_reason = req.body.training_exempt_reason || null;
+    if ('job_title' in req.body) update.job_title = req.body.job_title || null;
 
     const { data, error } = await supabase
       .from('employees')
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
+      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
       .single();
 
     if (error || !data) {

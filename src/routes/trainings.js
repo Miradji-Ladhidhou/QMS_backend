@@ -236,6 +236,9 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('type').optional({ values: 'falsy' }).trim(),
     body('frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence invalide.'),
+    body('location').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
+    body('instructor').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
+    body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -243,7 +246,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { title, type, frequency_months: frequencyMonths } = req.body;
+    const { title, type, frequency_months: frequencyMonths, location, instructor, duration } = req.body;
 
     const { data, error } = await supabase
       .from('trainings')
@@ -252,6 +255,9 @@ router.post(
         title,
         type: type || null,
         frequency_months: frequencyMonths || null,
+        location: location || null,
+        instructor: instructor || null,
+        duration: duration || null,
       })
       .select()
       .single();
@@ -264,7 +270,8 @@ router.post(
   }
 );
 
-// PATCH /api/trainings/:id — corrige le titre/type/fréquence d'une formation (admin uniquement)
+// PATCH /api/trainings/:id — corrige le titre/type/fréquence/lieu/formateur/durée d'une
+// formation (admin uniquement)
 router.patch(
   '/:id',
   requireRole('admin', 'manager'),
@@ -272,6 +279,9 @@ router.patch(
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
     body('type').optional({ values: 'falsy' }).trim(),
     body('frequency_months').optional({ nullable: true }).isInt({ min: 1 }).withMessage('Fréquence invalide.'),
+    body('location').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
+    body('instructor').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
+    body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -280,9 +290,9 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'type', 'frequency_months']) {
+    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration']) {
       if (field in req.body) {
-        update[field] = req.body[field];
+        update[field] = req.body[field] || null;
       }
     }
 
@@ -373,6 +383,11 @@ router.post(
       .single();
 
     if (error) {
+      // Violation de training_records_user_unique/_employee_unique (voir schema.sql) : déjà
+      // enregistré pour cette personne, cette formation, cette date.
+      if (error.code === '23505') {
+        return res.status(409).json({ error: 'Cette personne a déjà une réalisation enregistrée pour cette formation à cette date.' });
+      }
       return res.status(500).json({ error: "Erreur lors de l'enregistrement de la réalisation." });
     }
 
@@ -419,8 +434,30 @@ router.post(
     const completedAt = req.body.completed_at || new Date().toISOString().slice(0, 10);
     const nextDueDate = training.frequency_months ? addMonths(completedAt, training.frequency_months) : null;
 
+    // Ignore silencieusement les personnes déjà enregistrées pour cette formation à cette date
+    // (ex. réouverture du formulaire, re-sélection par erreur) plutôt que de faire échouer tout
+    // le lot — voir training_records_user_unique/_employee_unique en filet de sécurité.
+    const { data: existing, error: existingError } = await supabase
+      .from('training_records')
+      .select('user_id, employee_id')
+      .eq('tenant_id', req.tenantId)
+      .eq('training_id', training.id)
+      .eq('completed_at', completedAt);
+
+    if (existingError) {
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement des réalisations." });
+    }
+
+    const existingUserIds = new Set(existing.map((r) => r.user_id).filter(Boolean));
+    const existingEmployeeIds = new Set(existing.map((r) => r.employee_id).filter(Boolean));
+
+    const newUserIds = userIds.filter((id) => !existingUserIds.has(id));
+    const newEmployeeIds = employeeIds.filter((id) => !existingEmployeeIds.has(id));
+    const skippedUserIds = userIds.filter((id) => existingUserIds.has(id));
+    const skippedEmployeeIds = employeeIds.filter((id) => existingEmployeeIds.has(id));
+
     const rows = [
-      ...userIds.map((userId) => ({
+      ...newUserIds.map((userId) => ({
         tenant_id: req.tenantId,
         training_id: training.id,
         user_id: userId,
@@ -428,7 +465,7 @@ router.post(
         completed_at: completedAt,
         next_due_date: nextDueDate,
       })),
-      ...employeeIds.map((employeeId) => ({
+      ...newEmployeeIds.map((employeeId) => ({
         tenant_id: req.tenantId,
         training_id: training.id,
         user_id: null,
@@ -437,6 +474,12 @@ router.post(
         next_due_date: nextDueDate,
       })),
     ];
+
+    if (rows.length === 0) {
+      return res.status(409).json({
+        error: 'Toutes les personnes sélectionnées ont déjà une réalisation enregistrée pour cette formation à cette date.',
+      });
+    }
 
     const { data, error } = await supabase
       .from('training_records')
@@ -447,7 +490,10 @@ router.post(
       return res.status(500).json({ error: "Erreur lors de l'enregistrement des réalisations." });
     }
 
-    res.status(201).json(data);
+    res.status(201).json({
+      created: data,
+      skipped: { user_ids: skippedUserIds, employee_ids: skippedEmployeeIds },
+    });
   }
 );
 
@@ -554,7 +600,7 @@ router.post(
 
     const { data: training, error: trainingError } = await supabase
       .from('trainings')
-      .select('id, title')
+      .select('id, title, type, location, instructor, duration')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -566,24 +612,27 @@ router.post(
     try {
       const [{ data: users }, { data: employees }, { data: tenant }] = await Promise.all([
         userIds.length
-          ? supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).in('id', userIds)
+          ? supabase.from('users').select('id, full_name, job_title').eq('tenant_id', req.tenantId).in('id', userIds)
           : Promise.resolve({ data: [] }),
         employeeIds.length
-          ? supabase.from('employees').select('id, full_name').eq('tenant_id', req.tenantId).in('id', employeeIds)
+          ? supabase.from('employees').select('id, full_name, job_title').eq('tenant_id', req.tenantId).in('id', employeeIds)
           : Promise.resolve({ data: [] }),
         supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
       ]);
 
-      const rows = [
-        ...(users || []).map((user) => ({ name: user.full_name, kind: 'Compte' })),
-        ...(employees || []).map((employee) => ({ name: employee.full_name, kind: 'Sans compte' })),
-      ].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+      const rows = [...(users || []), ...(employees || [])]
+        .map((person) => ({ name: person.full_name, jobTitle: person.job_title || '' }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'fr'));
 
       const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
       const pdfBuffer = await buildAttendanceSheetPdf({
         tenantName: tenant?.name,
         tenantLogo,
         trainingTitle: training.title,
+        trainingType: training.type,
+        location: training.location,
+        instructor: training.instructor,
+        duration: training.duration,
         date: req.body.date || new Date().toISOString().slice(0, 10),
         rows,
       });

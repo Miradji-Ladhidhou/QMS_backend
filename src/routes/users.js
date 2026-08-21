@@ -22,7 +22,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, full_name, role, is_active, training_exempt, training_exempt_reason')
+    .select('id, full_name, role, is_active, training_exempt, training_exempt_reason, job_title')
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -283,6 +283,7 @@ router.patch(
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
     body('training_exempt').optional().isBoolean().withMessage('Valeur invalide.'),
     body('training_exempt_reason').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
+    body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -290,7 +291,8 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    if (!('role' in req.body) && !('is_active' in req.body) && !('training_exempt' in req.body) && !('training_exempt_reason' in req.body)) {
+    const patchableFields = ['role', 'is_active', 'training_exempt', 'training_exempt_reason', 'job_title'];
+    if (!patchableFields.some((field) => field in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
@@ -326,12 +328,16 @@ router.patch(
       update.training_exempt_reason = req.body.training_exempt_reason || null;
     }
 
+    if ('job_title' in req.body) {
+      update.job_title = req.body.job_title || null;
+    }
+
     const { data, error } = await supabase
       .from('users')
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, role, is_active, training_exempt, training_exempt_reason')
+      .select('id, full_name, role, is_active, training_exempt, training_exempt_reason, job_title')
       .single();
 
     if (error) {

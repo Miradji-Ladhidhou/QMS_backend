@@ -16,7 +16,7 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 const ROW_HEIGHT = 34;
 const HEADER_ROW_HEIGHT = 22;
 const NAME_COL_WIDTH = CONTENT_WIDTH * 0.32;
-const KIND_COL_WIDTH = CONTENT_WIDTH * 0.18;
+const JOB_TITLE_COL_WIDTH = CONTENT_WIDTH * 0.24;
 
 function formatDate(dateStr) {
   return new Date(`${dateStr}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -39,8 +39,18 @@ function drawPageHeader(doc, tenantName, tenantLogo, trainingTitle) {
   doc.y = 104;
 }
 
-// rows : [{ name, kind }] — kind déjà résolu en libellé français ("Compte" / "Sans compte").
-export function buildAttendanceSheetPdf({ tenantName, tenantLogo, trainingTitle, date, rows }) {
+// rows : [{ name, jobTitle }] — jobTitle peut être vide (personne sans fonction renseignée).
+export function buildAttendanceSheetPdf({
+  tenantName,
+  tenantLogo,
+  trainingTitle,
+  trainingType,
+  location,
+  instructor,
+  duration,
+  date,
+  rows,
+}) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -51,18 +61,33 @@ export function buildAttendanceSheetPdf({ tenantName, tenantLogo, trainingTitle,
 
     drawPageHeader(doc, tenantName, tenantLogo, trainingTitle);
 
-    doc.fontSize(10).fillColor(INK).text(`Date de la session : ${formatDate(date)}`, PAGE_MARGIN, doc.y);
-    doc.moveDown(1);
+    // Bloc d'informations de session — seules les infos réellement renseignées sur la
+    // formation sont affichées (une fiche imprimée avec "Lieu : —" partout serait plus
+    // trompeuse qu'utile pour un audit).
+    const sessionInfo = [
+      `Date de la session : ${formatDate(date)}`,
+      trainingType ? `Type : ${trainingType}` : null,
+      duration ? `Durée : ${duration}` : null,
+      instructor ? `Formateur / intervenant : ${instructor}` : null,
+      location ? `Lieu : ${location}` : null,
+    ].filter(Boolean);
 
-    const signatureColX = PAGE_MARGIN + NAME_COL_WIDTH + KIND_COL_WIDTH;
-    const signatureColWidth = CONTENT_WIDTH - NAME_COL_WIDTH - KIND_COL_WIDTH;
+    doc.fontSize(10).fillColor(INK);
+    sessionInfo.forEach((line) => {
+      doc.text(line, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.moveDown(0.25);
+    });
+    doc.moveDown(0.75);
+
+    const signatureColX = PAGE_MARGIN + NAME_COL_WIDTH + JOB_TITLE_COL_WIDTH;
+    const signatureColWidth = CONTENT_WIDTH - NAME_COL_WIDTH - JOB_TITLE_COL_WIDTH;
 
     function drawTableHeader() {
       const headerY = doc.y;
       doc.rect(PAGE_MARGIN, headerY, CONTENT_WIDTH, HEADER_ROW_HEIGHT).fill(NAVY);
       doc.fontSize(9).fillColor('#ffffff');
       doc.text('Nom', PAGE_MARGIN + 6, headerY + 6, { width: NAME_COL_WIDTH - 12 });
-      doc.text('Statut', PAGE_MARGIN + NAME_COL_WIDTH + 6, headerY + 6, { width: KIND_COL_WIDTH - 12 });
+      doc.text('Fonction', PAGE_MARGIN + NAME_COL_WIDTH + 6, headerY + 6, { width: JOB_TITLE_COL_WIDTH - 12 });
       doc.text('Signature', signatureColX + 6, headerY + 6, { width: signatureColWidth - 12 });
       doc.y = headerY + HEADER_ROW_HEIGHT;
       doc.fillColor(INK);
@@ -85,7 +110,7 @@ export function buildAttendanceSheetPdf({ tenantName, tenantLogo, trainingTitle,
       const rowY = doc.y;
       doc.fontSize(9).fillColor(INK);
       doc.text(row.name, PAGE_MARGIN + 6, rowY + 11, { width: NAME_COL_WIDTH - 12 });
-      doc.fillColor(MUTED).text(row.kind, PAGE_MARGIN + NAME_COL_WIDTH + 6, rowY + 11, { width: KIND_COL_WIDTH - 12 });
+      doc.fillColor(MUTED).text(row.jobTitle || '—', PAGE_MARGIN + NAME_COL_WIDTH + 6, rowY + 11, { width: JOB_TITLE_COL_WIDTH - 12 });
 
       doc
         .moveTo(PAGE_MARGIN, rowY + ROW_HEIGHT)
