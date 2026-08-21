@@ -283,16 +283,36 @@ async function resolveDriveDestinationFolder(connection, accessToken, categoryId
 // l'appel — cette fonction exécute le choix déjà tranché, elle n'en fait aucun elle-même, pour
 // qu'un changement de provider tenant pendant qu'une requête est en vol ne puisse jamais faire
 // dévier un même document entre deux branches.
+// Même extraction que driveIntegration.js#extractErrorDetail (dupliquée plutôt que partagée,
+// convention déjà suivie pour addMonthsIso dans ce fichier) : une erreur googleapis porte le
+// détail utile dans response.data.error, pas dans .message, qui reste souvent vide ou générique.
+function extractDriveErrorDetail(err) {
+  return (
+    err.response?.data?.error_description ||
+    (typeof err.response?.data?.error === 'string' ? err.response.data.error : err.response?.data?.error?.message) ||
+    err.message ||
+    'erreur inconnue'
+  );
+}
+
 async function uploadDocumentFile({ storage, file, categoryId, supabasePath }) {
   if (storage.provider === 'google_drive') {
-    const folderId = await resolveDriveDestinationFolder(storage.connection, storage.accessToken, categoryId);
-    const driveFileId = await uploadFileToDrive(storage.accessToken, {
-      name: file.originalname,
-      mimeType: safeStorageContentType(file.mimetype),
-      buffer: file.buffer,
-      parentFolderId: folderId,
-    });
-    return { filePath: driveFileId, fileName: file.originalname, storageProvider: 'google_drive' };
+    try {
+      const folderId = await resolveDriveDestinationFolder(storage.connection, storage.accessToken, categoryId);
+      const driveFileId = await uploadFileToDrive(storage.accessToken, {
+        name: file.originalname,
+        mimeType: safeStorageContentType(file.mimetype),
+        buffer: file.buffer,
+        parentFolderId: folderId,
+      });
+      return { filePath: driveFileId, fileName: file.originalname, storageProvider: 'google_drive' };
+    } catch (driveError) {
+      console.error("Échec de l'upload d'un document vers Google Drive :", driveError);
+      // Préfixé "Google Drive" pour ne jamais se confondre avec le message générique de
+      // uploadToStorage ci-dessous (branche Supabase) — un bug rapporté sans ce préfixe
+      // aurait pu venir de l'une ou l'autre branche sans moyen de le distinguer.
+      throw new Error(`Échec de l'upload vers Google Drive : ${extractDriveErrorDetail(driveError)}`);
+    }
   }
 
   await uploadToStorage(supabasePath, file);
