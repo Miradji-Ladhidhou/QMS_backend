@@ -120,6 +120,13 @@ create table documents (
   -- procédure critique révisée tous les 6 mois quand le reste du tenant est à 24 mois). Nul =
   -- suit le défaut du tenant.
   review_frequency_months integer,
+  -- Stockage alternatif Google Drive, par tenant (voir tenant_storage_settings /
+  -- google_drive_connections) — purement additif, n'affecte aucun document existant. null =
+  -- stocké sur Supabase Storage (comportement historique, inchangé) ; 'google_drive' = stocké
+  -- sur Drive. Dans les deux cas, file_path est réutilisé tel quel : chemin Supabase Storage si
+  -- null, id de fichier Google Drive si 'google_drive' — ne jamais interpréter file_path sans
+  -- vérifier storage_provider d'abord.
+  storage_provider text,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   unique (tenant_id, number)
@@ -777,6 +784,35 @@ create table super_admin_audit_log (
   created_at  timestamptz not null default now()
 );
 
+-- Stockage alternatif Google Drive, par tenant — purement additif, n'affecte aucun tenant
+-- existant. Absence de ligne = 'supabase' (comportement actuel inchangé, valeur par défaut de
+-- la colonne) ; seuls les tenants qui activent explicitement Google Drive ont une ligne ici.
+create table tenant_storage_settings (
+  id                uuid primary key default gen_random_uuid(),
+  tenant_id         uuid not null unique references tenants (id) on delete cascade,
+  storage_provider  text not null default 'supabase' check (storage_provider in ('supabase', 'google_drive')),
+  created_at        timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+-- Connexion Google Drive OAuth d'un tenant : compte Google connecté, dossier racine "QMS SaaS"
+-- créé dans son Drive, et mapping catégorie de documents -> sous-dossier Drive. access_token et
+-- refresh_token sont chiffrés applicativement avant d'être écrits ici (voir le service dédié à
+-- l'implémentation OAuth) — jamais en clair en base malgré le type text.
+create table google_drive_connections (
+  id                   uuid primary key default gen_random_uuid(),
+  tenant_id            uuid not null unique references tenants (id) on delete cascade,
+  google_email         text not null,
+  access_token         text not null,
+  refresh_token        text not null,
+  token_expires_at     timestamptz not null,
+  root_folder_id       text not null,
+  category_folder_ids  jsonb not null default '{}'::jsonb,
+  connected_by         uuid references users (id) on delete set null,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1068,6 +1104,12 @@ $$;
 create trigger trg_set_capa_number before insert on capas
   for each row when (new.number is null) execute function set_capa_number();
 
+create trigger trg_tenant_storage_settings_updated_at before update on tenant_storage_settings
+  for each row execute function set_updated_at();
+
+create trigger trg_google_drive_connections_updated_at before update on google_drive_connections
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -1188,6 +1230,8 @@ alter table groups enable row level security;
 alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
+alter table tenant_storage_settings enable row level security;
+alter table google_drive_connections enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -1402,3 +1446,13 @@ create policy super_admin_audit_log_select on super_admin_audit_log
 create policy super_admin_audit_log_insert on super_admin_audit_log
   for insert
   with check (auth_is_super_admin());
+
+create policy tenant_storage_settings_isolation on tenant_storage_settings
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy google_drive_connections_isolation on google_drive_connections
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
