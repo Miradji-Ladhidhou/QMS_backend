@@ -3,7 +3,13 @@ import { google } from 'googleapis';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { supabase } from '../services/supabase.js';
 import { encrypt } from '../services/encryption.js';
-import { getAuthUrl, exchangeCodeForTokens, createRootFolder, verifyState } from '../services/googleDrive.js';
+import {
+  getAuthUrl,
+  exchangeCodeForTokens,
+  createRootFolder,
+  verifyState,
+  refreshAccessTokenIfNeeded,
+} from '../services/googleDrive.js';
 
 const router = Router();
 
@@ -122,6 +128,63 @@ router.get('/status', requireRole('admin'), async (req, res) => {
     connected_at: data.created_at,
     storage_provider: storageSettings?.storage_provider || 'supabase',
   });
+});
+
+// POST /api/drive/activate — confirme le basculement vers Google Drive comme stockage des
+// nouveaux documents. Étape volontairement séparée du callback OAuth (voir B2) : se connecter
+// à Google ne doit jamais, à lui seul, changer où sont stockés les prochains documents — il
+// faut une confirmation explicite de l'admin après avoir vu à quel compte il vient de se lier.
+router.post('/activate', requireRole('admin'), async (req, res) => {
+  const { data: connection, error: connectionError } = await supabase
+    .from('google_drive_connections')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .maybeSingle();
+
+  if (connectionError) {
+    return res.status(500).json({ error: 'Impossible de vérifier la connexion Google Drive.' });
+  }
+  if (!connection) {
+    return res.status(400).json({ error: "Aucune connexion Google Drive à activer — connectez-vous d'abord." });
+  }
+
+  const { data, error } = await supabase
+    .from('tenant_storage_settings')
+    .upsert({ tenant_id: req.tenantId, storage_provider: 'google_drive' }, { onConflict: 'tenant_id' })
+    .select('storage_provider')
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible d'activer Google Drive comme stockage." });
+  }
+
+  res.json(data);
+});
+
+// GET /api/drive/health — vérifie que la connexion peut encore être utilisée (rafraîchissement
+// du token si besoin) sans faire d'appel Drive superflu. Un échec ici signifie typiquement un
+// accès révoqué côté Google (compte déconnecté, app retirée) plutôt qu'un souci réseau ponctuel.
+router.get('/health', requireRole('admin'), async (req, res) => {
+  const { data: connection, error } = await supabase
+    .from('google_drive_connections')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de vérifier la connexion Google Drive.' });
+  }
+  if (!connection) {
+    return res.json({ healthy: false, connected: false });
+  }
+
+  try {
+    await refreshAccessTokenIfNeeded(connection);
+    res.json({ healthy: true });
+  } catch (err) {
+    console.error('Connexion Google Drive en échec (vérification de santé) :', err.message);
+    res.json({ healthy: false, error: 'La connexion a expiré ou a été révoquée côté Google.' });
+  }
 });
 
 // DELETE /api/drive/disconnect — supprime la connexion et repasse le tenant sur Supabase
