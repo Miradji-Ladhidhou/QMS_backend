@@ -33,26 +33,28 @@ function addMonthsIso(dateStr, months) {
 }
 
 // Paramétrer la fréquence par défaut ne devait toucher que les NOUVEAUX documents/versions —
-// mais un tenant qui l'active pour la première fois s'attend à voir ses documents déjà
-// existants en profiter tout de suite, pas seulement à la prochaine révision de chacun. On ne
-// touche que ceux sans date de révision (jamais un choix manuel déjà fait), et seulement au
-// moment où la fréquence par défaut passe d'absente/différente à une vraie valeur.
+// mais un tenant qui l'active (ou la change) s'attend à voir ses documents déjà existants en
+// profiter tout de suite. Un document avec sa propre fréquence (review_frequency_months) est
+// respecté tel quel — c'est justement le mécanisme prévu pour l'exempter du défaut. Tous les
+// autres sont recalculés depuis leur date de création, y compris s'ils avaient déjà une date
+// de révision : sans dérogation propre, cette date n'était de toute façon pas "un choix
+// délibéré protégé" mais une valeur héritée d'avant ce paramétrage (souvent incohérente,
+// cf. bug signalé où elle tombait avant la date de création).
 async function backfillReviewDates(tenantId, newDefaultMonths) {
   const { data: documents, error } = await supabase
     .from('documents')
-    .select('id, created_at, review_frequency_months')
+    .select('id, created_at')
     .eq('tenant_id', tenantId)
-    .is('review_date', null);
+    .is('review_frequency_months', null);
 
   if (error || !documents || documents.length === 0) return 0;
 
-  const updates = documents.map((document) => {
-    const effectiveMonths = document.review_frequency_months || newDefaultMonths;
-    return supabase
+  const updates = documents.map((document) =>
+    supabase
       .from('documents')
-      .update({ review_date: addMonthsIso(document.created_at.slice(0, 10), effectiveMonths) })
-      .eq('id', document.id);
-  });
+      .update({ review_date: addMonthsIso(document.created_at.slice(0, 10), newDefaultMonths) })
+      .eq('id', document.id)
+  );
 
   await Promise.all(updates);
   return documents.length;

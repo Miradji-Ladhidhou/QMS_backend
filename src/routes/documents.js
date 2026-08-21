@@ -1004,7 +1004,11 @@ router.post('/import', upload.single('file'), async (req, res) => {
       title,
       description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
       version,
-      created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : undefined,
+      // Toujours une valeur concrète (jamais `undefined` pour retomber sur le défaut now() de
+      // la base) : un insert groupé PostgREST exige que tous les objets du tableau aient
+      // exactement le même jeu de clés. Si une seule ligne avait "created_at" et une autre non,
+      // le batch entier échouait (bug réel rencontré : 500 générique côté PostgREST).
+      created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : new Date().toISOString(),
       review_date: reviewDate,
       review_frequency_months: Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : null,
       created_by: req.user.id,
@@ -1019,6 +1023,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
       .select('id, number, title');
 
     if (insertError) {
+      console.error("Échec de l'import en masse de documents :", insertError);
       return res.status(500).json({ error: 'Erreur lors de la création des documents.' });
     }
 
