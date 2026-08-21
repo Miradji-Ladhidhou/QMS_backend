@@ -17,6 +17,19 @@ function driveErrorRedirect(res, message) {
   return res.redirect(`${process.env.FRONTEND_URL}/settings?drive=error&message=${encodeURIComponent(message)}`);
 }
 
+// Le message générique précédent ("Impossible de finaliser la connexion") ne disait pas OÙ ça
+// avait échoué, obligeant à deviner sans accès aux logs Render — celui-ci remonte le détail
+// technique réel (jamais de secret dedans : erreurs googleapis/OAuth, pas nos tokens) pour que
+// l'échec soit diagnosticable directement depuis l'écran affiché.
+function extractErrorDetail(err) {
+  return (
+    err.response?.data?.error_description ||
+    (typeof err.response?.data?.error === 'string' ? err.response.data.error : err.response?.data?.error?.message) ||
+    err.message ||
+    'erreur inconnue'
+  );
+}
+
 // GET /api/drive/callback — seul endpoint de ce fichier qui NE PASSE PAS par requireAuth :
 // Google y redirige le navigateur directement (simple navigation, sans notre en-tête
 // Authorization). Son authenticité repose sur le state signé (voir googleDrive.js#verifyState),
@@ -35,60 +48,70 @@ router.get('/callback', async (req, res) => {
 
   const { tenantId, userId } = verified;
 
+  // Chaque étape a son propre try/catch avec un message distinct plutôt qu'un seul bloc
+  // générique : un échec à l'échange du code n'a pas la même cause qu'un échec à la création
+  // du dossier Drive, et deviner sans savoir laquelle a échoué fait perdre des allers-retours.
+  let tokens;
   try {
-    const tokens = await exchangeCodeForTokens(code);
-
-    if (!tokens.refresh_token) {
-      // Se produit si l'utilisateur avait déjà autorisé cette app par le passé et que Google,
-      // malgré prompt: 'consent', ne renvoie pas de nouveau refresh_token pour ce compte —
-      // rare mais possible. Sans refresh_token la connexion ne peut pas se renouveler dans la
-      // durée : mieux vaut le dire clairement que stocker une connexion vouée à expirer.
-      return driveErrorRedirect(res, "Google n'a pas renvoyé d'autorisation renouvelable — réessayez.");
-    }
-
-    // Récupère l'email du compte Google connecté (affiché côté Paramètres) via l'API userinfo,
-    // authentifiée avec le token qu'on vient d'obtenir. Best-effort : purement informatif, donc
-    // un échec ici (scope insuffisant, API temporairement indisponible...) ne doit jamais faire
-    // échouer toute la connexion — juste afficher un email générique par défaut.
-    let googleEmail = 'Compte connecté';
-    try {
-      const userInfoAuth = new google.auth.OAuth2();
-      userInfoAuth.setCredentials({ access_token: tokens.access_token });
-      const { data: userInfo } = await google.oauth2({ version: 'v2', auth: userInfoAuth }).userinfo.get();
-      if (userInfo.email) googleEmail = userInfo.email;
-    } catch (userInfoErr) {
-      console.error("Échec de récupération de l'email du compte Google Drive connecté :", userInfoErr.message);
-    }
-
-    const rootFolderId = await createRootFolder(tokens.access_token);
-
-    const { error: upsertError } = await supabase.from('google_drive_connections').upsert(
-      {
-        tenant_id: tenantId,
-        google_email: googleEmail,
-        access_token: encrypt(tokens.access_token),
-        refresh_token: encrypt(tokens.refresh_token),
-        token_expires_at: new Date(tokens.expiry_date).toISOString(),
-        root_folder_id: rootFolderId,
-        category_folder_ids: {},
-        connected_by: userId,
-      },
-      { onConflict: 'tenant_id' }
-    );
-
-    if (upsertError) {
-      console.error('Échec de stockage de la connexion Google Drive :', upsertError);
-      return driveErrorRedirect(res, 'La connexion a réussi côté Google mais n\'a pas pu être enregistrée.');
-    }
-
-    // Ne bascule JAMAIS storage_provider ici : la connexion OAuth et l'activation du stockage
-    // Drive pour les nouveaux documents sont deux étapes volontairement distinctes (voir
-    // tenant_storage_settings) — l'admin doit confirmer explicitement le basculement ensuite.
-    return res.redirect(`${process.env.FRONTEND_URL}/settings?drive=connected`);
+    tokens = await exchangeCodeForTokens(code);
   } catch (err) {
-    console.error('Échec du callback OAuth Google Drive :', err);
-    return driveErrorRedirect(res, 'Impossible de finaliser la connexion à Google Drive.');
+    console.error("Échec de l'échange du code Google contre des tokens :", err);
+    return driveErrorRedirect(res, `Échec de l'autorisation Google : ${extractErrorDetail(err)}`);
   }
+
+  if (!tokens.refresh_token) {
+    // Se produit si l'utilisateur avait déjà autorisé cette app par le passé et que Google,
+    // malgré prompt: 'consent', ne renvoie pas de nouveau refresh_token pour ce compte — rare
+    // mais possible. Sans refresh_token la connexion ne peut pas se renouveler dans la durée :
+    // mieux vaut le dire clairement que stocker une connexion vouée à expirer.
+    return driveErrorRedirect(res, "Google n'a pas renvoyé d'autorisation renouvelable — réessayez.");
+  }
+
+  // Récupère l'email du compte Google connecté (affiché côté Paramètres) via l'API userinfo,
+  // authentifiée avec le token qu'on vient d'obtenir. Best-effort : purement informatif, donc
+  // un échec ici (scope insuffisant, API temporairement indisponible...) ne doit jamais faire
+  // échouer toute la connexion — juste afficher un email générique par défaut.
+  let googleEmail = 'Compte connecté';
+  try {
+    const userInfoAuth = new google.auth.OAuth2();
+    userInfoAuth.setCredentials({ access_token: tokens.access_token });
+    const { data: userInfo } = await google.oauth2({ version: 'v2', auth: userInfoAuth }).userinfo.get();
+    if (userInfo.email) googleEmail = userInfo.email;
+  } catch (userInfoErr) {
+    console.error("Échec de récupération de l'email du compte Google Drive connecté :", userInfoErr.message);
+  }
+
+  let rootFolderId;
+  try {
+    rootFolderId = await createRootFolder(tokens.access_token);
+  } catch (err) {
+    console.error('Échec de création du dossier racine Google Drive :', err);
+    return driveErrorRedirect(res, `Autorisation Google réussie, mais impossible de créer le dossier "QMS SaaS" sur Drive : ${extractErrorDetail(err)}`);
+  }
+
+  const { error: upsertError } = await supabase.from('google_drive_connections').upsert(
+    {
+      tenant_id: tenantId,
+      google_email: googleEmail,
+      access_token: encrypt(tokens.access_token),
+      refresh_token: encrypt(tokens.refresh_token),
+      token_expires_at: new Date(tokens.expiry_date).toISOString(),
+      root_folder_id: rootFolderId,
+      category_folder_ids: {},
+      connected_by: userId,
+    },
+    { onConflict: 'tenant_id' }
+  );
+
+  if (upsertError) {
+    console.error('Échec de stockage de la connexion Google Drive :', upsertError);
+    return driveErrorRedirect(res, `La connexion a réussi côté Google mais n'a pas pu être enregistrée : ${upsertError.message}`);
+  }
+
+  // Ne bascule JAMAIS storage_provider ici : la connexion OAuth et l'activation du stockage
+  // Drive pour les nouveaux documents sont deux étapes volontairement distinctes (voir
+  // tenant_storage_settings) — l'admin doit confirmer explicitement le basculement ensuite.
+  return res.redirect(`${process.env.FRONTEND_URL}/settings?drive=connected`);
 });
 
 router.use(requireAuth);
