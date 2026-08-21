@@ -13,7 +13,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('employees')
-    .select('id, full_name, email, is_active')
+    .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -41,7 +41,7 @@ router.post(
     const { data, error } = await supabase
       .from('employees')
       .insert({ tenant_id: req.tenantId, full_name: req.body.full_name, email: req.body.email || null })
-      .select('id, full_name, email, is_active')
+      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
       .single();
 
     if (error) {
@@ -60,6 +60,8 @@ router.patch(
     body('full_name').optional().trim().notEmpty().withMessage('Le nom ne peut pas être vide.'),
     body('email').optional({ nullable: true, values: 'falsy' }).isEmail().withMessage('Adresse email invalide.'),
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('training_exempt').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('training_exempt_reason').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -67,7 +69,8 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    if (!('full_name' in req.body) && !('email' in req.body) && !('is_active' in req.body)) {
+    const patchableFields = ['full_name', 'email', 'is_active', 'training_exempt', 'training_exempt_reason'];
+    if (!patchableFields.some((field) => field in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
@@ -75,13 +78,15 @@ router.patch(
     if ('full_name' in req.body) update.full_name = req.body.full_name;
     if ('email' in req.body) update.email = req.body.email || null;
     if ('is_active' in req.body) update.is_active = req.body.is_active;
+    if ('training_exempt' in req.body) update.training_exempt = req.body.training_exempt;
+    if ('training_exempt_reason' in req.body) update.training_exempt_reason = req.body.training_exempt_reason || null;
 
     const { data, error } = await supabase
       .from('employees')
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, email, is_active')
+      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason')
       .single();
 
     if (error || !data) {

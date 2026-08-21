@@ -3,6 +3,8 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
+import { buildAttendanceSheetPdf } from '../services/attendanceSheetPdf.js';
+import { buildTrainingCertificatePdf } from '../services/trainingCertificatePdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
@@ -83,8 +85,8 @@ router.get('/', async (req, res) => {
 async function buildMatrix(tenantId) {
   const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: trainings, error: trainingsError }] =
     await Promise.all([
-      supabase.from('users').select('id, full_name').eq('tenant_id', tenantId),
-      supabase.from('employees').select('id, full_name').eq('tenant_id', tenantId).eq('is_active', true),
+      supabase.from('users').select('id, full_name').eq('tenant_id', tenantId).eq('training_exempt', false),
+      supabase.from('employees').select('id, full_name').eq('tenant_id', tenantId).eq('is_active', true).eq('training_exempt', false),
       supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', tenantId),
     ]);
 
@@ -378,6 +380,77 @@ router.post(
   }
 );
 
+// POST /api/trainings/:id/records/bulk — enregistre la même réalisation (même date) pour
+// plusieurs personnes en un seul appel : cas d'une session de formation collective, où
+// répéter POST /:id/records une fois par participant serait lent et non atomique côté UI.
+router.post(
+  '/:id/records/bulk',
+  [
+    body('user_ids').optional().isArray({ max: 500 }).withMessage('Liste d\'utilisateurs invalide.'),
+    body('user_ids.*').isUUID().withMessage('Utilisateur invalide.'),
+    body('employee_ids').optional().isArray({ max: 500 }).withMessage('Liste de personnel invalide.'),
+    body('employee_ids.*').isUUID().withMessage('Personne invalide.'),
+    body('completed_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const userIds = req.body.user_ids || [];
+    const employeeIds = req.body.employee_ids || [];
+
+    if (userIds.length === 0 && employeeIds.length === 0) {
+      return res.status(400).json({ error: 'Sélectionnez au moins une personne.' });
+    }
+
+    const { data: training, error: trainingError } = await supabase
+      .from('trainings')
+      .select('id, frequency_months')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (trainingError || !training) {
+      return res.status(404).json({ error: 'Formation introuvable.' });
+    }
+
+    const completedAt = req.body.completed_at || new Date().toISOString().slice(0, 10);
+    const nextDueDate = training.frequency_months ? addMonths(completedAt, training.frequency_months) : null;
+
+    const rows = [
+      ...userIds.map((userId) => ({
+        tenant_id: req.tenantId,
+        training_id: training.id,
+        user_id: userId,
+        employee_id: null,
+        completed_at: completedAt,
+        next_due_date: nextDueDate,
+      })),
+      ...employeeIds.map((employeeId) => ({
+        tenant_id: req.tenantId,
+        training_id: training.id,
+        user_id: null,
+        employee_id: employeeId,
+        completed_at: completedAt,
+        next_due_date: nextDueDate,
+      })),
+    ];
+
+    const { data, error } = await supabase
+      .from('training_records')
+      .insert(rows)
+      .select('*, user:users(id, full_name), employee:employees(id, full_name)');
+
+    if (error) {
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement des réalisations." });
+    }
+
+    res.status(201).json(data);
+  }
+);
+
 // PATCH /api/trainings/:id/records/:recordId — corrige une réalisation mal saisie ; recalcule
 // next_due_date si la date de réalisation change (admin uniquement)
 router.patch(
@@ -452,6 +525,117 @@ router.delete('/:id/records/:recordId', requireRole('admin', 'manager'), async (
   }
 
   res.status(204).end();
+});
+
+// POST /api/trainings/:id/attendance-sheet/pdf — fiche de présence imprimable pour une session
+// (nom + colonne signature vierge) : les noms sont résolus côté serveur à partir des id reçus
+// (jamais du texte envoyé par le client), pour rester scopé au tenant comme tout le reste ici.
+router.post(
+  '/:id/attendance-sheet/pdf',
+  [
+    body('date').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
+    body('user_ids').optional().isArray({ max: 500 }).withMessage('Liste d\'utilisateurs invalide.'),
+    body('user_ids.*').isUUID().withMessage('Utilisateur invalide.'),
+    body('employee_ids').optional().isArray({ max: 500 }).withMessage('Liste de personnel invalide.'),
+    body('employee_ids.*').isUUID().withMessage('Personne invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const userIds = req.body.user_ids || [];
+    const employeeIds = req.body.employee_ids || [];
+
+    if (userIds.length === 0 && employeeIds.length === 0) {
+      return res.status(400).json({ error: 'Sélectionnez au moins un participant.' });
+    }
+
+    const { data: training, error: trainingError } = await supabase
+      .from('trainings')
+      .select('id, title')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (trainingError || !training) {
+      return res.status(404).json({ error: 'Formation introuvable.' });
+    }
+
+    try {
+      const [{ data: users }, { data: employees }, { data: tenant }] = await Promise.all([
+        userIds.length
+          ? supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).in('id', userIds)
+          : Promise.resolve({ data: [] }),
+        employeeIds.length
+          ? supabase.from('employees').select('id, full_name').eq('tenant_id', req.tenantId).in('id', employeeIds)
+          : Promise.resolve({ data: [] }),
+        supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+      ]);
+
+      const rows = [
+        ...(users || []).map((user) => ({ name: user.full_name, kind: 'Compte' })),
+        ...(employees || []).map((employee) => ({ name: employee.full_name, kind: 'Sans compte' })),
+      ].sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+
+      const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+      const pdfBuffer = await buildAttendanceSheetPdf({
+        tenantName: tenant?.name,
+        tenantLogo,
+        trainingTitle: training.title,
+        date: req.body.date || new Date().toISOString().slice(0, 10),
+        rows,
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="fiche-participation.pdf"');
+      res.send(pdfBuffer);
+    } catch (err) {
+      console.error('Échec de génération de la fiche de participation :', err);
+      res.status(500).json({ error: 'Impossible de générer la fiche de participation.' });
+    }
+  }
+);
+
+// GET /api/trainings/:id/records/:recordId/certificate/pdf — certificat de réussite pour une
+// réalisation donnée (une personne, une formation, une date).
+router.get('/:id/records/:recordId/certificate/pdf', async (req, res) => {
+  const { data: record, error } = await supabase
+    .from('training_records')
+    .select(
+      'completed_at, next_due_date, training:trainings(title), user:users(full_name), employee:employees(full_name)'
+    )
+    .eq('tenant_id', req.tenantId)
+    .eq('training_id', req.params.id)
+    .eq('id', req.params.recordId)
+    .single();
+
+  if (error || !record) {
+    return res.status(404).json({ error: 'Réalisation introuvable.' });
+  }
+
+  const personName = record.user?.full_name || record.employee?.full_name || 'Personne inconnue';
+
+  try {
+    const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+    const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+    const pdfBuffer = await buildTrainingCertificatePdf({
+      tenantName: tenant?.name,
+      tenantLogo,
+      personName,
+      trainingTitle: record.training?.title || '',
+      completedAt: record.completed_at,
+      nextDueDate: record.next_due_date,
+    });
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="certificat-reussite.pdf"');
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error('Échec de génération du certificat :', err);
+    res.status(500).json({ error: 'Impossible de générer le certificat.' });
+  }
 });
 
 export default router;

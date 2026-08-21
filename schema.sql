@@ -52,6 +52,12 @@ create table users (
   full_name       text,
   role            text not null default 'member' check (role in ('admin', 'manager', 'member')),
   is_active       boolean not null default true,
+  -- Exclusion globale du suivi formations (matrice des compétences, relances d'échéance) —
+  -- ex. poste externe/support n'ayant pas les obligations de formation du reste du tenant.
+  -- N'affecte que le calcul de conformité : reste sélectionnable pour un enregistrement
+  -- manuel ponctuel (voir /trainings/:id/records).
+  training_exempt        boolean not null default false,
+  training_exempt_reason text,
   created_at      timestamptz not null default now(),
   updated_at      timestamptz not null default now()
 );
@@ -67,6 +73,9 @@ create table employees (
   full_name   text not null,
   email       text,
   is_active   boolean not null default true,
+  -- Voir users.training_exempt — même exclusion globale, même sémantique.
+  training_exempt        boolean not null default false,
+  training_exempt_reason text,
   created_at  timestamptz not null default now()
 );
 

@@ -22,7 +22,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, full_name, role, is_active')
+    .select('id, full_name, role, is_active, training_exempt, training_exempt_reason')
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -281,6 +281,8 @@ router.patch(
   [
     body('role').optional().isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('training_exempt').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('training_exempt_reason').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -288,7 +290,7 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    if (!('role' in req.body) && !('is_active' in req.body)) {
+    if (!('role' in req.body) && !('is_active' in req.body) && !('training_exempt' in req.body) && !('training_exempt_reason' in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
@@ -316,12 +318,20 @@ router.patch(
       update.is_active = req.body.is_active;
     }
 
+    if ('training_exempt' in req.body) {
+      update.training_exempt = req.body.training_exempt;
+    }
+
+    if ('training_exempt_reason' in req.body) {
+      update.training_exempt_reason = req.body.training_exempt_reason || null;
+    }
+
     const { data, error } = await supabase
       .from('users')
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, role, is_active')
+      .select('id, full_name, role, is_active, training_exempt, training_exempt_reason')
       .single();
 
     if (error) {

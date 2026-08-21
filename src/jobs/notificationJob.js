@@ -64,16 +64,23 @@ export async function getCapaAlerts(tenantId) {
 // Formations à renouveler sous 60 jours, à partir du dernier enregistrement par
 // couple (formation, utilisateur) — même logique que GET /api/trainings/upcoming-renewals.
 export async function getTrainingAlerts(tenantId) {
-  const { data: records, error } = await supabase
-    .from('training_records')
-    .select('training_id, user_id, completed_at, next_due_date, training:trainings(id, title)')
-    .eq('tenant_id', tenantId)
-    .not('next_due_date', 'is', null);
+  const [{ data: records, error }, { data: exemptUsers, error: exemptError }] = await Promise.all([
+    supabase
+      .from('training_records')
+      .select('training_id, user_id, completed_at, next_due_date, training:trainings(id, title)')
+      .eq('tenant_id', tenantId)
+      .not('next_due_date', 'is', null),
+    supabase.from('users').select('id').eq('tenant_id', tenantId).eq('training_exempt', true),
+  ]);
 
   if (error) throw new Error(`Alertes formations : ${error.message}`);
+  if (exemptError) throw new Error(`Alertes formations : ${exemptError.message}`);
+
+  const exemptUserIds = new Set((exemptUsers || []).map((user) => user.id));
 
   const latestByPair = new Map();
   for (const record of records) {
+    if (record.user_id && exemptUserIds.has(record.user_id)) continue;
     const key = `${record.training_id}:${record.user_id}`;
     const existing = latestByPair.get(key);
     if (!existing || record.completed_at > existing.completed_at) {
