@@ -154,6 +154,16 @@ export async function getDriveFileStream(accessToken, fileId) {
   return response.data;
 }
 
+// webViewLink n'est jamais persisté en base : demandé à la volée (Prompt F2, icône "Ouvrir
+// dans Google Drive") plutôt qu'au moment de l'upload, pour rester valide même si Google le
+// fait évoluer, et pour fonctionner aussi sur des fichiers déjà uploadés avant l'ajout de
+// cette fonctionnalité.
+export async function getFileWebViewLink(accessToken, fileId) {
+  const drive = driveClientFromAccessToken(accessToken);
+  const response = await drive.files.get({ fileId, fields: 'webViewLink' });
+  return response.data.webViewLink;
+}
+
 // Renvoie un access_token toujours valide pour cette connexion : le déchiffre tel quel s'il a
 // encore une marge de vie confortable, sinon le rafraîchit via le refresh_token et persiste le
 // nouveau token chiffré + sa nouvelle expiration avant de le renvoyer.

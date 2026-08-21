@@ -2,6 +2,7 @@ import 'dotenv/config';
 import app from './app.js';
 import { scheduleNotificationJob } from './jobs/notificationJob.js';
 import { scheduleBackupJob } from './jobs/backupJob.js';
+import { scheduleDriveTokenRefreshJob } from './jobs/driveTokenRefreshJob.js';
 
 const PORT = process.env.PORT || 4000;
 
@@ -11,3 +12,4 @@ app.listen(PORT, () => {
 
 scheduleNotificationJob();
 scheduleBackupJob();
+scheduleDriveTokenRefreshJob();

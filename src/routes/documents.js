@@ -16,6 +16,7 @@ import {
   uploadFile as uploadFileToDrive,
   getDriveFileStream,
   getOrCreateCategoryFolder,
+  getFileWebViewLink,
 } from '../services/googleDrive.js';
 import {
   requireCategoryPermission,
@@ -120,22 +121,11 @@ router.get('/drive-file', async (req, res) => {
     return res.status(403).json({ error: 'Lien de téléchargement invalide ou expiré.' });
   }
 
-  const { data: connection, error: connectionError } = await supabase
-    .from('google_drive_connections')
-    .select('*')
-    .eq('tenant_id', verified.tenantId)
-    .maybeSingle();
-
-  if (connectionError || !connection) {
-    return res.status(409).json({ error: 'La connexion Google Drive de cette entreprise est introuvable.' });
-  }
-
   let accessToken;
   try {
-    accessToken = await refreshAccessTokenIfNeeded(connection);
-  } catch (refreshError) {
-    console.error('Échec du rafraîchissement du token Google Drive (proxy de téléchargement) :', refreshError.message);
-    return res.status(409).json({ error: 'La connexion Google Drive a expiré — reconnectez-vous depuis Paramètres > Documents.' });
+    accessToken = await getTenantDriveAccessToken(verified.tenantId);
+  } catch (tokenError) {
+    return res.status(tokenError.statusCode || 500).json({ error: tokenError.message });
   }
 
   try {
@@ -197,6 +187,32 @@ async function uploadToStorage(path, file) {
   if (error) {
     console.error("Échec de l'upload d'un document vers le storage :", error);
     throw new Error("Échec de l'upload du fichier.");
+  }
+}
+
+// Connexion Drive + access_token valides pour un tenant, ou lève une erreur avec un
+// statusCode/message déjà prêts à renvoyer tels quels — factorisé, utilisé par le proxy de
+// téléchargement (/drive-file) et par la résolution du lien "Ouvrir dans Google Drive" (F2).
+async function getTenantDriveAccessToken(tenantId) {
+  const { data: connection, error } = await supabase
+    .from('google_drive_connections')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .maybeSingle();
+
+  if (error || !connection) {
+    const err = new Error('La connexion Google Drive de cette entreprise est introuvable.');
+    err.statusCode = 409;
+    throw err;
+  }
+
+  try {
+    return await refreshAccessTokenIfNeeded(connection);
+  } catch (refreshError) {
+    console.error('Échec du rafraîchissement du token Google Drive :', refreshError.message);
+    const err = new Error('La connexion Google Drive a expiré — reconnectez-vous depuis Paramètres > Documents.');
+    err.statusCode = 409;
+    throw err;
   }
 }
 
@@ -606,7 +622,9 @@ router.post(
       try {
         storage = await resolveTenantStorageProvider(req.tenantId);
       } catch (storageError) {
-        return res.status(409).json({ error: storageError.message });
+        return res
+          .status(409)
+          .json({ error: storageError.message, code: storageError.driveConnectionError ? 'drive_connection_error' : undefined });
       }
 
       try {
@@ -720,7 +738,9 @@ router.post(
   try {
     storage = await resolveTenantStorageProvider(req.tenantId);
   } catch (storageError) {
-    return res.status(409).json({ error: storageError.message });
+    return res
+      .status(409)
+      .json({ error: storageError.message, code: storageError.driveConnectionError ? 'drive_connection_error' : undefined });
   }
 
   let uploadResult;
@@ -940,6 +960,38 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
   });
 
   res.json({ url });
+});
+
+// GET /api/documents/:id/drive-view-link — Prompt F2 : ouvre le document directement dans
+// l'interface Google Drive (webViewLink) plutôt que de le télécharger, pour l'icône de
+// provenance affichée sur chaque ligne du tableau des documents. 404 pour un document qui
+// n'est pas (ou plus) sur Drive — le frontend garde alors le bouton de téléchargement normal.
+router.get('/:id/drive-view-link', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
+  const { data: document, error } = await supabase
+    .from('documents')
+    .select('id, file_path, storage_provider')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !document || document.storage_provider !== 'google_drive' || !document.file_path) {
+    return res.status(404).json({ error: "Ce document n'est pas stocké sur Google Drive." });
+  }
+
+  let accessToken;
+  try {
+    accessToken = await getTenantDriveAccessToken(req.tenantId);
+  } catch (tokenError) {
+    return res.status(tokenError.statusCode || 500).json({ error: tokenError.message });
+  }
+
+  try {
+    const url = await getFileWebViewLink(accessToken, document.file_path);
+    res.json({ url });
+  } catch (viewLinkError) {
+    console.error('Échec de récupération du lien Google Drive :', viewLinkError);
+    res.status(500).json({ error: 'Impossible de récupérer le lien Google Drive.' });
+  }
 });
 
 // GET /api/documents/:id/versions/:versionId/download — même logique que /:id/download
