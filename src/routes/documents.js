@@ -176,6 +176,24 @@ const IMPORT_COLUMNS = {
   reviewFrequency: 'Fréquence de révision (mois)',
 };
 
+// Compare les en-têtes en ignorant l'astérisque des colonnes obligatoires, la casse et les
+// espaces superflus — un fichier renvoyé après passage par Excel peut légèrement modifier le
+// texte des en-têtes (espace insécable, casse...) sans que la colonne ait vraiment changé.
+function normalizeHeader(text) {
+  return String(text || '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function getRowValue(row, expectedHeader) {
+  if (expectedHeader in row) return row[expectedHeader];
+  const target = normalizeHeader(expectedHeader);
+  const matchKey = Object.keys(row).find((key) => normalizeHeader(key) === target);
+  return matchKey ? row[matchKey] : undefined;
+}
+
 // GET /api/documents/import-template.xlsx — modèle Excel vierge (+ liste des catégories du
 // tenant, pour que la colonne Catégorie soit remplie avec des noms qui existent réellement)
 // à télécharger, remplir, puis renvoyer à POST /import. Placée avant GET /:id : Express
@@ -867,7 +885,14 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
   let rows;
   try {
-    const parsed = await parseExcelBuffer(req.file.buffer);
+    // L'onglet "Documents" est ciblé par son nom plutôt que par position (premier onglet) : si
+    // l'utilisateur a réordonné les onglets dans Excel (ex. "Catégories disponibles" avant
+    // "Documents"), lire par position aurait silencieusement parsé le mauvais onglet — toutes
+    // les lignes auraient alors semblé vides de Numéro/Titre. Repli sur le premier onglet
+    // seulement si aucun onglet ne s'appelle "Documents" (fichier renommé).
+    const sheetNames = (await parseExcelBuffer(req.file.buffer)).sheetNames;
+    const targetSheet = sheetNames.includes('Documents') ? 'Documents' : undefined;
+    const parsed = await parseExcelBuffer(req.file.buffer, targetSheet);
     rows = parsed.rows;
   } catch (parseError) {
     return res
@@ -880,6 +905,20 @@ router.post('/import', upload.single('file'), async (req, res) => {
   }
   if (rows.length > 500) {
     return res.status(400).json({ error: 'Maximum 500 documents par import.' });
+  }
+
+  // Si aucune colonne attendue n'est reconnue dans la première ligne, mieux vaut le dire
+  // clairement (avec les en-têtes réellement trouvées) que de laisser chaque ligne échouer
+  // silencieusement avec "Numéro requis" sans que l'utilisateur comprenne pourquoi.
+  const detectedHeaders = Object.keys(rows[0] || {});
+  const expectedHeaders = Object.values(IMPORT_COLUMNS);
+  const recognizedCount = expectedHeaders.filter((expected) =>
+    detectedHeaders.some((detected) => normalizeHeader(detected) === normalizeHeader(expected))
+  ).length;
+  if (recognizedCount === 0) {
+    return res.status(400).json({
+      error: `Colonnes non reconnues. Colonnes attendues : ${expectedHeaders.join(', ')}. Colonnes trouvées dans le fichier : ${detectedHeaders.join(', ') || 'aucune'}.`,
+    });
   }
 
   const [{ data: categories }, { data: tenant }, { data: existingDocs }] = await Promise.all([
@@ -899,8 +938,8 @@ router.post('/import', upload.single('file'), async (req, res) => {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     const rowNumber = i + 2; // ligne 1 = en-têtes
-    const number = String(row[IMPORT_COLUMNS.number] ?? '').trim();
-    const title = String(row[IMPORT_COLUMNS.title] ?? '').trim();
+    const number = String(getRowValue(row, IMPORT_COLUMNS.number) ?? '').trim();
+    const title = String(getRowValue(row, IMPORT_COLUMNS.title) ?? '').trim();
 
     if (!number) {
       results.push({ row: rowNumber, status: 'error', message: 'Numéro requis.' });
@@ -915,7 +954,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
       continue;
     }
 
-    const categoryNameRaw = String(row[IMPORT_COLUMNS.category] ?? '').trim();
+    const categoryNameRaw = String(getRowValue(row, IMPORT_COLUMNS.category) ?? '').trim();
     let categoryId = null;
     let warningMessage = null;
     if (categoryNameRaw) {
@@ -943,16 +982,16 @@ router.post('/import', upload.single('file'), async (req, res) => {
       }
     }
 
-    const version = String(row[IMPORT_COLUMNS.version] ?? '').trim() || '1.0';
-    const createdAtDate = parseFlexibleDate(row[IMPORT_COLUMNS.createdAt]);
-    const reviewFrequencyRaw = row[IMPORT_COLUMNS.reviewFrequency];
+    const version = String(getRowValue(row, IMPORT_COLUMNS.version) ?? '').trim() || '1.0';
+    const createdAtDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.createdAt));
+    const reviewFrequencyRaw = getRowValue(row, IMPORT_COLUMNS.reviewFrequency);
     const reviewFrequency =
       reviewFrequencyRaw !== null && reviewFrequencyRaw !== undefined && String(reviewFrequencyRaw).trim() !== ''
         ? parseInt(reviewFrequencyRaw, 10)
         : null;
     const effectiveFrequency = Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : defaultFrequency;
 
-    let reviewDate = parseFlexibleDate(row[IMPORT_COLUMNS.reviewDate]);
+    let reviewDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.reviewDate));
     if (!reviewDate && effectiveFrequency) {
       reviewDate = addMonthsIso(createdAtDate || new Date().toISOString().slice(0, 10), effectiveFrequency);
     }
@@ -963,7 +1002,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
       category_id: categoryId,
       number,
       title,
-      description: String(row[IMPORT_COLUMNS.description] ?? '').trim() || null,
+      description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
       version,
       created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : undefined,
       review_date: reviewDate,

@@ -26,6 +26,38 @@ const LOGO_BUCKET = 'tenant-logos';
 // pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
 const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
 
+function addMonthsIso(dateStr, months) {
+  const date = new Date(dateStr);
+  date.setMonth(date.getMonth() + months);
+  return date.toISOString().slice(0, 10);
+}
+
+// Paramétrer la fréquence par défaut ne devait toucher que les NOUVEAUX documents/versions —
+// mais un tenant qui l'active pour la première fois s'attend à voir ses documents déjà
+// existants en profiter tout de suite, pas seulement à la prochaine révision de chacun. On ne
+// touche que ceux sans date de révision (jamais un choix manuel déjà fait), et seulement au
+// moment où la fréquence par défaut passe d'absente/différente à une vraie valeur.
+async function backfillReviewDates(tenantId, newDefaultMonths) {
+  const { data: documents, error } = await supabase
+    .from('documents')
+    .select('id, created_at, review_frequency_months')
+    .eq('tenant_id', tenantId)
+    .is('review_date', null);
+
+  if (error || !documents || documents.length === 0) return 0;
+
+  const updates = documents.map((document) => {
+    const effectiveMonths = document.review_frequency_months || newDefaultMonths;
+    return supabase
+      .from('documents')
+      .update({ review_date: addMonthsIso(document.created_at.slice(0, 10), effectiveMonths) })
+      .eq('id', document.id);
+  });
+
+  await Promise.all(updates);
+  return documents.length;
+}
+
 router.use(requireAuth);
 
 // GET /api/tenant — informations de l'entreprise du tenant courant
@@ -83,7 +115,12 @@ router.patch(
       return res.status(500).json({ error: 'Erreur lors de la mise à jour.' });
     }
 
-    res.json(data);
+    let backfilledCount = 0;
+    if (update.document_review_frequency_months) {
+      backfilledCount = await backfillReviewDates(req.tenantId, update.document_review_frequency_months);
+    }
+
+    res.json({ ...data, backfilled_review_dates_count: backfilledCount });
   }
 );
 
