@@ -6,7 +6,7 @@ import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
 
 const router = Router();
-const TEMPLATES = ['documentToReview', 'capaOverdue', 'trainingRenewal', 'approvalRequest'];
+const TEMPLATES = ['documentToReview', 'capaOverdue', 'capaAssigned', 'trainingRenewal', 'approvalRequest'];
 
 const SAMPLE_VARIABLES = {
   documentToReview: {
@@ -17,6 +17,13 @@ const SAMPLE_VARIABLES = {
     documentUrl: `${process.env.FRONTEND_URL}/documents`,
   },
   capaOverdue: {
+    userName: 'Alice Martin',
+    capaNumber: 'CAPA-2026-001',
+    capaTitle: 'Test de notification',
+    dueDate: '01/08/2026',
+    capaUrl: `${process.env.FRONTEND_URL}/capas`,
+  },
+  capaAssigned: {
     userName: 'Alice Martin',
     capaNumber: 'CAPA-2026-001',
     capaTitle: 'Test de notification',

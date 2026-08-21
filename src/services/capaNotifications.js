@@ -2,7 +2,9 @@ import { sendImmediateNotification } from './notificationHelpers.js';
 
 // Notification immédiate (n'attend pas le batch quotidien) quand une CAPA est assignée.
 // Réutilise le toggle "email_capa_overdue" : le modèle de préférences (Chantier 3.2) n'a
-// pas de case dédiée "assignation", et c'est la plus proche sémantiquement.
+// pas de case dédiée "assignation", et c'est la plus proche sémantiquement. Le template
+// utilisé (capaAssigned), lui, est bien dédié — capaOverdue dit explicitement "En retard,
+// a dépassé son échéance", ce qui était faux pour une CAPA tout juste créée.
 // Partagée par capas.js (POST/PATCH) et qqoqccp.js (POST /:id/create-capa) — déplacée ici
 // plutôt que dupliquée, les deux points de création d'une CAPA assignée doivent notifier
 // de la même façon.
@@ -15,7 +17,7 @@ export async function notifyCapaAssigned(tenantId, capa) {
     prefField: 'email_capa_overdue',
     notificationType: 'capa_assigned',
     referenceId: capa.id,
-    templateName: 'capaOverdue',
+    templateName: 'capaAssigned',
     subject: `Une CAPA vous a été assignée : ${capa.number}`,
     variables: {
       capaNumber: capa.number,
