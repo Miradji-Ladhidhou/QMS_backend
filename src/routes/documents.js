@@ -67,18 +67,21 @@ function getTicketSecret() {
   return secret;
 }
 
-// Ticket signé, à durée de vie courte, pour /:id/drive-file : cette route est atteinte par
-// une navigation navigateur classique (window.open depuis le frontend), qui ne porte pas
-// notre en-tête Authorization — elle ne peut donc pas passer par requireAuth comme le reste
-// de ce routeur. La permission de consultation est déjà vérifiée avant l'émission du ticket
-// (par requireCategoryPermission sur GET /:id/download) ; le ticket ne fait que transporter
-// cette autorisation déjà accordée jusqu'au clic effectif, sans jamais la revérifier via une
-// session — d'où sa durée de vie volontairement courte.
+// Ticket signé, à durée de vie courte, pour /drive-file : cette route est atteinte par une
+// navigation navigateur classique (window.open depuis le frontend), qui ne porte pas notre
+// en-tête Authorization — elle ne peut donc pas passer par requireAuth comme le reste de ce
+// routeur. La permission de consultation est déjà vérifiée avant l'émission du ticket (par
+// requireCategoryPermission sur GET /:id/download et GET /:id/versions/:versionId/download) ;
+// le ticket transporte directement le fileId Drive déjà résolu (pas un id de document/version)
+// pour que ce même proxy serve indifféremment un document courant ou une ancienne version
+// archivée, sans avoir à re-consulter la bonne table pour savoir laquelle. Nom de fichier
+// encodé en base64url : évite qu'un ':' dans un nom de fichier réel ne casse le split ci-dessous.
 const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000;
 
-function signDownloadTicket(documentId, tenantId) {
+function signDownloadTicket(tenantId, driveFileId, fileName) {
   const expiresAt = Date.now() + DOWNLOAD_TICKET_TTL_MS;
-  const payload = `${documentId}:${tenantId}:${expiresAt}`;
+  const fileNameB64 = Buffer.from(fileName || '', 'utf8').toString('base64url');
+  const payload = `${tenantId}:${driveFileId}:${fileNameB64}:${expiresAt}`;
   const signature = createHmac('sha256', getTicketSecret()).update(payload).digest('hex');
   return `${payload}.${signature}`;
 }
@@ -98,39 +101,29 @@ function verifyDownloadTicket(ticket) {
     return null;
   }
 
-  const [documentId, tenantId, expiresAtStr] = payload.split(':');
+  const [tenantId, driveFileId, fileNameB64, expiresAtStr] = payload.split(':');
   const expiresAt = Number(expiresAtStr);
-  if (!documentId || !tenantId || !expiresAt || Date.now() > expiresAt) return null;
+  if (!tenantId || !driveFileId || !expiresAt || Date.now() > expiresAt) return null;
 
-  return { documentId, tenantId };
+  return { tenantId, driveFileId, fileName: fileNameB64 ? Buffer.from(fileNameB64, 'base64url').toString('utf8') : null };
 }
 
-// GET /api/documents/:id/drive-file — proxy de streaming pour les documents stockés sur
-// Google Drive, authentifié par ticket signé (voir ci-dessus) plutôt que par requireAuth.
-// Sans ce proxy, il faudrait soit un lien Drive direct en "quiconque a le lien" (contourne
-// entièrement le RBAC par catégorie de l'app pour les catégories restreintes), soit envoyer
-// le Bearer token depuis une simple navigation (impossible) — d'où ce détour.
-router.get('/:id/drive-file', async (req, res) => {
+// GET /api/documents/drive-file — proxy de streaming pour les fichiers (documents courants ET
+// anciennes versions archivées) stockés sur Google Drive, authentifié par ticket signé (voir
+// ci-dessus) plutôt que par requireAuth. Sans ce proxy, il faudrait soit un lien Drive direct
+// en "quiconque a le lien" (contourne entièrement le RBAC par catégorie de l'app pour les
+// catégories restreintes), soit envoyer le Bearer token depuis une simple navigation
+// (impossible) — d'où ce détour.
+router.get('/drive-file', async (req, res) => {
   const verified = verifyDownloadTicket(req.query.ticket);
-  if (!verified || verified.documentId !== req.params.id) {
+  if (!verified) {
     return res.status(403).json({ error: 'Lien de téléchargement invalide ou expiré.' });
-  }
-
-  const { data: document, error } = await supabase
-    .from('documents')
-    .select('id, tenant_id, file_path, file_name, storage_provider')
-    .eq('id', req.params.id)
-    .eq('tenant_id', verified.tenantId)
-    .single();
-
-  if (error || !document || document.storage_provider !== 'google_drive' || !document.file_path) {
-    return res.status(404).json({ error: 'Document introuvable.' });
   }
 
   const { data: connection, error: connectionError } = await supabase
     .from('google_drive_connections')
     .select('*')
-    .eq('tenant_id', document.tenant_id)
+    .eq('tenant_id', verified.tenantId)
     .maybeSingle();
 
   if (connectionError || !connection) {
@@ -146,8 +139,8 @@ router.get('/:id/drive-file', async (req, res) => {
   }
 
   try {
-    const driveStream = await getDriveFileStream(accessToken, document.file_path);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(document.file_name || 'document')}"`);
+    const driveStream = await getDriveFileStream(accessToken, verified.driveFileId);
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(verified.fileName || 'document')}"`);
     driveStream.on('error', (streamErr) => {
       console.error('Erreur de streaming depuis Google Drive :', streamErr);
       if (!res.headersSent) res.status(500).end();
@@ -935,7 +928,7 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
   // inversement après une désactivation.
   const url =
     document.storage_provider === 'google_drive'
-      ? `${req.protocol}://${req.get('host')}/api/documents/${document.id}/drive-file?ticket=${signDownloadTicket(document.id, req.tenantId)}`
+      ? `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(signDownloadTicket(req.tenantId, document.file_path, document.file_name))}`
       : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(document.file_path).data.publicUrl;
 
   await logAudit({
@@ -948,6 +941,39 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
 
   res.json({ url });
 });
+
+// GET /api/documents/:id/versions/:versionId/download — même logique que /:id/download
+// ci-dessus, mais pour une version archivée : storage_provider et file_path viennent de
+// document_versions (capturés au moment de l'archivage), pas de la ligne documents courante,
+// qui a pu depuis changer de provider ou de fichier.
+router.get(
+  '/:id/versions/:versionId/download',
+  requireCategoryPermission('view', resolveDocumentById),
+  async (req, res) => {
+    const { data: version, error } = await supabase
+      .from('document_versions')
+      .select('id, file_path, file_name, storage_provider')
+      .eq('tenant_id', req.tenantId)
+      .eq('document_id', req.params.id)
+      .eq('id', req.params.versionId)
+      .single();
+
+    if (error || !version) {
+      return res.status(404).json({ error: 'Version introuvable.' });
+    }
+
+    if (!version.file_path) {
+      return res.status(404).json({ error: 'Aucun fichier associé à cette version.' });
+    }
+
+    const url =
+      version.storage_provider === 'google_drive'
+        ? `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(signDownloadTicket(req.tenantId, version.file_path, version.file_name))}`
+        : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(version.file_path).data.publicUrl;
+
+    res.json({ url });
+  }
+);
 
 // GET /api/documents/:id/audit-log — historique complet et immuable des actions
 router.get('/:id/audit-log', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {

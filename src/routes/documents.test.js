@@ -133,5 +133,22 @@ describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive c
       .eq('document_id', created.body.id)
       .single();
     expect(archived.storage_provider).toBeNull();
+
+    // GET /:id/versions/:versionId/download — bug réel corrigé : le frontend construisait ce
+    // lien lui-même depuis file_path via le client Supabase (getDocumentPublicUrl), ce qui
+    // casse dès que file_path est un id Google Drive au lieu d'un chemin Supabase ("Bucket not
+    // found"). Ce endpoint doit exister et répondre pour l'ancienne version archivée.
+    const { data: archivedFull } = await admin
+      .from('document_versions')
+      .select('id')
+      .eq('document_id', created.body.id)
+      .single();
+
+    const versionDownload = await request(app)
+      .get(`/api/documents/${created.body.id}/versions/${archivedFull.id}/download`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(versionDownload.status).toBe(200);
+    expect(versionDownload.body.url).toContain('/storage/v1/object/public/');
   });
 });
