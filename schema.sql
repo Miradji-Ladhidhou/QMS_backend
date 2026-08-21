@@ -35,6 +35,10 @@ create table tenants (
   -- dans le menu et, à terme, tout formatage de date sensible au fuseau. UTC par défaut :
   -- neutre, ne présuppose rien de la localisation réelle du tenant.
   timezone      text not null default 'UTC',
+  -- Fréquence par défaut (en mois) de révision documentaire — voir documents.review_date /
+  -- review_frequency_months. Nul = pas de révision périodique automatique (comportement
+  -- historique : review_date reste une saisie 100% manuelle).
+  document_review_frequency_months integer,
   -- Géré depuis l'espace super admin (voir routes/superAdmin.js) : un tenant suspendu ne
   -- peut plus être utilisé (requireAuth le bloque), sans supprimer aucune de ses données.
   is_suspended  boolean not null default false,
@@ -112,6 +116,10 @@ create table documents (
   created_by   uuid references users (id) on delete set null,
   approved_by  uuid references users (id) on delete set null,
   review_date  date,
+  -- Dérogation à tenants.document_review_frequency_months pour ce document précis (ex. une
+  -- procédure critique révisée tous les 6 mois quand le reste du tenant est à 24 mois). Nul =
+  -- suit le défaut du tenant.
+  review_frequency_months integer,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   unique (tenant_id, number)

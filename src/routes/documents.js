@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { Router } from 'express';
 import multer from 'multer';
+import ExcelJS from 'exceljs';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -9,11 +10,13 @@ import { buildCertificatePdf } from '../services/certificatePdf.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { extractText } from '../services/textExtraction.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
+import { parseExcelBuffer } from '../services/excelParsing.js';
 import {
   requireCategoryPermission,
   filterViewableDocuments,
   resolveDocumentById,
   resolveCategoryFromBody,
+  hasCategoryPermission,
 } from '../middleware/documentPermissions.js';
 
 const router = Router();
@@ -56,6 +59,29 @@ function bumpVersion(version) {
     return `${match[1]}.${Number(match[2]) + 1}`;
   }
   return `${version}.1`;
+}
+
+function addMonthsIso(dateStr, months) {
+  const date = new Date(dateStr);
+  date.setMonth(date.getMonth() + months);
+  return date.toISOString().slice(0, 10);
+}
+
+// Accepte une date déjà ISO (yyyy-mm-dd, produite par une cellule Excel native ou une saisie
+// directe) ou une saisie française JJ/MM/AAAA — le format le plus naturel dans un modèle
+// d'import destiné à des utilisateurs francophones. Renvoie null si rien ne correspond,
+// plutôt que de planter sur une valeur mal formée.
+function parseFlexibleDate(value) {
+  if (value === null || value === undefined) return null;
+  const str = String(value).trim();
+  if (!str) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+  const match = /^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/.exec(str);
+  if (match) {
+    const [, day, month, year] = match;
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+  return null;
 }
 
 async function uploadToStorage(path, file) {
@@ -135,6 +161,73 @@ router.get('/alerts', async (req, res) => {
   }
 
   res.json(data);
+});
+
+// Colonnes partagées entre le modèle généré (GET .../import-template.xlsx) et le parseur de
+// l'import (POST .../import) — un seul point de vérité pour ne jamais les laisser diverger.
+const IMPORT_COLUMNS = {
+  number: 'Numéro *',
+  title: 'Titre *',
+  description: 'Description',
+  category: 'Catégorie',
+  version: 'Version',
+  createdAt: 'Date de création (JJ/MM/AAAA)',
+  reviewDate: 'Date de révision (JJ/MM/AAAA)',
+  reviewFrequency: 'Fréquence de révision (mois)',
+};
+
+// GET /api/documents/import-template.xlsx — modèle Excel vierge (+ liste des catégories du
+// tenant, pour que la colonne Catégorie soit remplie avec des noms qui existent réellement)
+// à télécharger, remplir, puis renvoyer à POST /import. Placée avant GET /:id : Express
+// matche les routes dans l'ordre d'enregistrement (pas par spécificité), donc /:id
+// intercepterait "import-template.xlsx" comme valeur d'id si cette route venait après.
+router.get('/import-template.xlsx', async (req, res) => {
+  const { data: categories } = await supabase
+    .from('document_categories')
+    .select('name')
+    .eq('tenant_id', req.tenantId)
+    .order('name', { ascending: true });
+
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet('Documents');
+  sheet.columns = [
+    { header: IMPORT_COLUMNS.number, key: 'number', width: 16 },
+    { header: IMPORT_COLUMNS.title, key: 'title', width: 32 },
+    { header: IMPORT_COLUMNS.description, key: 'description', width: 40 },
+    { header: IMPORT_COLUMNS.category, key: 'category', width: 22 },
+    { header: IMPORT_COLUMNS.version, key: 'version', width: 10 },
+    { header: IMPORT_COLUMNS.createdAt, key: 'createdAt', width: 26 },
+    { header: IMPORT_COLUMNS.reviewDate, key: 'reviewDate', width: 26 },
+    { header: IMPORT_COLUMNS.reviewFrequency, key: 'reviewFrequency', width: 24 },
+  ];
+  sheet.getRow(1).font = { bold: true };
+  sheet.addRow({
+    number: 'QP-001',
+    title: 'Exemple de procédure',
+    description: "Ligne d'exemple — à modifier ou supprimer avant import.",
+    category: categories?.[0]?.name || '',
+    version: '1.0',
+    createdAt: '',
+    reviewDate: '',
+    reviewFrequency: '',
+  });
+  sheet.getRow(2).font = { italic: true, color: { argb: 'FF94A3B8' } };
+  sheet.getRow(1).eachCell((cell) => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  });
+
+  if (categories && categories.length > 0) {
+    const categoriesSheet = workbook.addWorksheet('Catégories disponibles');
+    categoriesSheet.columns = [{ header: 'Nom de la catégorie', key: 'name', width: 30 }];
+    categoriesSheet.getRow(1).font = { bold: true };
+    categories.forEach((category) => categoriesSheet.addRow({ name: category.name }));
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="modele-import-documents.xlsx"');
+  res.send(Buffer.from(buffer));
 });
 
 // GET /api/documents/:id — détail avec historique de versions
@@ -250,6 +343,7 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
     body('review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
+    body('review_frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence de révision invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -257,7 +351,14 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { number, title, description, category_id: categoryId, review_date: reviewDate } = req.body;
+    const {
+      number,
+      title,
+      description,
+      category_id: categoryId,
+      review_date: reviewDate,
+      review_frequency_months: reviewFrequencyMonths,
+    } = req.body;
     const documentId = randomUUID();
 
     let filePath = null;
@@ -277,6 +378,20 @@ router.post(
       extractedText = await extractText(req.file);
     }
 
+    // review_date explicite prioritaire ; sinon calculé depuis la fréquence propre à ce
+    // document, sinon depuis le défaut du tenant (voir tenants.document_review_frequency_months) —
+    // même logique de repli que capas.js pour due_date/priority delays.
+    let effectiveReviewDate = reviewDate || null;
+    if (!effectiveReviewDate) {
+      const frequency = reviewFrequencyMonths
+        ? Number(reviewFrequencyMonths)
+        : (await supabase.from('tenants').select('document_review_frequency_months').eq('id', req.tenantId).single()).data
+            ?.document_review_frequency_months;
+      if (frequency) {
+        effectiveReviewDate = addMonthsIso(new Date().toISOString().slice(0, 10), frequency);
+      }
+    }
+
     const { data, error } = await supabase
       .from('documents')
       .insert({
@@ -286,7 +401,8 @@ router.post(
         number,
         title,
         description: description || null,
-        review_date: reviewDate || null,
+        review_date: effectiveReviewDate,
+        review_frequency_months: reviewFrequencyMonths ? Number(reviewFrequencyMonths) : null,
         file_path: filePath,
         file_name: fileName,
         extracted_text: extractedText,
@@ -354,16 +470,29 @@ router.post(
 
   const extractedText = await extractText(req.file);
 
+  // Une révision remet le compteur à zéro : recalculée depuis la fréquence propre à ce
+  // document, sinon celle du tenant — seulement si l'une des deux est paramétrée, pour ne
+  // rien changer aux tenants qui n'utilisent pas cette fonctionnalité.
+  const update = {
+    version: newVersion,
+    file_path: filePath,
+    file_name: req.file.originalname,
+    extracted_text: extractedText,
+    status: 'draft',
+    approved_by: null,
+  };
+
+  const effectiveFrequency =
+    document.review_frequency_months ||
+    (await supabase.from('tenants').select('document_review_frequency_months').eq('id', req.tenantId).single()).data
+      ?.document_review_frequency_months;
+  if (effectiveFrequency) {
+    update.review_date = addMonthsIso(new Date().toISOString().slice(0, 10), effectiveFrequency);
+  }
+
   const { data, error } = await supabase
     .from('documents')
-    .update({
-      version: newVersion,
-      file_path: filePath,
-      file_name: req.file.originalname,
-      extracted_text: extractedText,
-      status: 'draft',
-      approved_by: null,
-    })
+    .update(update)
     .eq('id', document.id)
     .select('*, category:document_categories(id, name, color)')
     .single();
@@ -620,6 +749,68 @@ router.patch(
   }
 );
 
+// PATCH /api/documents/:id/metadata — corrections manuelles réservées à l'administration
+// documentaire : version, date de création, date/fréquence de révision. Jamais titre/numéro/
+// description ni le fichier, qui restent gérés par leurs flux dédiés (nouvelle version,
+// statut...) — ici seulement les champs qu'un import/rétro-saisie a besoin d'ajuster après
+// coup. admin/manager + permission catégorie, comme DELETE : ce sont des champs qui touchent
+// à la traçabilité (dont la date de création), pas une simple édition de contenu.
+router.patch(
+  '/:id/metadata',
+  requireRole('admin', 'manager'),
+  requireCategoryPermission('edit', resolveDocumentById),
+  [
+    body('version').optional().trim().notEmpty().withMessage('La version ne peut pas être vide.'),
+    body('created_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date de création invalide.'),
+    body('review_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
+    body('review_frequency_months')
+      .optional({ nullable: true, values: 'falsy' })
+      .isInt({ min: 1 })
+      .withMessage('Fréquence de révision invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const patchableFields = ['version', 'created_at', 'review_date', 'review_frequency_months'];
+    if (!patchableFields.some((field) => field in req.body)) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    const update = {};
+    if ('version' in req.body) update.version = req.body.version;
+    if ('created_at' in req.body) update.created_at = req.body.created_at;
+    if ('review_date' in req.body) update.review_date = req.body.review_date || null;
+    if ('review_frequency_months' in req.body) {
+      update.review_frequency_months = req.body.review_frequency_months || null;
+    }
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update(update)
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select('*, category:document_categories(id, name, color)')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Document introuvable.' });
+    }
+
+    await logAudit({
+      tenantId: req.tenantId,
+      documentId: req.params.id,
+      userId: req.user.id,
+      action: 'metadata_edited_manually',
+      details: update,
+    });
+
+    res.json(data);
+  }
+);
+
 // DELETE /api/documents/:id — réservé aux admins/managers, et soumis à can_delete si la
 // catégorie est restreinte (un manager n'a pas le bypass admin — il lui faut une permission
 // explicite can_delete pour supprimer un document d'une catégorie restreinte).
@@ -660,6 +851,176 @@ router.delete(
   });
 
   res.status(204).send();
+});
+
+// Colonnes partagées entre le modèle généré (GET .../import-template.xlsx) et le parseur de
+// l'import (POST .../import) — un seul point de vérité pour ne jamais les laisser diverger.
+// POST /api/documents/import — création en masse à partir du modèle rempli. Chaque ligne est
+// validée et insérée indépendamment (une erreur sur une ligne n'annule pas les autres) ; le
+// détail ligne par ligne est renvoyé pour que l'utilisateur sache exactement quoi corriger.
+// Pas de fichier joint par document ici : la ligne crée la fiche documentaire, le fichier
+// s'ajoute ensuite via le flux "Nouvelle version" existant.
+router.post('/import', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: 'Un fichier Excel (.xlsx) est requis.' });
+  }
+
+  let rows;
+  try {
+    const parsed = await parseExcelBuffer(req.file.buffer);
+    rows = parsed.rows;
+  } catch (parseError) {
+    return res
+      .status(parseError.userFacing ? 400 : 500)
+      .json({ error: parseError.userFacing ? parseError.message : `Fichier illisible : ${parseError.message}` });
+  }
+
+  if (!rows || rows.length === 0) {
+    return res.status(400).json({ error: 'Le fichier ne contient aucune ligne exploitable.' });
+  }
+  if (rows.length > 500) {
+    return res.status(400).json({ error: 'Maximum 500 documents par import.' });
+  }
+
+  const [{ data: categories }, { data: tenant }, { data: existingDocs }] = await Promise.all([
+    supabase.from('document_categories').select('id, name').eq('tenant_id', req.tenantId),
+    supabase.from('tenants').select('document_review_frequency_months').eq('id', req.tenantId).single(),
+    supabase.from('documents').select('number').eq('tenant_id', req.tenantId),
+  ]);
+
+  const categoriesByName = new Map((categories || []).map((category) => [category.name.trim().toLowerCase(), category]));
+  const existingNumbers = new Set((existingDocs || []).map((document) => document.number));
+  const seenNumbersInFile = new Set();
+  const defaultFrequency = tenant?.document_review_frequency_months || null;
+
+  const results = [];
+  const toInsert = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const rowNumber = i + 2; // ligne 1 = en-têtes
+    const number = String(row[IMPORT_COLUMNS.number] ?? '').trim();
+    const title = String(row[IMPORT_COLUMNS.title] ?? '').trim();
+
+    if (!number) {
+      results.push({ row: rowNumber, status: 'error', message: 'Numéro requis.' });
+      continue;
+    }
+    if (!title) {
+      results.push({ row: rowNumber, status: 'error', message: 'Titre requis.' });
+      continue;
+    }
+    if (existingNumbers.has(number) || seenNumbersInFile.has(number)) {
+      results.push({ row: rowNumber, status: 'error', message: `Numéro "${number}" déjà utilisé.`, number });
+      continue;
+    }
+
+    const categoryNameRaw = String(row[IMPORT_COLUMNS.category] ?? '').trim();
+    let categoryId = null;
+    let warningMessage = null;
+    if (categoryNameRaw) {
+      const category = categoriesByName.get(categoryNameRaw.toLowerCase());
+      if (!category) {
+        warningMessage = `Catégorie "${categoryNameRaw}" introuvable — document créé sans catégorie.`;
+      } else {
+        const allowed = await hasCategoryPermission({
+          tenantId: req.tenantId,
+          userId: req.user.id,
+          userRole: req.userRole,
+          categoryId: category.id,
+          permission: 'edit',
+        });
+        if (!allowed) {
+          results.push({
+            row: rowNumber,
+            status: 'error',
+            message: `Vous n'avez pas la permission de créer un document dans la catégorie "${categoryNameRaw}".`,
+            number,
+          });
+          continue;
+        }
+        categoryId = category.id;
+      }
+    }
+
+    const version = String(row[IMPORT_COLUMNS.version] ?? '').trim() || '1.0';
+    const createdAtDate = parseFlexibleDate(row[IMPORT_COLUMNS.createdAt]);
+    const reviewFrequencyRaw = row[IMPORT_COLUMNS.reviewFrequency];
+    const reviewFrequency =
+      reviewFrequencyRaw !== null && reviewFrequencyRaw !== undefined && String(reviewFrequencyRaw).trim() !== ''
+        ? parseInt(reviewFrequencyRaw, 10)
+        : null;
+    const effectiveFrequency = Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : defaultFrequency;
+
+    let reviewDate = parseFlexibleDate(row[IMPORT_COLUMNS.reviewDate]);
+    if (!reviewDate && effectiveFrequency) {
+      reviewDate = addMonthsIso(createdAtDate || new Date().toISOString().slice(0, 10), effectiveFrequency);
+    }
+
+    seenNumbersInFile.add(number);
+    toInsert.push({
+      tenant_id: req.tenantId,
+      category_id: categoryId,
+      number,
+      title,
+      description: String(row[IMPORT_COLUMNS.description] ?? '').trim() || null,
+      version,
+      created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : undefined,
+      review_date: reviewDate,
+      review_frequency_months: Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : null,
+      created_by: req.user.id,
+    });
+    results.push({ row: rowNumber, status: 'pending', number, warning: warningMessage });
+  }
+
+  if (toInsert.length > 0) {
+    const { data: inserted, error: insertError } = await supabase
+      .from('documents')
+      .insert(toInsert)
+      .select('id, number, title');
+
+    if (insertError) {
+      return res.status(500).json({ error: 'Erreur lors de la création des documents.' });
+    }
+
+    const insertedByNumber = new Map(inserted.map((document) => [document.number, document]));
+    results.forEach((result) => {
+      if (result.status !== 'pending') return;
+      const created = insertedByNumber.get(result.number);
+      if (created) {
+        result.status = result.warning ? 'warning' : 'created';
+        result.message = result.warning || undefined;
+        result.document_id = created.id;
+        result.title = created.title;
+      } else {
+        result.status = 'error';
+        result.message = 'Erreur inconnue lors de la création.';
+      }
+      delete result.warning;
+    });
+  }
+
+  // document_audit_log.document_id est NOT NULL (voir schema.sql) : une entrée par document
+  // créé, pas une entrée globale sans document_id.
+  await Promise.all(
+    results
+      .filter((result) => result.document_id)
+      .map((result) =>
+        logAudit({
+          tenantId: req.tenantId,
+          documentId: result.document_id,
+          userId: req.user.id,
+          action: 'created_via_import',
+          details: { file_name: req.file.originalname },
+        })
+      )
+  );
+
+  res.status(201).json({
+    created_count: results.filter((r) => r.status === 'created' || r.status === 'warning').length,
+    error_count: results.filter((r) => r.status === 'error').length,
+    results,
+  });
 });
 
 export default router;

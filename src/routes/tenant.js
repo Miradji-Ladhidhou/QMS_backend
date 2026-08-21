@@ -32,7 +32,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone')
+    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
     .eq('id', req.tenantId)
     .single();
 
@@ -50,6 +50,10 @@ router.patch(
   [
     body('name').optional().trim().notEmpty().withMessage("Le nom de l'entreprise ne peut pas être vide."),
     body('timezone').optional().custom((value) => VALID_TIMEZONES.has(value)).withMessage('Fuseau horaire invalide.'),
+    body('document_review_frequency_months')
+      .optional({ nullable: true, values: 'falsy' })
+      .isInt({ min: 1 })
+      .withMessage('Fréquence de révision invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -60,6 +64,9 @@ router.patch(
     const update = {};
     if ('name' in req.body) update.name = req.body.name;
     if ('timezone' in req.body) update.timezone = req.body.timezone;
+    if ('document_review_frequency_months' in req.body) {
+      update.document_review_frequency_months = req.body.document_review_frequency_months || null;
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
@@ -69,7 +76,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone')
+      .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
       .single();
 
     if (error) {
@@ -100,7 +107,7 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
     .from('tenants')
     .update({ logo_url: logoPath })
     .eq('id', req.tenantId)
-    .select('id, name, slug, plan, logo_url, timezone')
+    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
     .single();
 
   if (error) {
