@@ -47,11 +47,18 @@ router.get('/callback', async (req, res) => {
     }
 
     // Récupère l'email du compte Google connecté (affiché côté Paramètres) via l'API userinfo,
-    // authentifiée avec le token qu'on vient d'obtenir.
-    const userInfoAuth = new google.auth.OAuth2();
-    userInfoAuth.setCredentials({ access_token: tokens.access_token });
-    const { data: userInfo } = await google.oauth2({ version: 'v2', auth: userInfoAuth }).userinfo.get();
-    const googleEmail = userInfo.email;
+    // authentifiée avec le token qu'on vient d'obtenir. Best-effort : purement informatif, donc
+    // un échec ici (scope insuffisant, API temporairement indisponible...) ne doit jamais faire
+    // échouer toute la connexion — juste afficher un email générique par défaut.
+    let googleEmail = 'Compte connecté';
+    try {
+      const userInfoAuth = new google.auth.OAuth2();
+      userInfoAuth.setCredentials({ access_token: tokens.access_token });
+      const { data: userInfo } = await google.oauth2({ version: 'v2', auth: userInfoAuth }).userinfo.get();
+      if (userInfo.email) googleEmail = userInfo.email;
+    } catch (userInfoErr) {
+      console.error("Échec de récupération de l'email du compte Google Drive connecté :", userInfoErr.message);
+    }
 
     const rootFolderId = await createRootFolder(tokens.access_token);
 

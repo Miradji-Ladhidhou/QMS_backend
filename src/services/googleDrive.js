@@ -8,7 +8,10 @@ import { encrypt, decrypt } from './encryption.js';
 // documenté dans Prompt 0. Distinct des scopes drive/gmail.send de l'intégration existante
 // (sauvegarde + envoi d'email), qui portent sur le compte Google de l'éditeur de l'app, pas
 // sur celui d'un tenant.
-const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+// userinfo.email : nécessaire pour afficher "connecté en tant que [email]" côté Paramètres —
+// sans ce scope, l'appel à l'API userinfo échoue (accès insuffisant) et faisait échouer tout
+// le callback (bug rencontré : "Impossible de finaliser la connexion à Google Drive").
+const SCOPES = ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/userinfo.email'];
 const ROOT_FOLDER_NAME = 'QMS SaaS';
 
 function getOAuth2Client() {
