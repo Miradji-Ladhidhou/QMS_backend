@@ -22,6 +22,9 @@ const upload = multer({
   },
 });
 const LOGO_BUCKET = 'tenant-logos';
+// Mêmes fuseaux IANA que le sélecteur frontend (Intl.supportedValuesOf) — validé ici aussi
+// pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
+const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
 
 router.use(requireAuth);
 
@@ -29,7 +32,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url')
+    .select('id, name, slug, plan, logo_url, timezone')
     .eq('id', req.tenantId)
     .single();
 
@@ -40,22 +43,33 @@ router.get('/', async (req, res) => {
   res.json(data);
 });
 
-// PATCH /api/tenant — met à jour le nom de l'entreprise (admin uniquement)
+// PATCH /api/tenant — met à jour le nom et/ou le fuseau horaire de l'entreprise (admin uniquement)
 router.patch(
   '/',
   requireRole('admin'),
-  [body('name').trim().notEmpty().withMessage("Le nom de l'entreprise est requis.")],
+  [
+    body('name').optional().trim().notEmpty().withMessage("Le nom de l'entreprise ne peut pas être vide."),
+    body('timezone').optional().custom((value) => VALID_TIMEZONES.has(value)).withMessage('Fuseau horaire invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    const update = {};
+    if ('name' in req.body) update.name = req.body.name;
+    if ('timezone' in req.body) update.timezone = req.body.timezone;
+
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
     const { data, error } = await supabase
       .from('tenants')
-      .update({ name: req.body.name })
+      .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url')
+      .select('id, name, slug, plan, logo_url, timezone')
       .single();
 
     if (error) {
@@ -86,7 +100,7 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
     .from('tenants')
     .update({ logo_url: logoPath })
     .eq('id', req.tenantId)
-    .select('id, name, slug, plan, logo_url')
+    .select('id, name, slug, plan, logo_url, timezone')
     .single();
 
   if (error) {

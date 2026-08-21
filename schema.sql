@@ -31,6 +31,10 @@ create table tenants (
   slug          text not null unique,
   plan          text not null default 'free' check (plan in ('free', 'starter', 'pro', 'enterprise')),
   logo_url      text,
+  -- Fuseau IANA (ex. 'Europe/Paris', 'Indian/Reunion') utilisé pour l'affichage date/heure
+  -- dans le menu et, à terme, tout formatage de date sensible au fuseau. UTC par défaut :
+  -- neutre, ne présuppose rien de la localisation réelle du tenant.
+  timezone      text not null default 'UTC',
   -- Géré depuis l'espace super admin (voir routes/superAdmin.js) : un tenant suspendu ne
   -- peut plus être utilisé (requireAuth le bloque), sans supprimer aucune de ses données.
   is_suspended  boolean not null default false,
