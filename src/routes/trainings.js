@@ -6,6 +6,7 @@ import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
 import { buildAttendanceSheetPdf } from '../services/attendanceSheetPdf.js';
 import { buildTrainingCertificatePdf } from '../services/trainingCertificatePdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -66,7 +67,7 @@ router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('trainings')
     .select(
-      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name))'
+      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted)'
     )
     .eq('tenant_id', req.tenantId)
     .order('title', { ascending: true });
@@ -75,7 +76,14 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les formations.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  // Catégorie restreinte (voir Paramètres > Catégories modules) — opt-in, ne change rien tant
+  // qu'aucune catégorie formation n'est marquée restreinte.
+  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(viewable);
 });
 
 // GET /api/trainings/matrix — vue croisée personnel x formations (comptes ET salariés sans
@@ -240,6 +248,7 @@ router.post(
     body('instructor').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -247,7 +256,16 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { title, type, frequency_months: frequencyMonths, location, instructor, duration, description } = req.body;
+    const {
+      title,
+      type,
+      frequency_months: frequencyMonths,
+      location,
+      instructor,
+      duration,
+      description,
+      category_id: categoryId,
+    } = req.body;
 
     const { data, error } = await supabase
       .from('trainings')
@@ -260,6 +278,7 @@ router.post(
         instructor: instructor || null,
         duration: duration || null,
         description: description || null,
+        category_id: categoryId || null,
       })
       .select()
       .single();
@@ -285,6 +304,7 @@ router.patch(
     body('instructor').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -293,7 +313,7 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration', 'description']) {
+    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration', 'description', 'category_id']) {
       if (field in req.body) {
         update[field] = req.body[field] || null;
       }

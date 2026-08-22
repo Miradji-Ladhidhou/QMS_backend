@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -13,22 +14,21 @@ const COMPLAINT_STATUSES = ['received', 'investigating', 'resolved', 'closed'];
 router.use(requireAuth);
 
 const COMPLAINT_SELECT =
-  '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
+  '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
 
 // GET /api/complaints — même scope que CAPA (capas.js) : un member ne voit que les
-// réclamations qui lui sont assignées, admin/manager voient tout le tenant.
+// réclamations qui lui sont assignées, admin/manager voient tout le tenant — plus une
+// éventuelle catégorie restreinte (voir Paramètres > Catégories modules), qui s'applique
+// aussi au manager désormais.
 router.get('/', async (req, res) => {
   let query = supabase.from('complaints').select(COMPLAINT_SELECT).eq('tenant_id', req.tenantId).order('received_date', { ascending: false });
 
+  const sharedIds =
+    req.userRole === 'admin'
+      ? new Set()
+      : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'complaint', userId: req.user.id, userRole: req.userRole });
+
   if (req.userRole === 'member') {
-    // Un partage (voir record_shares/recordSharing.js, bouton "Partager") donne accès à une
-    // réclamation précise en plus de celles déjà assignées — jamais une restriction.
-    const sharedIds = await getSharedResourceIds({
-      tenantId: req.tenantId,
-      resourceType: 'complaint',
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
     query =
       sharedIds.size > 0
         ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
@@ -43,7 +43,14 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les réclamations.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  const categoryViewableIds = new Set(
+    (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
+  );
+  res.json(data.filter((complaint) => sharedIds.has(complaint.id) || categoryViewableIds.has(complaint.id)));
 });
 
 // GET /api/complaints/:id
@@ -59,7 +66,7 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Réclamation introuvable.' });
   }
 
-  if (req.userRole === 'member' && data.assigned_to !== req.user.id) {
+  if (req.userRole !== 'admin') {
     const shared = await isSharedWithUser({
       tenantId: req.tenantId,
       resourceType: 'complaint',
@@ -68,7 +75,19 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      return res.status(404).json({ error: 'Réclamation introuvable.' });
+      if (req.userRole === 'member' && data.assigned_to !== req.user.id) {
+        return res.status(404).json({ error: 'Réclamation introuvable.' });
+      }
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: data.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Réclamation introuvable.' });
+      }
     }
   }
 
@@ -90,6 +109,7 @@ router.post(
     body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -107,6 +127,7 @@ router.post(
       severity,
       service_id: serviceId,
       assigned_to: assignedTo,
+      category_id: categoryId,
     } = req.body;
 
     const finalAssignedTo = req.userRole === 'member' ? req.user.id : assignedTo || null;
@@ -124,6 +145,7 @@ router.post(
         severity: severity || undefined,
         service_id: serviceId || null,
         assigned_to: finalAssignedTo,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select(COMPLAINT_SELECT)
@@ -157,6 +179,7 @@ router.patch(
     body('resolution').optional({ values: 'falsy' }).trim(),
     body('resolution_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de résolution invalide.'),
     body('customer_satisfied').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -179,6 +202,7 @@ router.patch(
       'root_cause',
       'resolution',
       'resolution_date',
+      'category_id',
     ]) {
       if (field in req.body) update[field] = req.body[field] || null;
     }

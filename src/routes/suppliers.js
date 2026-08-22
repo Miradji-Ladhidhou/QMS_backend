@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -12,10 +13,12 @@ const EVALUATION_DECISIONS = ['maintained', 'under_watch', 'to_replace'];
 
 router.use(requireAuth);
 
-const SUPPLIER_SELECT = '*, service:services(id, name)';
+const SUPPLIER_SELECT = '*, service:services(id, name), category:categories(id, name, color, is_restricted)';
 
-// GET /api/suppliers — liste tenant-wide, tous les rôles (transparence, comme audits/risks :
-// un fournisseur n'est "possédé" par personne en particulier).
+// GET /api/suppliers — liste tenant-wide par défaut (transparence, comme audits/risks : un
+// fournisseur n'est "possédé" par personne en particulier), sauf catégorie restreinte
+// explicitement créée par l'admin (voir Paramètres > Catégories modules) — opt-in, ne change
+// rien tant qu'aucune catégorie fournisseur n'est marquée restreinte.
 router.get('/', async (req, res) => {
   let query = supabase.from('suppliers').select(SUPPLIER_SELECT).eq('tenant_id', req.tenantId).order('name', { ascending: true });
 
@@ -27,7 +30,12 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les fournisseurs.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(viewable);
 });
 
 // GET /api/suppliers/:id — détail avec l'historique de ses évaluations, CAPA liée résolue.
@@ -41,6 +49,19 @@ router.get('/:id', async (req, res) => {
 
   if (error || !supplier) {
     return res.status(404).json({ error: 'Fournisseur introuvable.' });
+  }
+
+  if (req.userRole !== 'admin') {
+    const categoryAllowed = await hasGenericCategoryPermission({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      categoryId: supplier.category_id,
+      permission: 'view',
+    });
+    if (!categoryAllowed) {
+      return res.status(404).json({ error: 'Fournisseur introuvable.' });
+    }
   }
 
   const { data: evaluations, error: evaluationsError } = await supabase
@@ -73,6 +94,7 @@ router.post(
     body('criticality').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Criticité invalide.'),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('next_evaluation_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de revue invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -89,6 +111,7 @@ router.post(
       criticality,
       service_id: serviceId,
       next_evaluation_date: nextEvaluationDate,
+      category_id: categoryId,
     } = req.body;
 
     const { data, error } = await supabase
@@ -103,6 +126,7 @@ router.post(
         criticality: criticality || undefined,
         service_id: serviceId || null,
         next_evaluation_date: nextEvaluationDate || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select(SUPPLIER_SELECT)
@@ -130,6 +154,7 @@ router.patch(
     body('status').optional().isIn(SUPPLIER_STATUSES).withMessage('Statut invalide.'),
     body('service_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('next_evaluation_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de revue invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -142,6 +167,7 @@ router.patch(
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });

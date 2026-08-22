@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQmsSnapshot } from '../services/qmsSnapshot.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -29,7 +30,7 @@ const REVIEW_TEXT_FIELDS = [
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('management_reviews')
-    .select('id, title, review_date, status, created_at')
+    .select('id, title, review_date, status, created_at, category_id, category:categories(id, name, color, is_restricted)')
     .eq('tenant_id', req.tenantId)
     .order('review_date', { ascending: false });
 
@@ -37,20 +38,40 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les revues de direction.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  // Catégorie restreinte (voir Paramètres > Catégories modules) — opt-in, ne change rien tant
+  // qu'aucune catégorie revue n'est marquée restreinte.
+  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(viewable);
 });
 
 // GET /api/management-reviews/:id — détail avec ses actions, CAPA liée résolue pour chacune.
 router.get('/:id', async (req, res) => {
   const { data: review, error } = await supabase
     .from('management_reviews')
-    .select('*')
+    .select('*, category:categories(id, name, color, is_restricted)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
 
   if (error || !review) {
     return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  }
+
+  if (req.userRole !== 'admin') {
+    const categoryAllowed = await hasGenericCategoryPermission({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      categoryId: review.category_id,
+      permission: 'view',
+    });
+    if (!categoryAllowed) {
+      return res.status(404).json({ error: 'Revue de direction introuvable.' });
+    }
   }
 
   const { data: actions, error: actionsError } = await supabase
@@ -76,6 +97,7 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('review_date').isISO8601().withMessage('Date de revue invalide.'),
     body('participants').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -90,6 +112,7 @@ router.post(
         title: req.body.title,
         review_date: req.body.review_date,
         participants: req.body.participants || null,
+        category_id: req.body.category_id || null,
         created_by: req.user.id,
       })
       .select('*')
@@ -115,6 +138,7 @@ router.patch(
     body('review_date').optional().isISO8601().withMessage('Date de revue invalide.'),
     body('status').optional().isIn(REVIEW_STATUSES).withMessage('Statut invalide.'),
     ...REVIEW_TEXT_FIELDS.filter((f) => f !== 'title').map((field) => body(field).optional({ values: 'falsy' }).trim()),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -138,6 +162,7 @@ router.patch(
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('status' in req.body) update.status = req.body.status;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
     if (update.status === 'completed' && !existing.snapshot) {
       update.snapshot = await buildQmsSnapshot(req.tenantId);

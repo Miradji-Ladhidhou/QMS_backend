@@ -30,6 +30,15 @@ async function createCapa(token, extra = {}) {
   return res.body;
 }
 
+async function createComplaint(token, extra = {}) {
+  const res = await request(app)
+    .post('/api/complaints')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ customer_name: 'Client Test', received_date: '2026-01-15', description: 'Réclamation de test', ...extra });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
 describe('Catégories génériques (CAPA)', () => {
   it('un manager voit tout par défaut, puis se fait bloquer par une catégorie restreinte, puis autorisé une fois la permission accordée', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
@@ -131,6 +140,127 @@ describe('Catégories génériques (CAPA)', () => {
 
     const excluded = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${manager.token}`);
     expect(excluded.status).toBe(404);
+  });
+
+  it('même comportement sur les réclamations : catégorie restreinte bloque un manager sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'complaint', name: 'RH confidentiel', isRestricted: true });
+    const complaint = await createComplaint(tenant.admin.token, { category_id: category.id });
+
+    const before = await request(app).get(`/api/complaints/${complaint.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/complaints/${complaint.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+
+    const list = await request(app).get('/api/complaints').set('Authorization', `Bearer ${manager.token}`);
+    expect(list.body.map((c) => c.id)).toContain(complaint.id);
+  });
+
+  it('même comportement sur QQOQCCP : catégorie restreinte bloque un manager sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'qqoqccp', name: 'Confidentiel', isRestricted: true });
+    const analysisRes = await request(app)
+      .post('/api/qqoqccp')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Analyse test', category_id: category.id });
+    expect(analysisRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/qqoqccp/${analysisRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/qqoqccp/${analysisRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+  });
+
+  it('même comportement sur les fournisseurs (aucune restriction avant, opt-in par catégorie)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'supplier', name: 'Stratégique', isRestricted: true });
+    const supplierRes = await request(app)
+      .post('/api/suppliers')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Fournisseur test', category_id: category.id });
+    expect(supplierRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/suppliers/${supplierRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+    const beforeList = await request(app).get('/api/suppliers').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((s) => s.id)).not.toContain(supplierRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/suppliers/${supplierRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+  });
+
+  it('même comportement sur les formations', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'training', name: 'Habilitation confidentielle', isRestricted: true });
+    const trainingRes = await request(app)
+      .post('/api/trainings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Formation test', category_id: category.id });
+    expect(trainingRes.status).toBe(201);
+
+    const beforeList = await request(app).get('/api/trainings').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((t) => t.id)).not.toContain(trainingRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/trainings').set('Authorization', `Bearer ${manager.token}`);
+    expect(afterList.body.map((t) => t.id)).toContain(trainingRes.body.id);
+  });
+
+  it('même comportement sur les revues de direction', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'management_review', name: 'Comité restreint', isRestricted: true });
+    const reviewRes = await request(app)
+      .post('/api/management-reviews')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Revue test', review_date: '2026-02-01', category_id: category.id });
+    expect(reviewRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/management-reviews/${reviewRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/management-reviews/${reviewRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
   });
 
   it('GET /api/module-categories filtre par resource_type et rejette un type inconnu', async () => {

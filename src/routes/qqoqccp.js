@@ -7,11 +7,12 @@ import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
 const QQOQCCP_FIELDS = ['qui', 'quoi', 'ou_', 'quand_', 'comment_', 'combien', 'pourquoi'];
-const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS];
+const PATCHABLE_FIELDS = ['title', ...QQOQCCP_FIELDS, 'category_id'];
 // Mêmes valeurs que capas.js (CAPA_LEVELS) — dupliquées ici plutôt qu'importées : le prompt
 // scope les changements à ce fichier, et cette route ne doit pas modifier capas.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
@@ -26,17 +27,16 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   let query = supabase
     .from('qqoqccp_analyses')
-    .select('id, title, status, created_at')
+    .select('id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted)')
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
+  const sharedIds =
+    req.userRole === 'admin'
+      ? new Set()
+      : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'qqoqccp', userId: req.user.id, userRole: req.userRole });
+
   if (req.userRole === 'member') {
-    const sharedIds = await getSharedResourceIds({
-      tenantId: req.tenantId,
-      resourceType: 'qqoqccp',
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
     query =
       sharedIds.size > 0
         ? query.or(`created_by.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
@@ -48,7 +48,14 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les analyses QQOQCCP.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  const categoryViewableIds = new Set(
+    (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((a) => a.id)
+  );
+  res.json(data.filter((analysis) => sharedIds.has(analysis.id) || categoryViewableIds.has(analysis.id)));
 });
 
 // GET /api/qqoqccp/:id — détail complet
@@ -59,7 +66,9 @@ router.get('/:id', async (req, res) => {
     // qqoqccp_analysis_id, voir B1) : sans préciser laquelle suivre, PostgREST refuse
     // l'embed (ambigu). many-to-one via linked_capa_id = "LA capa que cette analyse
     // référence", un objet singulier — c'est le sens de "navigation inverse" recherché ici.
-    .select('*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status)')
+    .select(
+      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)'
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -68,7 +77,7 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
   }
 
-  if (req.userRole === 'member' && data.created_by !== req.user.id) {
+  if (req.userRole !== 'admin') {
     const shared = await isSharedWithUser({
       tenantId: req.tenantId,
       resourceType: 'qqoqccp',
@@ -77,7 +86,19 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      if (req.userRole === 'member' && data.created_by !== req.user.id) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: data.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
     }
   }
 
@@ -99,7 +120,7 @@ router.get('/:id/pdf', async (req, res) => {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
   }
 
-  if (req.userRole === 'member' && analysis.created_by !== req.user.id) {
+  if (req.userRole !== 'admin') {
     const shared = await isSharedWithUser({
       tenantId: req.tenantId,
       resourceType: 'qqoqccp',
@@ -108,7 +129,19 @@ router.get('/:id/pdf', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      if (req.userRole === 'member' && analysis.created_by !== req.user.id) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: analysis.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
     }
   }
 
@@ -130,6 +163,7 @@ const CREATE_VALIDATORS = [
   body('comment_').optional({ values: 'falsy' }).trim(),
   body('combien').optional({ values: 'falsy' }).trim(),
   body('pourquoi').optional({ values: 'falsy' }).trim(),
+  body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
 ];
 
 // Logique d'insertion partagée par POST / (création classique) et POST /quick-start (alias
@@ -141,7 +175,7 @@ async function createAnalysis(req, res) {
     return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
   }
 
-  const { title, qui, quoi, ou_: ou, quand_: quand, comment_: comment, combien, pourquoi } = req.body;
+  const { title, qui, quoi, ou_: ou, quand_: quand, comment_: comment, combien, pourquoi, category_id: categoryId } = req.body;
 
   const { data, error } = await supabase
     .from('qqoqccp_analyses')
@@ -155,6 +189,7 @@ async function createAnalysis(req, res) {
       comment_: comment || null,
       combien: combien || null,
       pourquoi: pourquoi || null,
+      category_id: categoryId || null,
       created_by: req.user.id,
     })
     .select()
@@ -190,6 +225,7 @@ router.patch(
     body('comment_').optional({ values: 'falsy' }).trim(),
     body('combien').optional({ values: 'falsy' }).trim(),
     body('pourquoi').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
