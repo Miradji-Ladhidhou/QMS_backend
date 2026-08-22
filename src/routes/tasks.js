@@ -34,7 +34,11 @@ router.get('/', async (req, res) => {
   }
 
   const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
-  res.json(visible);
+  // is_private_to_me : le formulaire d'édition (Planning.jsx, TaskFormModal) prend sa tâche
+  // directement dans cette liste, jamais un second appel — calculé ici pour la même raison
+  // que can_edit sur les documents (éviter au frontend de comparer lui-même owner_user_id à
+  // l'utilisateur courant, chargé séparément et pas forcément déjà disponible).
+  res.json(visible.map((task) => ({ ...task, is_private_to_me: task.category?.owner_user_id === req.user.id })));
 });
 
 // POST /api/tasks — création (tous les rôles)

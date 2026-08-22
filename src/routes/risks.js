@@ -56,7 +56,7 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Risque introuvable.' });
   }
 
-  res.json(data);
+  res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
 // POST /api/risks — admin/manager uniquement : l'identification structurée d'un risque est

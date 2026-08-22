@@ -77,7 +77,7 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les constats de cet audit.' });
   }
 
-  res.json({ ...audit, findings });
+  res.json({ ...audit, findings, is_private_to_me: audit.category?.owner_user_id === req.user.id });
 });
 
 const AUDIT_VALIDATORS = [

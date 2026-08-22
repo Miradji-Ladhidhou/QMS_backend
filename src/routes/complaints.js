@@ -86,7 +86,7 @@ router.get('/:id', async (req, res) => {
     }
   }
 
-  res.json(data);
+  res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
 // POST /api/complaints — tous les rôles (comme CAPA : n'importe qui peut enregistrer une

@@ -50,7 +50,10 @@ router.get('/', async (req, res) => {
   }
 
   const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
-  res.json(visible);
+  // is_private_to_me : la carte KPI n'a que cette liste pour ouvrir sa modale d'édition (voir
+  // Kpis.jsx, onEdit={setFormModal}), jamais un second appel GET /:id — calculé ici pour la
+  // même raison que sur GET /:id juste en dessous.
+  res.json(visible.map((kpi) => ({ ...kpi, is_private_to_me: kpi.category?.owner_user_id === req.user.id })));
 });
 
 // GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
@@ -220,7 +223,7 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'KPI introuvable.' });
   }
 
-  res.json(data);
+  res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
 // PATCH /api/kpis/:id — met à jour un ou plusieurs champs (ex: sens de l'objectif)

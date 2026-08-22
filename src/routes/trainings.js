@@ -76,14 +76,20 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les formations.' });
   }
 
+  // is_private_to_me : le formulaire d'édition (EditTrainingModal, Trainings.jsx) prend sa
+  // formation directement dans cette liste, jamais un second appel — calculé ici pour la même
+  // raison que can_edit sur les documents.
+  const withPrivacy = (items) =>
+    items.map((training) => ({ ...training, is_private_to_me: training.category?.owner_user_id === req.user.id }));
+
   if (req.userRole === 'admin') {
-    return res.json(data);
+    return res.json(withPrivacy(data));
   }
 
   // Catégorie restreinte (voir Paramètres > Catégories modules) — opt-in, ne change rien tant
   // qu'aucune catégorie formation n'est marquée restreinte.
   const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
-  res.json(viewable);
+  res.json(withPrivacy(viewable));
 });
 
 // GET /api/trainings/matrix — vue croisée personnel x formations (comptes ET salariés sans

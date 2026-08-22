@@ -85,7 +85,7 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les actions de cette revue.' });
   }
 
-  res.json({ ...review, actions });
+  res.json({ ...review, actions, is_private_to_me: review.category?.owner_user_id === req.user.id });
 });
 
 // POST /api/management-reviews — admin/manager uniquement, comme pour les audits : une revue

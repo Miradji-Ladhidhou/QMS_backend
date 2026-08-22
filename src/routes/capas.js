@@ -198,7 +198,11 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les commentaires.' });
   }
 
-  res.json({ ...capa, comments });
+  // is_private_to_me : évite au frontend de comparer capa.category.owner_user_id à
+  // l'utilisateur courant lui-même (source d'un vrai bug de course, currentUser et cette
+  // requête chargeant en parallèle et pas forcément dans le même ordre) — voir
+  // hasGenericCategoryPermission pour le même raisonnement côté can_edit sur les documents.
+  res.json({ ...capa, comments, is_private_to_me: capa.category?.owner_user_id === req.user.id });
 });
 
 // POST /api/capas — création, numérotation automatique CAPA-{année}-{seq}

@@ -77,7 +77,7 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les évaluations de ce fournisseur.' });
   }
 
-  res.json({ ...supplier, evaluations });
+  res.json({ ...supplier, evaluations, is_private_to_me: supplier.category?.owner_user_id === req.user.id });
 });
 
 // POST /api/suppliers — admin/manager uniquement : la gestion du référentiel fournisseurs est
