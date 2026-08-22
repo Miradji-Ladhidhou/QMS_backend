@@ -77,7 +77,17 @@ router.get('/', async (req, res) => {
     return res.status(404).json({ error: 'Entreprise introuvable.' });
   }
 
-  res.json(data);
+  // storage_provider exposé à TOUS les rôles ici (contrairement à GET /api/drive/status,
+  // réservé admin, qui donne en plus l'email du compte connecté et l'état de santé) : savoir
+  // que "les documents sont stockés sur Google Drive" n'est pas sensible en soi, et sert
+  // uniquement à afficher un texte informatif sur la page Documents pour les non-admins.
+  const { data: storageSettings } = await supabase
+    .from('tenant_storage_settings')
+    .select('storage_provider')
+    .eq('tenant_id', req.tenantId)
+    .maybeSingle();
+
+  res.json({ ...data, storage_provider: storageSettings?.storage_provider || 'supabase' });
 });
 
 // PATCH /api/tenant — met à jour le nom et/ou le fuseau horaire de l'entreprise (admin uniquement)
