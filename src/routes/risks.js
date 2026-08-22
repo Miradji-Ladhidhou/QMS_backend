@@ -123,6 +123,37 @@ router.post(
   }
 );
 
+// PATCH /api/risks/bulk-category — déplace plusieurs risques d'un coup vers une catégorie.
+// Placée avant PATCH /:id pour ne pas être capturée comme un id.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins un risque.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('risks')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
 // PATCH /api/risks/:id — admin/manager uniquement. risk_score/residual_score ne sont jamais
 // acceptés en entrée : ce sont des generated columns (voir schema.sql), Postgres les calcule
 // lui-même à partir de likelihood/impact et residual_likelihood/residual_impact.

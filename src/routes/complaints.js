@@ -154,6 +154,37 @@ router.post(
   }
 );
 
+// PATCH /api/complaints/bulk-category — déplace plusieurs réclamations d'un coup vers une
+// catégorie. Placée avant PATCH /:id pour ne pas être capturée comme un id.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une réclamation.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('complaints')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
 // PATCH /api/complaints/:id — réservé à admin/manager, même règle que CAPA : un member peut
 // enregistrer une réclamation mais ne peut plus la faire évoluer une fois créée.
 router.patch(

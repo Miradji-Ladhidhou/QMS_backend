@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -93,6 +93,39 @@ router.post(
     }
 
     res.status(201).json(data);
+  }
+);
+
+// PATCH /api/tasks/bulk-category — déplace plusieurs tâches d'un coup vers une catégorie.
+// Placée avant PATCH /:id pour ne pas être capturée comme un id. Réservé admin/manager
+// (contrairement au PATCH individuel ci-dessous, ouvert au créateur/assigné) : un déplacement
+// en masse touche potentiellement des tâches d'autres personnes.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une tâche.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
   }
 );
 

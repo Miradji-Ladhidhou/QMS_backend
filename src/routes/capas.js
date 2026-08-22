@@ -284,6 +284,39 @@ router.post(
   }
 );
 
+// PATCH /api/capas/bulk-category — déplace plusieurs CAPA d'un coup vers une catégorie (ou
+// vers aucune, category_id absent/vide). Placée avant PATCH /:id : sinon "bulk-category" serait
+// capturé comme un id, même raison que priority-delays/report ailleurs dans ce fichier.
+// Réservé admin/manager, comme le reste des actions de gestion en masse de ce module.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une CAPA.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('capas')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
 // PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
 // assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
 // Réservé à admin/manager : un member peut ouvrir une CAPA mais ne peut plus la modifier une

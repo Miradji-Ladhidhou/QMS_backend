@@ -202,6 +202,39 @@ router.post('/', CREATE_VALIDATORS, createAnalysis);
 // déboucher sur une CAPA (voir qqoqccp_analyses.linked_capa_id / capas.qqoqccp_analysis_id).
 router.post('/quick-start', CREATE_VALIDATORS, createAnalysis);
 
+// PATCH /api/qqoqccp/bulk-category — déplace plusieurs analyses d'un coup vers une catégorie.
+// Placée avant PATCH /:id pour ne pas être capturée comme un id. Réservé admin/manager (contrai-
+// rement au PATCH individuel ci-dessous, ouvert au créateur pour son usage personnel) : un
+// déplacement en masse touche potentiellement des analyses d'autres personnes.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une analyse.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('qqoqccp_analyses')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
 // PATCH /api/qqoqccp/:id — met à jour le titre et/ou n'importe lequel des 7 champs. Un
 // member peut modifier SA PROPRE analyse tant qu'elle n'est pas encore validée (liée à une
 // CAPA) — le diagnostic guidé doit rester utilisable en autonomie (c'est ce PATCH qui porte

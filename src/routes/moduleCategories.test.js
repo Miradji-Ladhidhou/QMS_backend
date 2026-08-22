@@ -569,3 +569,96 @@ describe('Catégorie personnelle "Uniquement moi" (POST /api/module-categories/p
     expect(patch.body.category_id).toBeNull();
   });
 });
+
+describe('Déplacement en masse (PATCH /api/<module>/bulk-category)', () => {
+  it('déplace plusieurs CAPA vers une catégorie en un seul appel', async () => {
+    tenant = await createTenant();
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Lot A', isRestricted: true });
+    const capaA = await createCapa(tenant.admin.token);
+    const capaB = await createCapa(tenant.admin.token);
+    const capaC = await createCapa(tenant.admin.token);
+
+    const res = await request(app)
+      .patch('/api/capas/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [capaA.id, capaB.id], category_id: category.id });
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(2);
+
+    const detailA = await request(app).get(`/api/capas/${capaA.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detailA.body.category_id).toBe(category.id);
+    const detailC = await request(app).get(`/api/capas/${capaC.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detailC.body.category_id).toBeNull();
+  });
+
+  it('un member ne peut pas déplacer des CAPA en masse (réservé admin/manager)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const capa = await createCapa(tenant.admin.token);
+
+    const res = await request(app)
+      .patch('/api/capas/bulk-category')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [capa.id], category_id: null });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejette un déplacement en masse sans id sélectionné', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .patch('/api/capas/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [], category_id: null });
+    expect(res.status).toBe(400);
+  });
+
+  it("un id d'un autre tenant est silencieusement ignoré (jamais modifié malgré la requête)", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    let otherCapaId;
+    try {
+      const otherCapa = await createCapa(otherTenant.admin.token);
+      otherCapaId = otherCapa.id;
+
+      const res = await request(app)
+        .patch('/api/capas/bulk-category')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ ids: [otherCapaId], category_id: null });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toBe(0);
+
+      const stillThere = await request(app)
+        .get(`/api/capas/${otherCapaId}`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(stillThere.status).toBe(200);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it('même comportement sur les tâches : déplacement en masse réservé admin/manager', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const category = await createCategory(tenant.admin.token, { resourceType: 'task', name: 'Lot tâches', isRestricted: true });
+
+    const taskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche à déplacer', due_date: '2026-03-01' });
+    expect(taskRes.status).toBe(201);
+
+    const forbidden = await request(app)
+      .patch('/api/tasks/bulk-category')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [taskRes.body.id], category_id: category.id });
+    expect(forbidden.status).toBe(403);
+
+    const allowed = await request(app)
+      .patch('/api/tasks/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [taskRes.body.id], category_id: category.id });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.updated).toBe(1);
+  });
+});
