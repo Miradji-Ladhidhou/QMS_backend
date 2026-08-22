@@ -10,6 +10,7 @@ import helmet from 'helmet';
 import { authLimiter, apiLimiter } from './middleware/rateLimit.js';
 import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
+import sharesRoutes from './routes/shares.js';
 import categoriesRoutes from './routes/categories.js';
 import capasRoutes from './routes/capas.js';
 import qqoqccpRoutes from './routes/qqoqccp.js';
@@ -71,6 +72,7 @@ app.get('/health', (req, res) => {
 
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/documents', documentsRoutes);
+app.use('/api/shares', sharesRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/capas', capasRoutes);
 app.use('/api/qqoqccp', qqoqccpRoutes);

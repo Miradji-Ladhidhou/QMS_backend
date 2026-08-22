@@ -752,6 +752,26 @@ create table category_permissions (
   unique (category_id, subject_type, subject_id)
 );
 
+-- Partage d'UN élément précis (un document, une CAPA...) avec un rôle ou une personne qui n'y
+-- aurait normalement pas accès — générique et réutilisable entre modules plutôt qu'une table
+-- par module, voir services/recordSharing.js. C'est un octroi d'accès EN PLUS des règles
+-- normales du module (jamais une restriction) : pour les documents, s'ajoute à
+-- category_permissions plutôt que de le remplacer (utile pour partager UN document précis
+-- sans ouvrir toute sa catégorie restreinte) ; pour les CAPA, donne l'accès à un membre qui
+-- n'est pas l'assigné. subject_id porte soit un nom de rôle ('manager'/'member', jamais
+-- 'admin' — un admin voit déjà tout), soit un uuid d'utilisateur en texte selon subject_type.
+create table record_shares (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  resource_type  text not null check (resource_type in ('document', 'capa')),
+  resource_id    uuid not null,
+  subject_type   text not null check (subject_type in ('role', 'user')),
+  subject_id     text not null,
+  created_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  unique (tenant_id, resource_type, resource_id, subject_type, subject_id)
+);
+
 -- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
 -- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).
 -- L'assigné est optionnel, et au plus l'un des deux (compte OU personnel sans compte),
@@ -1261,6 +1281,7 @@ alter table groups enable row level security;
 alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
+alter table record_shares enable row level security;
 alter table tenant_menu_settings enable row level security;
 alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
@@ -1478,6 +1499,11 @@ create policy super_admin_audit_log_select on super_admin_audit_log
 create policy super_admin_audit_log_insert on super_admin_audit_log
   for insert
   with check (auth_is_super_admin());
+
+create policy record_shares_isolation on record_shares
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
 
 create policy tenant_menu_settings_isolation on tenant_menu_settings
   for all

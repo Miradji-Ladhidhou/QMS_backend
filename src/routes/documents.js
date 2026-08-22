@@ -343,6 +343,7 @@ router.get('/', async (req, res) => {
   }
 
   const viewable = await filterViewableDocuments({
+    tenantId: req.tenantId,
     userId: req.user.id,
     userRole: req.userRole,
     documents: data,

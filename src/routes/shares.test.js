@@ -1,0 +1,164 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import request from 'supertest';
+import app from '../app.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
+
+let tenant;
+
+afterEach(async () => {
+  if (tenant) {
+    await tenant.cleanup();
+    tenant = undefined;
+  }
+});
+
+async function createCapa(token, title = 'CAPA de test') {
+  const res = await request(app).post('/api/capas').set('Authorization', `Bearer ${token}`).send({ title });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
+describe('Partage d’un élément précis (record_shares)', () => {
+  it("un membre ne voit une CAPA non assignée qu'après un partage direct avec lui", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+    const capa = await createCapa(tenant.admin.token);
+
+    const beforeList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
+    expect(beforeList.body.map((c) => c.id)).not.toContain(capa.id);
+
+    const beforeDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${memberA.token}`);
+    expect(beforeDetail.status).toBe(404);
+
+    const shareRes = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'user', subject_id: memberA.id });
+    expect(shareRes.status).toBe(201);
+
+    const afterList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
+    expect(afterList.body.map((c) => c.id)).toContain(capa.id);
+
+    const afterDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${memberA.token}`);
+    expect(afterDetail.status).toBe(200);
+
+    // memberB n'a jamais été partagé — ne doit jamais voir cette CAPA.
+    const otherList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberB.token}`);
+    expect(otherList.body.map((c) => c.id)).not.toContain(capa.id);
+    const otherDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${memberB.token}`);
+    expect(otherDetail.status).toBe(404);
+  });
+
+  it("un partage par rôle 'member' donne accès à TOUS les membres", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+    const capa = await createCapa(tenant.admin.token);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'role', subject_id: 'member' })
+      .expect(201);
+
+    const listA = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
+    const listB = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberB.token}`);
+    expect(listA.body.map((c) => c.id)).toContain(capa.id);
+    expect(listB.body.map((c) => c.id)).toContain(capa.id);
+  });
+
+  it('retirer un partage retire à nouveau l’accès', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const capa = await createCapa(tenant.admin.token);
+
+    const shareRes = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'user', subject_id: member.id });
+
+    const midDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(midDetail.status).toBe(200);
+
+    const deleteRes = await request(app)
+      .delete(`/api/shares/${shareRes.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(deleteRes.status).toBe(204);
+
+    const afterDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(afterDetail.status).toBe(404);
+  });
+
+  it('un membre ne peut pas créer ou lister de partages (réservé admin/manager)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const capa = await createCapa(tenant.admin.token);
+
+    const createRes = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'user', subject_id: member.id });
+    expect(createRes.status).toBe(403);
+
+    const listRes = await request(app)
+      .get(`/api/shares?resource_type=capa&resource_id=${capa.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(listRes.status).toBe(403);
+  });
+
+  it('rejette un partage vers le rôle admin, un rôle inconnu, ou un élément inexistant', async () => {
+    tenant = await createTenant();
+    const capa = await createCapa(tenant.admin.token);
+
+    const adminRole = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'role', subject_id: 'admin' });
+    expect(adminRole.status).toBe(400);
+
+    const unknownRole = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: capa.id, subject_type: 'role', subject_id: 'ghost' });
+    expect(unknownRole.status).toBe(400);
+
+    const missingResource = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'capa', resource_id: '00000000-0000-0000-0000-000000000000', subject_type: 'role', subject_id: 'member' });
+    expect(missingResource.status).toBe(404);
+  });
+
+  it('un document d’une catégorie restreinte devient visible pour un membre partagé directement', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Confidentiel', is_restricted: true })
+      .select()
+      .single();
+
+    const docRes = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-SHARE-001')
+      .field('title', 'Document restreint')
+      .field('category_id', category.id);
+    expect(docRes.status).toBe(201);
+
+    const beforeRes = await request(app).get(`/api/documents/${docRes.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(beforeRes.status).toBe(404);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'document', resource_id: docRes.body.id, subject_type: 'user', subject_id: member.id })
+      .expect(201);
+
+    const afterRes = await request(app).get(`/api/documents/${docRes.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(afterRes.status).toBe(200);
+
+    const listRes = await request(app).get('/api/documents').set('Authorization', `Bearer ${member.token}`);
+    expect(listRes.body.map((d) => d.id)).toContain(docRes.body.id);
+  });
+});

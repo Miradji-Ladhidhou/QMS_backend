@@ -31,6 +31,7 @@ function mockSupabaseQueues(queues) {
       select: () => chain,
       eq: () => chain,
       in: () => chain,
+      or: () => chain,
       single: () => Promise.resolve(resolve()),
       then: (onFulfilled, onRejected) => Promise.resolve(resolve()).then(onFulfilled, onRejected),
     };
@@ -200,6 +201,7 @@ describe('filterViewableDocuments', () => {
 
   it('exclut un document d’une catégorie restreinte sans permission accordée', async () => {
     mockSupabaseQueues({
+      record_shares: [{ data: [], error: null }],
       category_permissions: [{ data: [], error: null }],
       group_members: [{ data: [], error: null }],
     });
@@ -209,13 +211,14 @@ describe('filterViewableDocuments', () => {
       { id: 'd2', category_id: 'open', category: { is_restricted: false } },
     ];
 
-    const result = await filterViewableDocuments({ userId: 'u1', userRole: 'employee', documents });
+    const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
 
     expect(result.map((d) => d.id)).toEqual(['d2']);
   });
 
   it('inclut un document d’une catégorie restreinte avec permission directe can_view', async () => {
     mockSupabaseQueues({
+      record_shares: [{ data: [], error: null }],
       category_permissions: [
         { data: [{ category_id: 'restricted', subject_type: 'user', subject_id: 'u1', can_view: true }], error: null },
       ],
@@ -224,13 +227,14 @@ describe('filterViewableDocuments', () => {
 
     const documents = [{ id: 'd1', category_id: 'restricted', category: { is_restricted: true } }];
 
-    const result = await filterViewableDocuments({ userId: 'u1', userRole: 'employee', documents });
+    const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
 
     expect(result.map((d) => d.id)).toEqual(['d1']);
   });
 
   it('inclut un document d’une catégorie restreinte via permission de groupe can_view', async () => {
     mockSupabaseQueues({
+      record_shares: [{ data: [], error: null }],
       category_permissions: [
         { data: [{ category_id: 'restricted', subject_type: 'group', subject_id: 'g1', can_view: true }], error: null },
       ],
@@ -239,7 +243,24 @@ describe('filterViewableDocuments', () => {
 
     const documents = [{ id: 'd1', category_id: 'restricted', category: { is_restricted: true } }];
 
-    const result = await filterViewableDocuments({ userId: 'u1', userRole: 'employee', documents });
+    const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
+
+    expect(result.map((d) => d.id)).toEqual(['d1']);
+  });
+
+  it('inclut un document partagé directement, même sans permission de catégorie', async () => {
+    mockSupabaseQueues({
+      record_shares: [{ data: [{ resource_id: 'd1', subject_type: 'user', subject_id: 'u1' }], error: null }],
+      category_permissions: [{ data: [], error: null }],
+      group_members: [{ data: [], error: null }],
+    });
+
+    const documents = [
+      { id: 'd1', category_id: 'restricted', category: { is_restricted: true } },
+      { id: 'd2', category_id: 'restricted', category: { is_restricted: true } },
+    ];
+
+    const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
 
     expect(result.map((d) => d.id)).toEqual(['d1']);
   });

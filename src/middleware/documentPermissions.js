@@ -1,4 +1,5 @@
 import { supabase } from '../services/supabase.js';
+import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 
 // Un admin du tenant garde toujours accès à tout, quelle que soit la
 // restriction de catégorie — bypass documenté explicitement, comme demandé.
@@ -15,8 +16,18 @@ export async function getUserGroupIds(userId) {
 // rien à restreindre. Catégorie non restreinte => toujours autorisé (comportement actuel
 // inchangé). Sinon, il faut une entrée dans category_permissions avec le bon flag à true,
 // directement (subject_type='user') ou via l'appartenance à un groupe autorisé.
-export async function hasCategoryPermission({ tenantId, userId, userRole, categoryId, permission }) {
+export async function hasCategoryPermission({ tenantId, userId, userRole, categoryId, permission, documentId }) {
   if (ADMIN_ROLES.includes(userRole)) return true;
+
+  // Partage d'UN document précis (voir record_shares/recordSharing.js, Paramètres > Partage
+  // sur un document) : accordé EN PLUS des règles de catégorie, jamais à leur place — utile
+  // pour donner accès à un seul document d'une catégorie restreinte sans ouvrir toute la
+  // catégorie à cette personne.
+  if (documentId && permission === 'view') {
+    const shared = await isSharedWithUser({ tenantId, resourceType: 'document', resourceId: documentId, userId, userRole });
+    if (shared) return true;
+  }
+
   if (!categoryId) return true;
 
   const { data: category, error: categoryError } = await supabase
@@ -57,14 +68,18 @@ export async function hasCategoryPermission({ tenantId, userId, userRole, catego
 // Filtre une liste de documents (déjà chargée, avec sa catégorie jointe incluant
 // is_restricted) pour ne garder que ceux visibles par l'utilisateur — en une seule
 // requête groupée plutôt qu'une vérification par document (évite le N+1).
-export async function filterViewableDocuments({ userId, userRole, documents }) {
+export async function filterViewableDocuments({ tenantId, userId, userRole, documents }) {
   if (ADMIN_ROLES.includes(userRole)) return documents;
 
   const restrictedCategoryIds = [
     ...new Set(documents.filter((doc) => doc.category?.is_restricted).map((doc) => doc.category_id)),
   ];
 
+  // Aucune catégorie restreinte dans ce lot : tout est déjà visible, un partage n'y changerait
+  // rien (il ne fait qu'ajouter de la visibilité là où elle manquerait autrement).
   if (restrictedCategoryIds.length === 0) return documents;
+
+  const sharedDocumentIds = await getSharedResourceIds({ tenantId, resourceType: 'document', userId, userRole });
 
   const { data: permissions, error } = await supabase
     .from('category_permissions')
@@ -74,8 +89,8 @@ export async function filterViewableDocuments({ userId, userRole, documents }) {
 
   if (error) {
     // En cas d'erreur de vérification, on refuse par prudence plutôt que d'exposer
-    // potentiellement des documents restreints.
-    return documents.filter((doc) => !doc.category?.is_restricted);
+    // potentiellement des documents restreints — un partage direct reste honoré.
+    return documents.filter((doc) => !doc.category?.is_restricted || sharedDocumentIds.has(doc.id));
   }
 
   const groupIds = await getUserGroupIds(userId);
@@ -90,7 +105,9 @@ export async function filterViewableDocuments({ userId, userRole, documents }) {
       .map((row) => row.category_id)
   );
 
-  return documents.filter((doc) => !doc.category?.is_restricted || viewableCategoryIds.has(doc.category_id));
+  return documents.filter(
+    (doc) => !doc.category?.is_restricted || viewableCategoryIds.has(doc.category_id) || sharedDocumentIds.has(doc.id)
+  );
 }
 
 // Filtre une liste de catégories (comme filterViewableDocuments, mais la restriction
@@ -140,7 +157,7 @@ export async function resolveDocumentById(req) {
     .single();
 
   if (error || !data) return { exists: false, categoryId: null };
-  return { exists: true, categoryId: data.category_id };
+  return { exists: true, categoryId: data.category_id, documentId: data.id };
 }
 
 export function resolveCategoryFromBody(req) {
@@ -182,6 +199,7 @@ export function requireCategoryPermission(
         userRole: req.userRole,
         categoryId: target.categoryId,
         permission,
+        documentId: target.documentId,
       });
 
       if (!allowed) {

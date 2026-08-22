@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 
 const router = Router();
 
@@ -112,7 +113,19 @@ router.get('/', async (req, res) => {
     .order('created_at', { ascending: false });
 
   if (req.userRole === 'member') {
-    query = query.eq('assigned_to', req.user.id);
+    // Un partage (voir record_shares/recordSharing.js, Paramètres > Partage sur une CAPA)
+    // donne accès à une CAPA précise en plus de celles déjà assignées — jamais une
+    // restriction, uniquement un octroi supplémentaire.
+    const sharedIds = await getSharedResourceIds({
+      tenantId: req.tenantId,
+      resourceType: 'capa',
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    query =
+      sharedIds.size > 0
+        ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
+        : query.eq('assigned_to', req.user.id);
   }
 
   const { data, error } = await query;
@@ -140,6 +153,23 @@ router.get('/:id', async (req, res) => {
 
   if (error || !capa) {
     return res.status(404).json({ error: 'CAPA introuvable.' });
+  }
+
+  // Même règle que GET / (liste) : un membre ne voit que ses CAPA assignées, ou celles
+  // partagées avec lui (voir record_shares/recordSharing.js) — la liste filtrait déjà cet
+  // accès mais ce détail ne le faisait pas, ce qui permettait d'ouvrir n'importe quelle CAPA
+  // du tenant en devinant/collant son id malgré la restriction affichée dans la liste.
+  if (req.userRole === 'member' && capa.assigned_to !== req.user.id) {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId,
+      resourceType: 'capa',
+      resourceId: capa.id,
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    if (!shared) {
+      return res.status(404).json({ error: 'CAPA introuvable.' });
+    }
   }
 
   const { data: comments, error: commentsError } = await supabase
