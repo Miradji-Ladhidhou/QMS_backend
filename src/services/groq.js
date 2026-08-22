@@ -7,7 +7,8 @@ const MODEL = 'openai/gpt-oss-120b';
 // flux "créer une CAPA depuis X" — audits, revues, réclamations, risques, fournisseurs) :
 // un seul contrat JSON, un seul composant frontend de rendu (AiCapaSuggestion.jsx) capable
 // d'afficher n'importe laquelle de ces suggestions sans distinction.
-const RESPONSE_CONTRACT = `- synthesis : une synthèse concise du problème (2 à 3 phrases)
+const RESPONSE_CONTRACT = `- title : un titre court (objet, maximum une dizaine de mots) formulé comme un intitulé de non-conformité, pas une phrase complète
+- synthesis : une synthèse concise du problème (2 à 3 phrases), utilisable telle quelle comme description de la non-conformité
 - root_causes : un tableau de chaînes de caractères, les causes racines probables
 - suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical' — des actions CORRECTIVES, pour traiter le problème déjà survenu
 - preventive_actions : un tableau de chaînes de caractères — des actions PRÉVENTIVES, distinctes des actions correctives, pour empêcher que ce problème (ou un problème similaire) ne se reproduise
@@ -15,6 +16,7 @@ const RESPONSE_CONTRACT = `- synthesis : une synthèse concise du problème (2 �
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
+  "title": "string",
   "synthesis": "string",
   "root_causes": ["string", "string"],
   "suggested_actions": [{"title": "string", "description": "string", "suggested_priority": "medium"}],
