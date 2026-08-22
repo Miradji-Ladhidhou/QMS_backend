@@ -763,7 +763,7 @@ create table category_permissions (
 create table record_shares (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references tenants (id) on delete cascade,
-  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint')),
+  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp')),
   resource_id    uuid not null,
   subject_type   text not null check (subject_type in ('role', 'user')),
   subject_id     text not null,

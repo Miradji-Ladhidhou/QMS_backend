@@ -6,6 +6,7 @@ import { generateQqoqccpSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 
 const router = Router();
 
@@ -18,14 +19,31 @@ const MANAGER_ROLES = ['admin', 'manager'];
 
 router.use(requireAuth);
 
-// GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier
+// GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier. Un
+// member ne voit que ses propres analyses (créées par lui) ou celles partagées avec lui (voir
+// record_shares/recordSharing.js) — contrairement à Audits/Risques, gardés en transparence
+// totale par choix assumé, une analyse QQOQCCP est un travail personnel comme une CAPA.
 router.get('/', async (req, res) => {
-  const { data, error } = await supabase
+  let query = supabase
     .from('qqoqccp_analyses')
     .select('id, title, status, created_at')
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
+  if (req.userRole === 'member') {
+    const sharedIds = await getSharedResourceIds({
+      tenantId: req.tenantId,
+      resourceType: 'qqoqccp',
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    query =
+      sharedIds.size > 0
+        ? query.or(`created_by.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
+        : query.eq('created_by', req.user.id);
+  }
+
+  const { data, error } = await query;
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les analyses QQOQCCP.' });
   }
@@ -50,6 +68,19 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
   }
 
+  if (req.userRole === 'member' && data.created_by !== req.user.id) {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId,
+      resourceType: 'qqoqccp',
+      resourceId: data.id,
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    if (!shared) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+  }
+
   res.json(data);
 });
 
@@ -66,6 +97,19 @@ router.get('/:id/pdf', async (req, res) => {
 
   if (error || !analysis) {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+  }
+
+  if (req.userRole === 'member' && analysis.created_by !== req.user.id) {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId,
+      resourceType: 'qqoqccp',
+      resourceId: analysis.id,
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    if (!shared) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
   }
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();

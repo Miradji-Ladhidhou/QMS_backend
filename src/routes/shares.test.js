@@ -18,6 +18,12 @@ async function createCapa(token, title = 'CAPA de test') {
   return res.body;
 }
 
+async function createQqoqccp(token, title = 'Analyse QQOQCCP de test') {
+  const res = await request(app).post('/api/qqoqccp').set('Authorization', `Bearer ${token}`).send({ title });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
 async function createComplaint(token) {
   const res = await request(app)
     .post('/api/complaints')
@@ -193,6 +199,28 @@ describe('Partage d’un élément précis (record_shares)', () => {
     const afterDetail = await request(app)
       .get(`/api/complaints/${complaint.id}`)
       .set('Authorization', `Bearer ${member.token}`);
+    expect(afterDetail.status).toBe(200);
+  });
+
+  it("un membre ne voit une analyse QQOQCCP qu'il n'a pas créée qu'après un partage direct", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const analysis = await createQqoqccp(tenant.admin.token);
+
+    const beforeList = await request(app).get('/api/qqoqccp').set('Authorization', `Bearer ${member.token}`);
+    expect(beforeList.body.map((a) => a.id)).not.toContain(analysis.id);
+    const beforeDetail = await request(app).get(`/api/qqoqccp/${analysis.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(beforeDetail.status).toBe(404);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'qqoqccp', resource_id: analysis.id, subject_type: 'user', subject_id: member.id })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/qqoqccp').set('Authorization', `Bearer ${member.token}`);
+    expect(afterList.body.map((a) => a.id)).toContain(analysis.id);
+    const afterDetail = await request(app).get(`/api/qqoqccp/${analysis.id}`).set('Authorization', `Bearer ${member.token}`);
     expect(afterDetail.status).toBe(200);
   });
 });
