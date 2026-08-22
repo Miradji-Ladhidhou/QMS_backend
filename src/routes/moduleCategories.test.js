@@ -305,6 +305,132 @@ describe('Catégories génériques (CAPA)', () => {
     expect(after.status).toBe(200);
   });
 
+  it('même comportement sur les audits (aucune restriction avant, opt-in par catégorie)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'audit', name: 'Audit confidentiel', isRestricted: true });
+    const auditRes = await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit test', planned_date: '2026-03-01', category_id: category.id });
+    expect(auditRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/audits/${auditRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+    const beforeList = await request(app).get('/api/audits').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((a) => a.id)).not.toContain(auditRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/audits/${auditRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+  });
+
+  it('même comportement sur les risques (aucune restriction avant, opt-in par catégorie)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Risque confidentiel', isRestricted: true });
+    const riskRes = await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque test', likelihood: 3, impact: 3, category_id: category.id });
+    expect(riskRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/risks/${riskRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+    const beforeList = await request(app).get('/api/risks').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((r) => r.id)).not.toContain(riskRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/risks/${riskRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+  });
+
+  it('même comportement sur les tâches (aucune restriction avant, opt-in par catégorie)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'task', name: 'Tâche confidentielle', isRestricted: true });
+    const taskRes = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche test', due_date: '2026-03-01', category_id: category.id });
+    expect(taskRes.status).toBe(201);
+
+    const beforeList = await request(app).get('/api/tasks').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((t) => t.id)).not.toContain(taskRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/tasks').set('Authorization', `Bearer ${manager.token}`);
+    expect(afterList.body.map((t) => t.id)).toContain(taskRes.body.id);
+  });
+
+  it('même comportement sur les KPI (aucune restriction avant, opt-in par catégorie)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'kpi', name: 'KPI confidentiel', isRestricted: true });
+    const kpiRes = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI test', category_id: category.id });
+    expect(kpiRes.status).toBe(201);
+
+    const before = await request(app).get(`/api/kpis/${kpiRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(before.status).toBe(404);
+    const beforeList = await request(app).get('/api/kpis').set('Authorization', `Bearer ${manager.token}`);
+    expect(beforeList.body.map((k) => k.id)).not.toContain(kpiRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get(`/api/kpis/${kpiRes.body.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(after.status).toBe(200);
+  });
+
+  it("une CAPA d'une catégorie restreinte, assignée à un member, n'apparaît pas dans son /api/planning tant que la permission n'est pas accordée", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Planning confidentiel', isRestricted: true });
+    const capaRes = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA planning', due_date: '2026-03-01', category_id: category.id, assigned_to: member.id });
+    expect(capaRes.status).toBe(201);
+
+    const before = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(before.body.items.map((i) => i.id)).not.toContain(capaRes.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
+      .expect(201);
+
+    const after = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(after.body.items.map((i) => i.id)).toContain(capaRes.body.id);
+  });
+
   it('GET /api/module-categories filtre par resource_type et rejette un type inconnu', async () => {
     tenant = await createTenant();
     await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Catégorie CAPA' });
@@ -319,7 +445,7 @@ describe('Catégories génériques (CAPA)', () => {
 
     const badType = await request(app)
       .get('/api/module-categories')
-      .query({ resource_type: 'audit' })
+      .query({ resource_type: 'ghost' })
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(badType.status).toBe(400);
   });

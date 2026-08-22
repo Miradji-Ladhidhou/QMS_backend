@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 // Extrait de planning.js (partagé avec dashboard.js, voir stats.overdue) : les deux routes
 // ont besoin exactement du même calcul "en retard" (date < aujourd'hui) et des mêmes règles
@@ -13,11 +14,13 @@ function withOverdue(item) {
 }
 
 // CAPA non clôturées avec une échéance — scope : personnel (assigné à moi), par service, ou
-// tout le tenant selon le mode.
-export async function fetchCapaItems(tenantId, { assignedTo, serviceIds }) {
+// tout le tenant selon le mode. userId/userRole servent uniquement à appliquer la restriction
+// de catégorie (voir Paramètres > Catégories) — un item d'une catégorie restreinte sans
+// permission ne doit pas apparaître dans le planning, même juste comme échéance.
+export async function fetchCapaItems(tenantId, { assignedTo, serviceIds, userId, userRole }) {
   let query = supabase
     .from('capas')
-    .select('id, number, title, due_date')
+    .select('id, number, title, due_date, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('due_date', 'is', null)
     .neq('status', 'closed');
@@ -32,7 +35,9 @@ export async function fetchCapaItems(tenantId, { assignedTo, serviceIds }) {
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map((capa) =>
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((capa) =>
     withOverdue({
       type: 'capa',
       id: capa.id,
@@ -46,10 +51,10 @@ export async function fetchCapaItems(tenantId, { assignedTo, serviceIds }) {
 // Fournisseurs actifs à réévaluer — par service ou tout le tenant pour admin/manager, jamais
 // pour member (pas de porteur individuel, comme les documents : un fournisseur n'est
 // "possédé" par personne en particulier — voir suppliers.js).
-export async function fetchSupplierItems(tenantId, { serviceIds }) {
+export async function fetchSupplierItems(tenantId, { serviceIds, userId, userRole }) {
   let query = supabase
     .from('suppliers')
-    .select('id, name, next_evaluation_date')
+    .select('id, name, next_evaluation_date, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .eq('status', 'active')
     .not('next_evaluation_date', 'is', null);
@@ -62,7 +67,9 @@ export async function fetchSupplierItems(tenantId, { serviceIds }) {
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map((supplier) =>
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((supplier) =>
     withOverdue({
       type: 'supplier',
       id: supplier.id,
@@ -158,10 +165,10 @@ export async function fetchTrainingItems(tenantId, { userId, userIds }) {
 // Réclamations non résolues/clôturées avec une échéance de réponse — même scope que CAPA
 // (assigné à moi, par service, ou tout le tenant), même famille de règles côté rôle
 // (complaints.js reflète capas.js : member = ses réclamations assignées uniquement).
-export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds }) {
+export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds, userId, userRole }) {
   let query = supabase
     .from('complaints')
-    .select('id, customer_name, due_date')
+    .select('id, customer_name, due_date, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('due_date', 'is', null)
     .not('status', 'in', '(resolved,closed)');
@@ -176,7 +183,9 @@ export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds }) 
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map((complaint) =>
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((complaint) =>
     withOverdue({
       type: 'complaint',
       id: complaint.id,
@@ -191,10 +200,10 @@ export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds }) 
 // suis responsable (member), par service, ou tout le tenant selon le mode. Même principe de
 // transparence que les audits (voir risks.js) : la lecture reste ouverte à tous les rôles,
 // seule la SÉLECTION des items du planning personnel d'un member change ici.
-export async function fetchRiskItems(tenantId, { ownerId, serviceIds }) {
+export async function fetchRiskItems(tenantId, { ownerId, serviceIds, userId, userRole }) {
   let query = supabase
     .from('risks')
-    .select('id, title, review_date')
+    .select('id, title, review_date, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('review_date', 'is', null)
     .not('status', 'in', '(accepted,closed)');
@@ -209,7 +218,9 @@ export async function fetchRiskItems(tenantId, { ownerId, serviceIds }) {
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map((risk) =>
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((risk) =>
     withOverdue({
       type: 'risk',
       id: risk.id,
@@ -224,10 +235,10 @@ export async function fetchRiskItems(tenantId, { ownerId, serviceIds }) {
 // tout le tenant selon le mode. Contrairement à CAPA/formations, un audit reste visible en
 // lecture à tous les rôles (voir audits.js) ; ici on ne filtre que la SÉLECTION des items du
 // planning personnel d'un member sur "je suis l'auditeur", pas l'accès à la donnée elle-même.
-export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds }) {
+export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, userId, userRole }) {
   let query = supabase
     .from('audits')
-    .select('id, title, planned_date')
+    .select('id, title, planned_date, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .in('status', ['planned', 'in_progress']);
 
@@ -241,7 +252,9 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds }) {
   const { data, error } = await query;
   if (error || !data) return [];
 
-  return data.map((audit) =>
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((audit) =>
     withOverdue({
       type: 'audit',
       id: audit.id,
@@ -254,10 +267,10 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds }) {
 
 // Tâches manuelles non terminées — personnelles (créées ou assignées à moi) pour member,
 // tout le tenant pour admin/manager (pas de notion de service sur les tâches).
-export async function fetchTaskItems(tenantId, { personalUserId }) {
+export async function fetchTaskItems(tenantId, { personalUserId, userId, userRole }) {
   const { data, error } = await supabase
     .from('tasks')
-    .select('id, title, due_date, assigned_to, created_by')
+    .select('id, title, due_date, assigned_to, created_by, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .eq('status', 'todo');
 
@@ -267,10 +280,12 @@ export async function fetchTaskItems(tenantId, { personalUserId }) {
     ? data.filter((task) => task.assigned_to === personalUserId || task.created_by === personalUserId)
     : data;
 
+  const visible = await filterViewableByCategory({ userId, userRole, items: filtered });
+
   // created_by/assigned_to sont renvoyés (pas seulement utilisés pour le filtre) pour que le
   // frontend puisse calculer les actions autorisées (mêmes règles que canManageTask dans
   // tasks.js) sans un second appel réseau.
-  return filtered.map((task) =>
+  return visible.map((task) =>
     withOverdue({
       type: 'task',
       id: task.id,

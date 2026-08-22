@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
+import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
@@ -16,11 +17,15 @@ function canManageTask(req, task) {
 }
 
 // GET /api/tasks — toutes les tâches du tenant (tous les rôles) ; le filtrage "mes tâches"
-// pour un member se fait côté planning.js, pas ici (cette liste reste la vue de gestion).
+// pour un member se fait côté planning.js, pas ici (cette liste reste la vue de gestion). Une
+// catégorie explicitement restreinte (Paramètres > Catégories) peut limiter l'accès — opt-in,
+// sans effet tant qu'aucune catégorie n'est créée.
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tasks')
-    .select('*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name)')
+    .select(
+      '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted)'
+    )
     .eq('tenant_id', req.tenantId)
     .order('due_date', { ascending: true });
 
@@ -28,7 +33,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les tâches.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // POST /api/tasks — création (tous les rôles)
@@ -40,6 +46,7 @@ router.post(
     body('due_date').isISO8601().withMessage('Échéance invalide.'),
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('assigned_employee_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne assignée invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -53,6 +60,7 @@ router.post(
       due_date: dueDate,
       assigned_to: assignedTo,
       assigned_employee_id: assignedEmployeeId,
+      category_id: categoryId,
     } = req.body;
 
     if (assignedTo && assignedEmployeeId) {
@@ -68,9 +76,12 @@ router.post(
         due_date: dueDate,
         assigned_to: assignedTo || null,
         assigned_employee_id: assignedEmployeeId || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
-      .select('*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name)')
+      .select(
+        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted)'
+      )
       .single();
 
     if (error) {
@@ -94,6 +105,7 @@ router.patch(
       .optional({ nullable: true, values: 'falsy' })
       .isUUID()
       .withMessage('Personne assignée invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -132,6 +144,7 @@ router.patch(
       update.assigned_employee_id = req.body.assigned_employee_id || null;
       if (update.assigned_employee_id) update.assigned_to = null;
     }
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
@@ -142,7 +155,9 @@ router.patch(
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name)')
+      .select(
+        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted)'
+      )
       .single();
 
     if (error || !data) {

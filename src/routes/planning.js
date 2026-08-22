@@ -33,12 +33,12 @@ router.get('/', async (req, res) => {
 
   if (req.userRole === 'member') {
     const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
-      fetchCapaItems(req.tenantId, { assignedTo: req.user.id }),
+      fetchCapaItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
-      fetchTaskItems(req.tenantId, { personalUserId: req.user.id }),
-      fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id }),
-      fetchComplaintItems(req.tenantId, { assignedTo: req.user.id }),
-      fetchRiskItems(req.tenantId, { ownerId: req.user.id }),
+      fetchTaskItems(req.tenantId, { personalUserId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchComplaintItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchRiskItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
     ]);
     items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems];
   } else {
@@ -52,14 +52,14 @@ router.get('/', async (req, res) => {
     const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
 
     const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
-      fetchCapaItems(req.tenantId, { serviceIds }),
+      fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchDocumentItems(req.tenantId),
       fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
-      fetchTaskItems(req.tenantId, {}),
-      fetchAuditItems(req.tenantId, { serviceIds }),
-      fetchComplaintItems(req.tenantId, { serviceIds }),
-      fetchRiskItems(req.tenantId, { serviceIds }),
-      fetchSupplierItems(req.tenantId, { serviceIds }),
+      fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
+      fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
     ]);
     items = [
       ...capaItems,

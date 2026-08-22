@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -14,7 +15,7 @@ const KPI_TARGET_DIRECTIONS = ['min', 'max'];
 // kpi_calculation_configs.calc_type — ici on distingue seulement saisie manuelle vs calculée.
 const KPI_CALCULATION_TYPES = ['manual', 'import'];
 export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped'];
-const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id'];
+const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id', 'category_id'];
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
   'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
@@ -34,7 +35,7 @@ router.get('/', async (req, res) => {
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
     // répartition) et de nommer chaque courbe, sans une requête par KPI.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -48,7 +49,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les KPIs.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
@@ -69,18 +71,22 @@ router.get('/report', async (req, res) => {
     .from('kpis')
     // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
     // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
-    .select(`*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`)
+    .select(
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
+    )
     .eq('tenant_id', req.tenantId);
 
   if (folderId) {
     query = folderId === 'root' ? query.is('folder_id', null) : query.eq('folder_id', folderId);
   }
 
-  const { data: kpis, error } = await query.order('name', { ascending: true });
+  const { data: rawKpis, error } = await query.order('name', { ascending: true });
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de générer le rapport.' });
   }
+
+  const kpis = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: rawKpis });
 
   // Pour les KPI calculés depuis un import, la mention "preuve d'audit" du rapport a besoin
   // du nombre total de lignes brutes jamais importées et de la date du dernier import.
@@ -132,6 +138,7 @@ router.post(
       .isIn(KPI_CALCULATION_TYPES)
       .withMessage('Type de calcul invalide.'),
     body('folder_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -147,6 +154,7 @@ router.post(
       frequency,
       calculation_type: calculationType,
       folder_id: folderId,
+      category_id: categoryId,
     } = req.body;
 
     if (folderId) {
@@ -172,6 +180,7 @@ router.post(
         frequency: frequency || null,
         calculation_type: calculationType || undefined,
         folder_id: folderId || null,
+        category_id: categoryId || null,
       })
       .select()
       .single();
@@ -189,7 +198,7 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -197,6 +206,17 @@ router.get('/:id', async (req, res) => {
     .single();
 
   if (error || !data) {
+    return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: data.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
     return res.status(404).json({ error: 'KPI introuvable.' });
   }
 
@@ -219,6 +239,7 @@ router.patch(
       .isIn(KPI_CALCULATION_TYPES)
       .withMessage('Type de calcul invalide.'),
     body('folder_id').optional({ nullable: true }).custom((value) => value === null || typeof value === 'string').withMessage('Dossier invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -234,6 +255,9 @@ router.patch(
     }
     if ('folder_id' in update) {
       update.folder_id = update.folder_id || null;
+    }
+    if ('category_id' in update) {
+      update.category_id = update.category_id || null;
     }
 
     if (Object.keys(update).length === 0) {

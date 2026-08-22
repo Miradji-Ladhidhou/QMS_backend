@@ -9,7 +9,18 @@ const SUBJECT_TYPES = ['user', 'group'];
 // Audits et Risques volontairement absents : transparence totale assumée (voir routes/audits.js
 // et routes/risks.js) — une catégorie restreinte irait à l'encontre de ce choix, comme pour le
 // partage individuel (record_shares).
-const RESOURCE_TYPES = ['capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review'];
+const RESOURCE_TYPES = [
+  'capa',
+  'complaint',
+  'qqoqccp',
+  'supplier',
+  'training',
+  'management_review',
+  'audit',
+  'risk',
+  'task',
+  'kpi',
+];
 
 router.use(requireAuth);
 

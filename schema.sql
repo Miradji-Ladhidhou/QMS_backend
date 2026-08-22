@@ -777,15 +777,14 @@ create table record_shares (
 -- (restriction + permissions par utilisateur/groupe), mais polymorphe via resource_type plutôt
 -- qu'une table par module. Documents garde sa propre table (document_categories), déjà
 -- profondément intégrée (upload, import Excel, historique des versions...) : pas de migration
--- risquée pour un bénéfice marginal, seule cette table sert les nouveaux modules. Audits et
--- Risques volontairement absents de la liste resource_type : transparence totale assumée
--- (voir routes/audits.js et routes/risks.js), une catégorie restreinte irait à l'encontre de
--- ce choix, comme pour le partage individuel plus haut.
+-- risquée pour un bénéfice marginal, seule cette table sert les nouveaux modules.
 create table categories (
   id            uuid primary key default gen_random_uuid(),
   tenant_id     uuid not null references tenants (id) on delete cascade,
   resource_type text not null check (
-    resource_type in ('capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review')
+    resource_type in (
+      'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi'
+    )
   ),
   name          text not null,
   color         text,
@@ -822,6 +821,9 @@ alter table qqoqccp_analyses add column category_id uuid references categories (
 alter table suppliers add column category_id uuid references categories (id) on delete set null;
 alter table trainings add column category_id uuid references categories (id) on delete set null;
 alter table management_reviews add column category_id uuid references categories (id) on delete set null;
+alter table audits add column category_id uuid references categories (id) on delete set null;
+alter table risks add column category_id uuid references categories (id) on delete set null;
+alter table kpis add column category_id uuid references categories (id) on delete set null;
 
 -- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
 -- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).
@@ -837,6 +839,7 @@ create table tasks (
   assigned_to           uuid references users (id) on delete set null,
   assigned_employee_id  uuid references employees (id) on delete set null,
   created_by            uuid references users (id) on delete set null,
+  category_id           uuid references categories (id) on delete set null,
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now(),
   constraint tasks_assignee_check check (not (assigned_to is not null and assigned_employee_id is not null))

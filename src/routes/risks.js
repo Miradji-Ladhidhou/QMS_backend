@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -14,10 +15,12 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 router.use(requireAuth);
 
 const RISK_SELECT =
-  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status)';
+  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)';
 
 // GET /api/risks — liste tenant-wide, tous les rôles (transparence : le registre des risques
-// concerne le SMQ dans son ensemble, comme les audits). Filtrable par statut/type/service.
+// concerne le SMQ dans son ensemble, comme les audits). Filtrable par statut/type/service. Une
+// catégorie explicitement restreinte (Paramètres > Catégories) peut limiter l'accès — opt-in,
+// sans effet tant qu'aucune catégorie n'est créée.
 router.get('/', async (req, res) => {
   let query = supabase.from('risks').select(RISK_SELECT).eq('tenant_id', req.tenantId).order('risk_score', { ascending: false });
 
@@ -30,7 +33,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer le registre des risques.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // GET /api/risks/:id
@@ -38,6 +42,17 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase.from('risks').select(RISK_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
 
   if (error || !data) {
+    return res.status(404).json({ error: 'Risque introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: data.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
     return res.status(404).json({ error: 'Risque introuvable.' });
   }
 
@@ -60,6 +75,7 @@ router.post(
     body('likelihood').isInt({ min: 1, max: 5 }).withMessage('Probabilité invalide (1 à 5).'),
     body('impact').isInt({ min: 1, max: 5 }).withMessage('Gravité invalide (1 à 5).'),
     body('review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de revue invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -77,6 +93,7 @@ router.post(
       likelihood,
       impact,
       review_date: reviewDate,
+      category_id: categoryId,
     } = req.body;
 
     const { data, error } = await supabase
@@ -92,6 +109,7 @@ router.post(
         likelihood,
         impact,
         review_date: reviewDate || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select(RISK_SELECT)
@@ -126,6 +144,7 @@ router.patch(
     body('residual_impact').optional({ nullable: true, values: 'falsy' }).isInt({ min: 1, max: 5 }).withMessage('Gravité résiduelle invalide (1 à 5).'),
     body('status').optional().isIn(RISK_STATUSES).withMessage('Statut invalide.'),
     body('review_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de revue invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -139,6 +158,7 @@ router.patch(
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
     if ('owner' in req.body) update.owner = req.body.owner || null;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
     if ('likelihood' in req.body) update.likelihood = req.body.likelihood;
     if ('impact' in req.body) update.impact = req.body.impact;
     if ('residual_likelihood' in req.body) update.residual_likelihood = req.body.residual_likelihood || null;

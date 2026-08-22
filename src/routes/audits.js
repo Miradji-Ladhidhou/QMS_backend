@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -15,11 +16,13 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
 
-const AUDIT_SELECT = '*, lead:users!audits_lead_auditor_fkey(id, full_name), service:services(id, name)';
+const AUDIT_SELECT =
+  '*, lead:users!audits_lead_auditor_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted)';
 
 // GET /api/audits — liste tenant-wide, tous les rôles (transparence : un audit concerne le
 // SMQ dans son ensemble, contrairement aux CAPA qui peuvent rester personnelles). Filtrable
-// par statut et par service audité.
+// par statut et par service audité. Une catégorie explicitement restreinte (Paramètres >
+// Catégories) peut limiter l'accès — opt-in, sans effet tant qu'aucune catégorie n'est créée.
 router.get('/', async (req, res) => {
   let query = supabase.from('audits').select(AUDIT_SELECT).eq('tenant_id', req.tenantId).order('planned_date', { ascending: false });
 
@@ -35,7 +38,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les audits.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // GET /api/audits/:id — détail avec ses constats (findings), CAPA liée résolue pour chacun.
@@ -48,6 +52,17 @@ router.get('/:id', async (req, res) => {
     .single();
 
   if (error || !audit) {
+    return res.status(404).json({ error: 'Audit introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: audit.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
     return res.status(404).json({ error: 'Audit introuvable.' });
   }
 
@@ -72,6 +87,7 @@ const AUDIT_VALIDATORS = [
   body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
   body('lead_auditor').optional({ values: 'falsy' }).isUUID().withMessage('Auditeur invalide.'),
   body('planned_date').isISO8601().withMessage('Date planifiée invalide.'),
+  body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
 ];
 
 // POST /api/audits — planification (admin/manager uniquement : contrairement à CAPA/QQOQCCP,
@@ -89,6 +105,7 @@ router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, async (req, 
     service_id: serviceId,
     lead_auditor: leadAuditor,
     planned_date: plannedDate,
+    category_id: categoryId,
   } = req.body;
 
   const { data, error } = await supabase
@@ -101,6 +118,7 @@ router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, async (req, 
       service_id: serviceId || null,
       lead_auditor: leadAuditor || null,
       planned_date: plannedDate,
+      category_id: categoryId || null,
       created_by: req.user.id,
     })
     .select(AUDIT_SELECT)
@@ -127,6 +145,7 @@ router.patch(
     body('completed_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de clôture invalide.'),
     body('status').optional().isIn(AUDIT_STATUSES).withMessage('Statut invalide.'),
     body('conclusion').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -140,6 +159,7 @@ router.patch(
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
     if ('lead_auditor' in req.body) update.lead_auditor = req.body.lead_auditor || null;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
