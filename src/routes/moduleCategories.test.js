@@ -535,4 +535,37 @@ describe('Catégorie personnelle "Uniquement moi" (POST /api/module-categories/p
       .set('Authorization', `Bearer ${member.token}`);
     expect(memberList.body.map((c) => c.name)).toEqual(['Catégorie normale']);
   });
+
+  it('PATCH category_id="" (remise à "Tout le monde") vide la catégorie plutôt que de faire échouer la requête', async () => {
+    tenant = await createTenant();
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Temporaire' });
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
+    expect(capa.category_id).toBe(category.id);
+
+    const patch = await request(app)
+      .patch(`/api/capas/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: '' });
+    expect(patch.status).toBe(200);
+    expect(patch.body.category_id).toBeNull();
+  });
+
+  it('même comportement sur QQOQCCP : PATCH category_id="" vide la catégorie sans échouer', async () => {
+    tenant = await createTenant();
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'qqoqccp', name: 'Temporaire' });
+    const analysisRes = await request(app)
+      .post('/api/qqoqccp')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Analyse test', category_id: category.id });
+    expect(analysisRes.status).toBe(201);
+
+    const patch = await request(app)
+      .patch(`/api/qqoqccp/${analysisRes.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: '' });
+    expect(patch.status).toBe(200);
+    expect(patch.body.category_id).toBeNull();
+  });
 });

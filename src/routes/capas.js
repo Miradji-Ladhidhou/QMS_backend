@@ -327,6 +327,10 @@ router.patch(
         update[field] = req.body[field];
       }
     }
+    // category_id est une colonne uuid : une chaîne vide (remise à "Tout le monde") doit
+    // devenir null, sinon Postgres la rejette comme uuid invalide et l'update entier échoue,
+    // faussement rapporté comme "CAPA introuvable" par le bloc error ci-dessous.
+    if ('category_id' in update) update.category_id = update.category_id || null;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
