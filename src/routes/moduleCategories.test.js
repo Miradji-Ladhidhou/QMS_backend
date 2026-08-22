@@ -132,27 +132,21 @@ describe('Catégories génériques (CAPA)', () => {
     expect(afterDetail.status).toBe(200);
   });
 
-  it("un membre ne voit toujours pas les CAPA des autres sans catégorie restreinte, même avec un accès de catégorie ailleurs (la catégorie n'élargit pas la visibilité par défaut)", async () => {
+  it("un membre voit une CAPA d'un autre sans catégorie restreinte, même sans permission de catégorie particulière (visible par tout le tenant par défaut)", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
     const member = tenant.users[0];
     const otherManager = tenant.users[1];
 
-    const restrictedCategory = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Restreinte', isRestricted: true });
-    await request(app)
-      .post(`/api/module-categories/${restrictedCategory.id}/permissions`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
-      .expect(201);
+    // Une catégorie restreinte existe ailleurs dans le tenant, sans lien avec cette CAPA — ne
+    // doit avoir aucun effet sur elle.
+    await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Restreinte', isRestricted: true });
 
-    // Pas de catégorie du tout sur cette CAPA — la règle de base "member ne voit que les
-    // siennes" doit continuer à s'appliquer, la permission de catégorie du membre sur une
-    // AUTRE catégorie ne doit rien changer ici.
     const uncategorizedCapa = await createCapa(tenant.admin.token, { assigned_to: otherManager.id });
 
     const list = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
-    expect(list.body.map((c) => c.id)).not.toContain(uncategorizedCapa.id);
+    expect(list.body.map((c) => c.id)).toContain(uncategorizedCapa.id);
     const detail = await request(app).get(`/api/capas/${uncategorizedCapa.id}`).set('Authorization', `Bearer ${member.token}`);
-    expect(detail.status).toBe(404);
+    expect(detail.status).toBe(200);
   });
 
   it('une règle directe can_view=false est prioritaire sur un groupe autorisé (même fix que documents)', async () => {

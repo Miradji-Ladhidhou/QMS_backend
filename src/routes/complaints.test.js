@@ -41,8 +41,8 @@ describe('POST /api/complaints — création ouverte à tous les rôles, auto-as
   });
 });
 
-describe('GET /api/complaints — scope par rôle comme CAPA', () => {
-  it('un member ne voit que les réclamations qui lui sont assignées ; admin/manager voient tout', async () => {
+describe('GET /api/complaints — visible par tout le tenant par défaut', () => {
+  it('un member voit toutes les réclamations du tenant, pas seulement celles qui lui sont assignées', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
 
@@ -50,13 +50,13 @@ describe('GET /api/complaints — scope par rôle comme CAPA', () => {
       .post('/api/complaints')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ customer_name: 'Pour A', received_date: '2026-08-10', description: 'Réclamation A', assigned_to: memberA.id });
-    await request(app)
+    const forB = await request(app)
       .post('/api/complaints')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ customer_name: 'Pour B', received_date: '2026-08-10', description: 'Réclamation B', assigned_to: memberB.id });
 
     const memberARes = await request(app).get('/api/complaints').set('Authorization', `Bearer ${memberA.token}`);
-    expect(memberARes.body.map((c) => c.id)).toEqual([forA.body.id]);
+    expect(memberARes.body.map((c) => c.id).sort()).toEqual([forA.body.id, forB.body.id].sort());
 
     const adminRes = await request(app).get('/api/complaints').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(adminRes.body.length).toBe(2);

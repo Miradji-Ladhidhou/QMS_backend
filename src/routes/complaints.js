@@ -16,10 +16,9 @@ router.use(requireAuth);
 const COMPLAINT_SELECT =
   '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
 
-// GET /api/complaints — même scope que CAPA (capas.js) : un member ne voit que les
-// réclamations qui lui sont assignées, admin/manager voient tout le tenant — plus une
-// éventuelle catégorie restreinte (voir Paramètres > Catégories modules), qui s'applique
-// aussi au manager désormais.
+// GET /api/complaints — visible par tout le tenant par défaut (même modèle que les
+// Documents) — seule une catégorie explicitement restreinte (Paramètres > Catégories) limite
+// l'accès. Un member ne peut toujours MODIFIER que les réclamations qui lui sont assignées.
 router.get('/', async (req, res) => {
   let query = supabase.from('complaints').select(COMPLAINT_SELECT).eq('tenant_id', req.tenantId).order('received_date', { ascending: false });
 
@@ -42,21 +41,13 @@ router.get('/', async (req, res) => {
   }
 
   // Catégorie restreinte : filterViewableByCategory laisse passer toute réclamation dont la
-  // catégorie n'est PAS restreinte (ou sans catégorie) — sur celles-là, la règle de base "un
-  // member ne voit que les siennes" s'applique encore, sans quoi la catégorie rendrait tout
-  // visible par défaut. Sur une catégorie explicitement restreinte, la permission de catégorie
-  // devient l'autorité et peut donner accès même non-assigné (ou le retirer même assigné).
+  // catégorie n'est PAS restreinte (ou sans catégorie) — visible par tous dans ce cas. Sur une
+  // catégorie explicitement restreinte, seule la permission de catégorie (ou un partage
+  // individuel) donne accès.
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
   );
-  const visible = data.filter((complaint) => {
-    if (sharedIds.has(complaint.id)) return true;
-    if (!categoryViewableIds.has(complaint.id)) return false;
-    if (req.userRole === 'member' && !complaint.category?.is_restricted) {
-      return complaint.assigned_to === req.user.id;
-    }
-    return true;
-  });
+  const visible = data.filter((complaint) => sharedIds.has(complaint.id) || categoryViewableIds.has(complaint.id));
   res.json(visible);
 });
 
@@ -90,9 +81,6 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
-        return res.status(404).json({ error: 'Réclamation introuvable.' });
-      }
-      if (req.userRole === 'member' && !data.category?.is_restricted && data.assigned_to !== req.user.id) {
         return res.status(404).json({ error: 'Réclamation introuvable.' });
       }
     }

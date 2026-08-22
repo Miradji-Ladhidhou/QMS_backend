@@ -12,32 +12,46 @@ afterEach(async () => {
   }
 });
 
-async function createCapa(token, title = 'CAPA de test') {
-  const res = await request(app).post('/api/capas').set('Authorization', `Bearer ${token}`).send({ title });
+async function createCapa(token, extra = {}) {
+  const res = await request(app).post('/api/capas').set('Authorization', `Bearer ${token}`).send({ title: 'CAPA de test', ...extra });
   expect(res.status).toBe(201);
   return res.body;
 }
 
-async function createQqoqccp(token, title = 'Analyse QQOQCCP de test') {
-  const res = await request(app).post('/api/qqoqccp').set('Authorization', `Bearer ${token}`).send({ title });
+async function createQqoqccp(token, extra = {}) {
+  const res = await request(app).post('/api/qqoqccp').set('Authorization', `Bearer ${token}`).send({ title: 'Analyse QQOQCCP de test', ...extra });
   expect(res.status).toBe(201);
   return res.body;
 }
 
-async function createComplaint(token) {
+async function createComplaint(token, extra = {}) {
   const res = await request(app)
     .post('/api/complaints')
     .set('Authorization', `Bearer ${token}`)
-    .send({ customer_name: 'Client Test', received_date: '2026-01-15', description: 'Réclamation de test' });
+    .send({ customer_name: 'Client Test', received_date: '2026-01-15', description: 'Réclamation de test', ...extra });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
+// CAPA/réclamations/QQOQCCP sont visibles par tout le tenant par défaut (comme les
+// Documents) — pour démontrer qu'un partage individuel donne réellement accès, ces tests le
+// font sur une catégorie explicitement restreinte (Paramètres > Catégories), sinon un member
+// verrait déjà l'élément sans aucun partage.
+async function createRestrictedCategory(token, resourceType, name = 'Restreinte') {
+  const res = await request(app)
+    .post('/api/module-categories')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ resource_type: resourceType, name, is_restricted: true });
   expect(res.status).toBe(201);
   return res.body;
 }
 
 describe('Partage d’un élément précis (record_shares)', () => {
-  it("un membre ne voit une CAPA non assignée qu'après un partage direct avec lui", async () => {
+  it("un membre ne voit une CAPA d'une catégorie restreinte qu'après un partage direct avec lui", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
-    const capa = await createCapa(tenant.admin.token);
+    const category = await createRestrictedCategory(tenant.admin.token, 'capa');
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
 
     const beforeList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
     expect(beforeList.body.map((c) => c.id)).not.toContain(capa.id);
@@ -67,7 +81,8 @@ describe('Partage d’un élément précis (record_shares)', () => {
   it("un partage par rôle 'member' donne accès à TOUS les membres", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
-    const capa = await createCapa(tenant.admin.token);
+    const category = await createRestrictedCategory(tenant.admin.token, 'capa');
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
 
     await request(app)
       .post('/api/shares')
@@ -84,7 +99,8 @@ describe('Partage d’un élément précis (record_shares)', () => {
   it('retirer un partage retire à nouveau l’accès', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
-    const capa = await createCapa(tenant.admin.token);
+    const category = await createRestrictedCategory(tenant.admin.token, 'capa');
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
 
     const shareRes = await request(app)
       .post('/api/shares')
@@ -177,10 +193,11 @@ describe('Partage d’un élément précis (record_shares)', () => {
     expect(listRes.body.map((d) => d.id)).toContain(docRes.body.id);
   });
 
-  it("un membre ne voit une réclamation non assignée qu'après un partage direct avec lui", async () => {
+  it("un membre ne voit une réclamation d'une catégorie restreinte qu'après un partage direct avec lui", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
-    const complaint = await createComplaint(tenant.admin.token);
+    const category = await createRestrictedCategory(tenant.admin.token, 'complaint');
+    const complaint = await createComplaint(tenant.admin.token, { category_id: category.id });
 
     const beforeDetail = await request(app)
       .get(`/api/complaints/${complaint.id}`)
@@ -202,10 +219,11 @@ describe('Partage d’un élément précis (record_shares)', () => {
     expect(afterDetail.status).toBe(200);
   });
 
-  it("un membre ne voit une analyse QQOQCCP qu'il n'a pas créée qu'après un partage direct", async () => {
+  it("un membre ne voit une analyse QQOQCCP d'une catégorie restreinte qu'après un partage direct", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
-    const analysis = await createQqoqccp(tenant.admin.token);
+    const category = await createRestrictedCategory(tenant.admin.token, 'qqoqccp');
+    const analysis = await createQqoqccp(tenant.admin.token, { category_id: category.id });
 
     const beforeList = await request(app).get('/api/qqoqccp').set('Authorization', `Bearer ${member.token}`);
     expect(beforeList.body.map((a) => a.id)).not.toContain(analysis.id);

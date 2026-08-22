@@ -103,8 +103,10 @@ router.put(
 );
 
 // GET /api/capas — liste avec le responsable assigné, statuts en retard mis à jour.
-// Un member ne peut pas traiter une CAPA une fois créée (voir PATCH /:id) : la liste par
-// défaut ne lui montre donc que celles qui lui sont assignées, pas tout le tenant.
+// Visible par tout le tenant par défaut (même modèle que les Documents) — seule une catégorie
+// explicitement restreinte (Paramètres > Catégories) limite l'accès, quel que soit le rôle.
+// Un member ne peut toujours MODIFIER que les CAPA qui lui sont assignées (voir PATCH /:id) —
+// ça, ça reste inchangé, seule la visibilité en lecture s'est simplifiée.
 router.get('/', async (req, res) => {
   await closeOverdueCapas(req.tenantId);
 
@@ -133,23 +135,13 @@ router.get('/', async (req, res) => {
   }
 
   // Catégorie restreinte (voir Paramètres > Catégories CAPA) : filterViewableByCategory laisse
-  // passer toute CAPA dont la catégorie n'est PAS restreinte (ou sans catégorie) — sur ces
-  // CAPA-là, la règle de base "un member ne voit que les siennes" s'applique donc encore, sans
-  // quoi la catégorie rendrait tout visible par défaut. Sur une catégorie explicitement
-  // restreinte en revanche, la permission de catégorie devient l'autorité et peut donner accès
-  // à un member même non-assigné (ou le lui retirer même assigné) — un manager n'est plus
-  // automatiquement exempté non plus.
+  // passer toute CAPA dont la catégorie n'est PAS restreinte (ou sans catégorie) — visible par
+  // tous dans ce cas. Sur une catégorie explicitement restreinte, seule la permission de
+  // catégorie (ou un partage individuel) donne accès, quel que soit le rôle ou l'assignation.
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
   );
-  const visible = data.filter((capa) => {
-    if (sharedIds.has(capa.id)) return true;
-    if (!categoryViewableIds.has(capa.id)) return false;
-    if (req.userRole === 'member' && !capa.category?.is_restricted) {
-      return capa.assigned_to === req.user.id;
-    }
-    return true;
-  });
+  const visible = data.filter((capa) => sharedIds.has(capa.id) || categoryViewableIds.has(capa.id));
 
   res.json(visible);
 });
@@ -172,10 +164,8 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'CAPA introuvable.' });
   }
 
-  // Même règle que GET / (liste) : un membre ne voit que ses CAPA assignées, ou celles
-  // partagées avec lui (voir record_shares/recordSharing.js) — la liste filtrait déjà cet
-  // accès mais ce détail ne le faisait pas, ce qui permettait d'ouvrir n'importe quelle CAPA
-  // du tenant en devinant/collant son id malgré la restriction affichée dans la liste.
+  // Même règle que GET / (liste) : visible par tout le tenant, sauf catégorie restreinte
+  // (voir Paramètres > Catégories) ou partage individuel qui en lève l'accès.
   if (req.userRole !== 'admin') {
     const shared = await isSharedWithUser({
       tenantId: req.tenantId,
@@ -185,8 +175,6 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      // Catégorie restreinte : même principe que les documents, s'applique désormais aussi
-      // au manager (qui voyait tout auparavant, hors restriction de catégorie inexistante).
       const categoryAllowed = await hasGenericCategoryPermission({
         tenantId: req.tenantId,
         userId: req.user.id,
@@ -195,14 +183,6 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
-        return res.status(404).json({ error: 'CAPA introuvable.' });
-      }
-      // Catégorie non restreinte (ou pas de catégorie) : hasGenericCategoryPermission renvoie
-      // toujours true dans ce cas, donc la règle de base "un member ne voit que ses CAPA
-      // assignées" s'applique encore ici. Une catégorie explicitement restreinte devient
-      // l'autorité et peut donner accès même sans assignation (voir GET / pour le même
-      // raisonnement).
-      if (req.userRole === 'member' && !capa.category?.is_restricted && capa.assigned_to !== req.user.id) {
         return res.status(404).json({ error: 'CAPA introuvable.' });
       }
     }

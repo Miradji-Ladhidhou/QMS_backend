@@ -20,10 +20,9 @@ const MANAGER_ROLES = ['admin', 'manager'];
 
 router.use(requireAuth);
 
-// GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier. Un
-// member ne voit que ses propres analyses (créées par lui) ou celles partagées avec lui (voir
-// record_shares/recordSharing.js) — contrairement à Audits/Risques, gardés en transparence
-// totale par choix assumé, une analyse QQOQCCP est un travail personnel comme une CAPA.
+// GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier.
+// Visible par tout le tenant par défaut (même modèle que les Documents) — seule une catégorie
+// explicitement restreinte (Paramètres > Catégories) limite l'accès.
 router.get('/', async (req, res) => {
   const query = supabase
     .from('qqoqccp_analyses')
@@ -46,22 +45,13 @@ router.get('/', async (req, res) => {
   }
 
   // Catégorie restreinte : filterViewableByCategory laisse passer toute analyse dont la
-  // catégorie n'est PAS restreinte (ou sans catégorie) — sur celles-là, la règle de base "un
-  // member ne voit que les siennes" s'applique encore, sans quoi la catégorie rendrait tout
-  // visible par défaut. Sur une catégorie explicitement restreinte, la permission de catégorie
-  // devient l'autorité et peut donner accès même non créée par lui (ou la retirer même créée
-  // par lui).
+  // catégorie n'est PAS restreinte (ou sans catégorie) — visible par tous dans ce cas. Sur une
+  // catégorie explicitement restreinte, seule la permission de catégorie (ou un partage
+  // individuel) donne accès.
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((a) => a.id)
   );
-  const visible = data.filter((analysis) => {
-    if (sharedIds.has(analysis.id)) return true;
-    if (!categoryViewableIds.has(analysis.id)) return false;
-    if (req.userRole === 'member' && !analysis.category?.is_restricted) {
-      return analysis.created_by === req.user.id;
-    }
-    return true;
-  });
+  const visible = data.filter((analysis) => sharedIds.has(analysis.id) || categoryViewableIds.has(analysis.id));
   res.json(visible);
 });
 
@@ -101,9 +91,6 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
-        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
-      }
-      if (req.userRole === 'member' && !data.category?.is_restricted && data.created_by !== req.user.id) {
         return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
       }
     }
@@ -146,9 +133,6 @@ router.get('/:id/pdf', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
-        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
-      }
-      if (req.userRole === 'member' && !analysis.category?.is_restricted && analysis.created_by !== req.user.id) {
         return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
       }
     }

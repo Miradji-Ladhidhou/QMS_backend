@@ -189,7 +189,7 @@ describe('POST /api/capas/:id/comments', () => {
 });
 
 describe('GET /api/capas', () => {
-  it('un member ne voit que ses propres CAPA assignées, pas celles du tenant', async () => {
+  it('un member voit toutes les CAPA du tenant par défaut (même modèle que les Documents), pas seulement les siennes', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
 
@@ -200,8 +200,7 @@ describe('GET /api/capas', () => {
       .send({ title: 'Capa B', assigned_to: memberB.id });
 
     const listA = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
-    expect(listA.body).toHaveLength(1);
-    expect(listA.body[0].title).toBe('Capa A');
+    expect(listA.body).toHaveLength(2);
 
     const listAdmin = await request(app).get('/api/capas').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(listAdmin.body).toHaveLength(2);
