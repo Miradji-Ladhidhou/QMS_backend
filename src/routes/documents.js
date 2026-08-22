@@ -1083,6 +1083,70 @@ router.get('/:id/audit-log', requireCategoryPermission('view', resolveDocumentBy
   res.json(data);
 });
 
+// PATCH /api/documents/bulk-category — déplace plusieurs documents d'un coup vers une
+// catégorie. admin/manager uniquement, comme le déplacement en masse des 10 autres modules
+// (capas.js etc.) : pas de vérification de permission catégorie par document, un déplacement
+// en masse touche potentiellement des documents créés par d'autres personnes.
+router.patch(
+  '/bulk-category',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins un document.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  requireValidDocumentCategoryId,
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
+// PATCH /api/documents/:id/category — reclasse un document existant. admin/manager + permission
+// d'édition sur sa catégorie actuelle, même garde que /:id/metadata.
+router.patch(
+  '/:id/category',
+  requireRole('admin', 'manager'),
+  requireCategoryPermission('edit', resolveDocumentById),
+  [body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.')],
+  requireValidDocumentCategoryId,
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select('*, category:document_categories(id, name, color)')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Document introuvable.' });
+    }
+
+    res.json(data);
+  }
+);
+
 // PATCH /api/documents/:id/status — changement de statut manuel
 router.patch(
   '/:id/status',

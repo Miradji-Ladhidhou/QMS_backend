@@ -319,3 +319,141 @@ describe('Conflit groupe / utilisateur sur une catégorie restreinte', () => {
     expect(adminList.body.map((d) => d.id)).toContain(docRes.body.id);
   });
 });
+
+describe('Reclassement de documents existants (PATCH /:id/category et /bulk-category)', () => {
+  async function createCategory(tenantId, name, extra = {}) {
+    const { data } = await admin.from('document_categories').insert({ tenant_id: tenantId, name, ...extra }).select().single();
+    return data.id;
+  }
+
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app).post('/api/documents').set('Authorization', `Bearer ${token}`).field('number', number).field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('PATCH /:id/category reclasse un document existant vers une autre catégorie', async () => {
+    tenant = await createTenant();
+    const categoryA = await createCategory(tenant.tenantId, 'Catégorie A');
+    const categoryB = await createCategory(tenant.tenantId, 'Catégorie B');
+    const doc = await createDocument(tenant.admin.token, 'DOC-CAT-001', { category_id: categoryA });
+
+    const res = await request(app)
+      .patch(`/api/documents/${doc.id}/category`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: categoryB });
+    expect(res.status).toBe(200);
+    expect(res.body.category_id).toBe(categoryB);
+  });
+
+  it('PATCH /:id/category avec category_id: null retire la catégorie', async () => {
+    tenant = await createTenant();
+    const category = await createCategory(tenant.tenantId, 'Catégorie');
+    const doc = await createDocument(tenant.admin.token, 'DOC-CAT-002', { category_id: category });
+
+    const res = await request(app)
+      .patch(`/api/documents/${doc.id}/category`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: null });
+    expect(res.status).toBe(200);
+    expect(res.body.category_id).toBeNull();
+  });
+
+  it('un member ne peut pas reclasser un document (réservé admin/manager)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const category = await createCategory(tenant.tenantId, 'Catégorie');
+    const doc = await createDocument(tenant.admin.token, 'DOC-CAT-003');
+
+    const res = await request(app)
+      .patch(`/api/documents/${doc.id}/category`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ category_id: category });
+    expect(res.status).toBe(403);
+  });
+
+  it("rejette un category_id d'un autre tenant sur PATCH /:id/category, même admin", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const otherCategory = await createCategory(otherTenant.tenantId, 'Catégorie autre tenant');
+      const doc = await createDocument(tenant.admin.token, 'DOC-CAT-004');
+
+      const res = await request(app)
+        .patch(`/api/documents/${doc.id}/category`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ category_id: otherCategory });
+      expect(res.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it('PATCH /bulk-category déplace plusieurs documents vers une catégorie en un seul appel', async () => {
+    tenant = await createTenant();
+    const category = await createCategory(tenant.tenantId, 'Lot A');
+    const docA = await createDocument(tenant.admin.token, 'DOC-BULK-001');
+    const docB = await createDocument(tenant.admin.token, 'DOC-BULK-002');
+    const docC = await createDocument(tenant.admin.token, 'DOC-BULK-003');
+
+    const res = await request(app)
+      .patch('/api/documents/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [docA.id, docB.id], category_id: category });
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(2);
+
+    const detailA = await request(app).get(`/api/documents/${docA.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detailA.body.category_id).toBe(category);
+    const detailC = await request(app).get(`/api/documents/${docC.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detailC.body.category_id).toBeNull();
+  });
+
+  it('un member ne peut pas déplacer des documents en masse (réservé admin/manager)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const doc = await createDocument(tenant.admin.token, 'DOC-BULK-004');
+
+    const res = await request(app)
+      .patch('/api/documents/bulk-category')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [doc.id], category_id: null });
+    expect(res.status).toBe(403);
+  });
+
+  it("un id d'un autre tenant est silencieusement ignoré sur PATCH /bulk-category", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const otherDoc = await createDocument(otherTenant.admin.token, 'DOC-BULK-OTHER-001');
+
+      const res = await request(app)
+        .patch('/api/documents/bulk-category')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ ids: [otherDoc.id], category_id: null });
+      expect(res.status).toBe(200);
+      expect(res.body.updated).toBe(0);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it("rejette un category_id d'un autre tenant sur PATCH /bulk-category, même admin", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const otherCategory = await createCategory(otherTenant.tenantId, 'Catégorie autre tenant');
+      const doc = await createDocument(tenant.admin.token, 'DOC-BULK-005');
+
+      const res = await request(app)
+        .patch('/api/documents/bulk-category')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ ids: [doc.id], category_id: otherCategory });
+      expect(res.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
