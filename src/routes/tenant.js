@@ -22,6 +22,29 @@ const upload = multer({
   },
 });
 const LOGO_BUCKET = 'tenant-logos';
+
+// Sections de menu configurables (visibilité par rôle/utilisateur) — dupliqué depuis
+// Layout.jsx#NAV_ITEMS plutôt que partagé (deux repos séparés, pas de package commun). Les
+// entrées adminOnly (services, employees, settings) sont volontairement absentes : réservées à
+// l'admin de façon fixe, jamais configurables ici, pour qu'aucune combinaison de règles ne
+// puisse jamais faire disparaître Paramètres du menu d'un admin.
+const MENU_ITEM_KEYS = [
+  'dashboard',
+  'planning',
+  'documents',
+  'capas',
+  'complaints',
+  'trainings',
+  'kpis',
+  'qqoqccp',
+  'audits',
+  'risks',
+  'suppliers',
+  'management-reviews',
+  'my-approvals',
+];
+const MENU_ITEM_KEY_SET = new Set(MENU_ITEM_KEYS);
+const CONFIGURABLE_ROLES = ['manager', 'member'];
 // Mêmes fuseaux IANA que le sélecteur frontend (Intl.supportedValuesOf) — validé ici aussi
 // pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
 const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
@@ -170,6 +193,97 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
 
   if (error) {
     return res.status(500).json({ error: 'Erreur lors de la mise à jour du logo.' });
+  }
+
+  res.json(data);
+});
+
+function isValidRoleHiddenItems(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.entries(value).every(
+    ([role, items]) =>
+      CONFIGURABLE_ROLES.includes(role) && Array.isArray(items) && items.every((key) => MENU_ITEM_KEY_SET.has(key))
+  );
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidUserOverrides(value) {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.entries(value).every(([userId, overrides]) => {
+    if (!UUID_RE.test(userId)) return false;
+    if (typeof overrides !== 'object' || overrides === null || Array.isArray(overrides)) return false;
+    return Object.entries(overrides).every(([key, visible]) => MENU_ITEM_KEY_SET.has(key) && typeof visible === 'boolean');
+  });
+}
+
+// GET /api/tenant/menu — sections visibles pour L'UTILISATEUR COURANT, calculées côté serveur
+// (jamais la config brute, réservée à /menu-settings). Un admin voit toujours tout : ce
+// réglage ne s'applique jamais au rôle admin, pour qu'aucune combinaison de règles ne puisse
+// jamais cacher Paramètres > Visibilité à celui/celle qui doit pouvoir la corriger.
+router.get('/menu', async (req, res) => {
+  if (req.userRole === 'admin') {
+    return res.json({ visible: MENU_ITEM_KEYS });
+  }
+
+  const { data: settings } = await supabase
+    .from('tenant_menu_settings')
+    .select('role_hidden_items, user_overrides')
+    .eq('tenant_id', req.tenantId)
+    .maybeSingle();
+
+  const hiddenForRole = new Set(settings?.role_hidden_items?.[req.userRole] || []);
+  const overridesForUser = settings?.user_overrides?.[req.user.id] || {};
+
+  const visible = MENU_ITEM_KEYS.filter((key) => {
+    if (Object.prototype.hasOwnProperty.call(overridesForUser, key)) return overridesForUser[key];
+    return !hiddenForRole.has(key);
+  });
+
+  res.json({ visible });
+});
+
+// GET /api/tenant/menu-settings — configuration brute, réservée admin (Paramètres > Visibilité
+// en a besoin telle quelle pour pré-remplir les cases à cocher).
+router.get('/menu-settings', requireRole('admin'), async (req, res) => {
+  const { data, error } = await supabase
+    .from('tenant_menu_settings')
+    .select('role_hidden_items, user_overrides')
+    .eq('tenant_id', req.tenantId)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les réglages de visibilité.' });
+  }
+
+  res.json({
+    items: MENU_ITEM_KEYS,
+    role_hidden_items: data?.role_hidden_items || {},
+    user_overrides: data?.user_overrides || {},
+  });
+});
+
+// PATCH /api/tenant/menu-settings — remplace la configuration entière : l'écran envoie toujours
+// l'objet complet qu'il vient d'éditer, plus simple et sans risque d'incohérence entre deux
+// PATCH concurrents sur des sous-clés différentes qu'un merge partiel aurait introduit.
+router.patch('/menu-settings', requireRole('admin'), async (req, res) => {
+  const { role_hidden_items: roleHiddenItems, user_overrides: userOverrides } = req.body;
+
+  if (!isValidRoleHiddenItems(roleHiddenItems) || !isValidUserOverrides(userOverrides)) {
+    return res.status(400).json({ error: 'Réglages de visibilité invalides.' });
+  }
+
+  const { data, error } = await supabase
+    .from('tenant_menu_settings')
+    .upsert(
+      { tenant_id: req.tenantId, role_hidden_items: roleHiddenItems, user_overrides: userOverrides },
+      { onConflict: 'tenant_id' }
+    )
+    .select('role_hidden_items, user_overrides')
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible d'enregistrer les réglages de visibilité." });
   }
 
   res.json(data);

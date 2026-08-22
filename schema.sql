@@ -789,6 +789,23 @@ create table super_admin_audit_log (
   created_at  timestamptz not null default now()
 );
 
+-- Visibilité du menu par rôle et par utilisateur — purement additif, absence de ligne = menu
+-- complet inchangé pour tout le monde (comportement actuel). role_hidden_items :
+-- {"member": ["suppliers"], "manager": []} = sections retirées PAR DÉFAUT pour ce rôle.
+-- user_overrides : {"<userId>": {"suppliers": true}} = exception pour CET utilisateur précis,
+-- prioritaire sur la règle de son rôle (true = forcer visible, false = forcer masqué). Un admin
+-- voit toujours tout : ce réglage ne s'applique jamais au rôle admin (voir GET /api/tenant/menu),
+-- pour qu'aucune combinaison de règles ne puisse jamais cacher Paramètres > Visibilité à
+-- celui/celle qui doit pouvoir la corriger.
+create table tenant_menu_settings (
+  id                 uuid primary key default gen_random_uuid(),
+  tenant_id          uuid not null unique references tenants (id) on delete cascade,
+  role_hidden_items  jsonb not null default '{}'::jsonb,
+  user_overrides     jsonb not null default '{}'::jsonb,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+
 -- Stockage alternatif Google Drive, par tenant — purement additif, n'affecte aucun tenant
 -- existant. Absence de ligne = 'supabase' (comportement actuel inchangé, valeur par défaut de
 -- la colonne) ; seuls les tenants qui activent explicitement Google Drive ont une ligne ici.
@@ -1115,6 +1132,9 @@ $$;
 create trigger trg_set_capa_number before insert on capas
   for each row when (new.number is null) execute function set_capa_number();
 
+create trigger trg_tenant_menu_settings_updated_at before update on tenant_menu_settings
+  for each row execute function set_updated_at();
+
 create trigger trg_tenant_storage_settings_updated_at before update on tenant_storage_settings
   for each row execute function set_updated_at();
 
@@ -1241,6 +1261,7 @@ alter table groups enable row level security;
 alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
+alter table tenant_menu_settings enable row level security;
 alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
 
@@ -1457,6 +1478,11 @@ create policy super_admin_audit_log_select on super_admin_audit_log
 create policy super_admin_audit_log_insert on super_admin_audit_log
   for insert
   with check (auth_is_super_admin());
+
+create policy tenant_menu_settings_isolation on tenant_menu_settings
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
 
 create policy tenant_storage_settings_isolation on tenant_storage_settings
   for all
