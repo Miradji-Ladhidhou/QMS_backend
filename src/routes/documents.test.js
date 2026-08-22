@@ -153,6 +153,75 @@ describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive c
   });
 });
 
+// Bug réel rapporté : le bouton "Nouvelle version" s'affichait pour tout le monde côté
+// frontend, même quelqu'un avec seulement "Voir" sur une catégorie restreinte — qui se
+// heurtait alors à un 403 après avoir rempli le formulaire d'upload. GET /:id renvoie
+// maintenant can_edit, calculé côté serveur, pour que le frontend n'affiche le bouton que si
+// l'action va réellement réussir.
+describe('GET /api/documents/:id — champ can_edit', () => {
+  it('true pour un document sans catégorie restreinte, y compris un membre', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CANEDIT-001')
+      .field('title', 'Document ouvert');
+
+    const res = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.can_edit).toBe(true);
+  });
+
+  it("false pour un membre avec uniquement 'Voir' sur une catégorie restreinte, true une fois can_edit accordé", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Restreinte', is_restricted: true })
+      .select()
+      .single();
+
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true, can_edit: false })
+      .expect(201);
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CANEDIT-002')
+      .field('title', 'Document restreint')
+      .field('category_id', category.id);
+
+    const viewOnlyRes = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(viewOnlyRes.status).toBe(200);
+    expect(viewOnlyRes.body.can_edit).toBe(false);
+
+    // La même route POST /:id/versions doit d'ailleurs refuser l'upload — le champ can_edit
+    // ne fait qu'annoncer côté frontend ce que le backend applique déjà réellement.
+    // requireCategoryPermission répond 404 par défaut (jamais laisser deviner qu'une
+    // ressource restreinte existe), pas 403 — cohérent avec GET /:id sur un document masqué.
+    const uploadAttempt = await request(app)
+      .post(`/api/documents/${doc.body.id}/versions`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .attach('file', Buffer.from('contenu'), 'v2.txt');
+    expect(uploadAttempt.status).toBe(404);
+
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true, can_edit: true })
+      .expect(201);
+
+    const editableRes = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(editableRes.body.can_edit).toBe(true);
+  });
+});
+
 // Bug réel rapporté : un membre appartenait à un groupe autorisé sur une catégorie restreinte,
 // et l'admin voulait lui masquer spécifiquement cette catégorie malgré son groupe — l'ancienne
 // logique retombait sur le groupe dès que la règle directe n'était pas "true", laissant les

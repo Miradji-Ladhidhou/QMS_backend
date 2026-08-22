@@ -526,7 +526,19 @@ router.get('/:id', requireCategoryPermission('view', resolveDocumentById), async
     approvals = workflowApprovals || [];
   }
 
-  res.json({ ...document, versions, workflow: workflow ? { ...workflow, approvals } : null });
+  // Le frontend en a besoin pour n'afficher "Nouvelle version" (et les autres actions
+  // d'édition) que si l'utilisateur peut réellement les faire — bug réel rapporté : le bouton
+  // s'affichait pour tout le monde, y compris quelqu'un avec uniquement "Voir" sur la
+  // catégorie restreinte, qui se heurtait alors à un 403 après avoir rempli le formulaire.
+  const canEdit = await hasCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: document.category_id,
+    permission: 'edit',
+  });
+
+  res.json({ ...document, versions, workflow: workflow ? { ...workflow, approvals } : null, can_edit: canEdit });
 });
 
 // GET /api/documents/:id/certificate — certificat PDF de signature électronique
