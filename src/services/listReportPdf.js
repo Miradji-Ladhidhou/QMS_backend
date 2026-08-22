@@ -129,13 +129,21 @@ export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, co
       doc.y = rowY + rowHeight;
     });
 
+    // Bug réel corrigé : écrire ce pied de page tout près du bas déclenchait le saut de page
+    // automatique de pdfkit (.text() ajoute une page si le texte ne "rentre" pas au-dessus de
+    // page.margins.bottom), créant une page fantôme en plus rien que pour ce texte — visible
+    // pour un document d'une seule page qui se retrouvait avec une 2e page vide affichant
+    // "Page 1 / 1". Neutraliser la marge basse le temps de cet appel évite le déclenchement.
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);
+      const bottomMargin = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;
       doc.fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, doc.page.height - 30, {
         width: CONTENT_WIDTH,
         align: 'center',
       });
+      doc.page.margins.bottom = bottomMargin;
     }
 
     doc.end();

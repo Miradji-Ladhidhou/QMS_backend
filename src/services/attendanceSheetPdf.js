@@ -156,13 +156,19 @@ export function buildAttendanceSheetPdf({
       doc.y = rowY + ROW_HEIGHT;
     });
 
+    // Même bug/fix que listReportPdf.js : écrire ce pied de page tout près du bas déclenche le
+    // saut de page automatique de pdfkit, créant une page fantôme en plus rien que pour ce
+    // texte ("Page 1 / 1" sur une 2e page vide pour un document d'une seule page).
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);
+      const bottomMargin = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;
       doc.fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, doc.page.height - 30, {
         width: CONTENT_WIDTH,
         align: 'center',
       });
+      doc.page.margins.bottom = bottomMargin;
     }
 
     doc.end();
