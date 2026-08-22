@@ -28,12 +28,6 @@ router.get('/', async (req, res) => {
       ? new Set()
       : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'complaint', userId: req.user.id, userRole: req.userRole });
 
-  if (req.userRole === 'member') {
-    query =
-      sharedIds.size > 0
-        ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
-        : query.eq('assigned_to', req.user.id);
-  }
   if (req.query.status) {
     query = query.eq('status', req.query.status);
   }
@@ -47,10 +41,23 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
+  // Catégorie restreinte : filterViewableByCategory laisse passer toute réclamation dont la
+  // catégorie n'est PAS restreinte (ou sans catégorie) — sur celles-là, la règle de base "un
+  // member ne voit que les siennes" s'applique encore, sans quoi la catégorie rendrait tout
+  // visible par défaut. Sur une catégorie explicitement restreinte, la permission de catégorie
+  // devient l'autorité et peut donner accès même non-assigné (ou le retirer même assigné).
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
   );
-  res.json(data.filter((complaint) => sharedIds.has(complaint.id) || categoryViewableIds.has(complaint.id)));
+  const visible = data.filter((complaint) => {
+    if (sharedIds.has(complaint.id)) return true;
+    if (!categoryViewableIds.has(complaint.id)) return false;
+    if (req.userRole === 'member' && !complaint.category?.is_restricted) {
+      return complaint.assigned_to === req.user.id;
+    }
+    return true;
+  });
+  res.json(visible);
 });
 
 // GET /api/complaints/:id
@@ -75,9 +82,6 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      if (req.userRole === 'member' && data.assigned_to !== req.user.id) {
-        return res.status(404).json({ error: 'Réclamation introuvable.' });
-      }
       const categoryAllowed = await hasGenericCategoryPermission({
         tenantId: req.tenantId,
         userId: req.user.id,
@@ -86,6 +90,9 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Réclamation introuvable.' });
+      }
+      if (req.userRole === 'member' && !data.category?.is_restricted && data.assigned_to !== req.user.id) {
         return res.status(404).json({ error: 'Réclamation introuvable.' });
       }
     }

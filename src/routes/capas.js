@@ -108,7 +108,7 @@ router.put(
 router.get('/', async (req, res) => {
   await closeOverdueCapas(req.tenantId);
 
-  let query = supabase
+  const query = supabase
     .from('capas')
     .select(CAPA_SELECT)
     .eq('tenant_id', req.tenantId)
@@ -116,20 +116,11 @@ router.get('/', async (req, res) => {
 
   // Un partage (voir record_shares/recordSharing.js, bouton Partager) donne accès à une CAPA
   // précise en plus des règles normales — jamais une restriction, uniquement un octroi
-  // supplémentaire. Calculé pour tous les rôles non-admin : sert à la fois à élargir l'accès
-  // d'un member (comme avant) et à lever la restriction de catégorie ci-dessous pour
-  // manager/member.
+  // supplémentaire. Calculé pour tous les rôles non-admin.
   const sharedIds =
     req.userRole === 'admin'
       ? new Set()
       : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'capa', userId: req.user.id, userRole: req.userRole });
-
-  if (req.userRole === 'member') {
-    query =
-      sharedIds.size > 0
-        ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
-        : query.eq('assigned_to', req.user.id);
-  }
 
   const { data, error } = await query;
 
@@ -141,13 +132,24 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
-  // Catégorie restreinte (voir Paramètres > Catégories CAPA) : même principe que les
-  // documents — s'ajoute à la règle ci-dessus, un manager n'est plus automatiquement exempté.
-  // Un partage individuel lève cette restriction, même priorité que hasCategoryPermission.
+  // Catégorie restreinte (voir Paramètres > Catégories CAPA) : filterViewableByCategory laisse
+  // passer toute CAPA dont la catégorie n'est PAS restreinte (ou sans catégorie) — sur ces
+  // CAPA-là, la règle de base "un member ne voit que les siennes" s'applique donc encore, sans
+  // quoi la catégorie rendrait tout visible par défaut. Sur une catégorie explicitement
+  // restreinte en revanche, la permission de catégorie devient l'autorité et peut donner accès
+  // à un member même non-assigné (ou le lui retirer même assigné) — un manager n'est plus
+  // automatiquement exempté non plus.
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
   );
-  const visible = data.filter((capa) => sharedIds.has(capa.id) || categoryViewableIds.has(capa.id));
+  const visible = data.filter((capa) => {
+    if (sharedIds.has(capa.id)) return true;
+    if (!categoryViewableIds.has(capa.id)) return false;
+    if (req.userRole === 'member' && !capa.category?.is_restricted) {
+      return capa.assigned_to === req.user.id;
+    }
+    return true;
+  });
 
   res.json(visible);
 });
@@ -183,9 +185,6 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      if (req.userRole === 'member' && capa.assigned_to !== req.user.id) {
-        return res.status(404).json({ error: 'CAPA introuvable.' });
-      }
       // Catégorie restreinte : même principe que les documents, s'applique désormais aussi
       // au manager (qui voyait tout auparavant, hors restriction de catégorie inexistante).
       const categoryAllowed = await hasGenericCategoryPermission({
@@ -196,6 +195,14 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
+        return res.status(404).json({ error: 'CAPA introuvable.' });
+      }
+      // Catégorie non restreinte (ou pas de catégorie) : hasGenericCategoryPermission renvoie
+      // toujours true dans ce cas, donc la règle de base "un member ne voit que ses CAPA
+      // assignées" s'applique encore ici. Une catégorie explicitement restreinte devient
+      // l'autorité et peut donner accès même sans assignation (voir GET / pour le même
+      // raisonnement).
+      if (req.userRole === 'member' && !capa.category?.is_restricted && capa.assigned_to !== req.user.id) {
         return res.status(404).json({ error: 'CAPA introuvable.' });
       }
     }

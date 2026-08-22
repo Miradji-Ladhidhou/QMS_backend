@@ -25,7 +25,7 @@ router.use(requireAuth);
 // record_shares/recordSharing.js) — contrairement à Audits/Risques, gardés en transparence
 // totale par choix assumé, une analyse QQOQCCP est un travail personnel comme une CAPA.
 router.get('/', async (req, res) => {
-  let query = supabase
+  const query = supabase
     .from('qqoqccp_analyses')
     .select('id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted)')
     .eq('tenant_id', req.tenantId)
@@ -36,13 +36,6 @@ router.get('/', async (req, res) => {
       ? new Set()
       : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'qqoqccp', userId: req.user.id, userRole: req.userRole });
 
-  if (req.userRole === 'member') {
-    query =
-      sharedIds.size > 0
-        ? query.or(`created_by.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
-        : query.eq('created_by', req.user.id);
-  }
-
   const { data, error } = await query;
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les analyses QQOQCCP.' });
@@ -52,10 +45,24 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
+  // Catégorie restreinte : filterViewableByCategory laisse passer toute analyse dont la
+  // catégorie n'est PAS restreinte (ou sans catégorie) — sur celles-là, la règle de base "un
+  // member ne voit que les siennes" s'applique encore, sans quoi la catégorie rendrait tout
+  // visible par défaut. Sur une catégorie explicitement restreinte, la permission de catégorie
+  // devient l'autorité et peut donner accès même non créée par lui (ou la retirer même créée
+  // par lui).
   const categoryViewableIds = new Set(
     (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((a) => a.id)
   );
-  res.json(data.filter((analysis) => sharedIds.has(analysis.id) || categoryViewableIds.has(analysis.id)));
+  const visible = data.filter((analysis) => {
+    if (sharedIds.has(analysis.id)) return true;
+    if (!categoryViewableIds.has(analysis.id)) return false;
+    if (req.userRole === 'member' && !analysis.category?.is_restricted) {
+      return analysis.created_by === req.user.id;
+    }
+    return true;
+  });
+  res.json(visible);
 });
 
 // GET /api/qqoqccp/:id — détail complet
@@ -86,9 +93,6 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      if (req.userRole === 'member' && data.created_by !== req.user.id) {
-        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
-      }
       const categoryAllowed = await hasGenericCategoryPermission({
         tenantId: req.tenantId,
         userId: req.user.id,
@@ -97,6 +101,9 @@ router.get('/:id', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
+      if (req.userRole === 'member' && !data.category?.is_restricted && data.created_by !== req.user.id) {
         return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
       }
     }
@@ -111,7 +118,9 @@ router.get('/:id', async (req, res) => {
 router.get('/:id/pdf', async (req, res) => {
   const { data: analysis, error } = await supabase
     .from('qqoqccp_analyses')
-    .select('*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status)')
+    .select(
+      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)'
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -129,9 +138,6 @@ router.get('/:id/pdf', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      if (req.userRole === 'member' && analysis.created_by !== req.user.id) {
-        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
-      }
       const categoryAllowed = await hasGenericCategoryPermission({
         tenantId: req.tenantId,
         userId: req.user.id,
@@ -140,6 +146,9 @@ router.get('/:id/pdf', async (req, res) => {
         permission: 'view',
       });
       if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
+      if (req.userRole === 'member' && !analysis.category?.is_restricted && analysis.created_by !== req.user.id) {
         return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
       }
     }

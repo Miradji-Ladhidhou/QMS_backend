@@ -107,6 +107,54 @@ describe('Catégories génériques (CAPA)', () => {
     expect(detailAfter.status).toBe(200);
   });
 
+  it("un membre non-assigné voit une CAPA d'une catégorie restreinte dès qu'il a la permission de catégorie (la catégorie donne accès, pas seulement le partage individuel)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
+    const member = tenant.users[0];
+    const otherManager = tenant.users[1];
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Accès catégorie membre', isRestricted: true });
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id, assigned_to: otherManager.id });
+
+    const beforeList = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
+    expect(beforeList.body.map((c) => c.id)).not.toContain(capa.id);
+    const beforeDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(beforeDetail.status).toBe(404);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
+    expect(afterList.body.map((c) => c.id)).toContain(capa.id);
+    const afterDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(afterDetail.status).toBe(200);
+  });
+
+  it("un membre ne voit toujours pas les CAPA des autres sans catégorie restreinte, même avec un accès de catégorie ailleurs (la catégorie n'élargit pas la visibilité par défaut)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
+    const member = tenant.users[0];
+    const otherManager = tenant.users[1];
+
+    const restrictedCategory = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Restreinte', isRestricted: true });
+    await request(app)
+      .post(`/api/module-categories/${restrictedCategory.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
+      .expect(201);
+
+    // Pas de catégorie du tout sur cette CAPA — la règle de base "member ne voit que les
+    // siennes" doit continuer à s'appliquer, la permission de catégorie du membre sur une
+    // AUTRE catégorie ne doit rien changer ici.
+    const uncategorizedCapa = await createCapa(tenant.admin.token, { assigned_to: otherManager.id });
+
+    const list = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
+    expect(list.body.map((c) => c.id)).not.toContain(uncategorizedCapa.id);
+    const detail = await request(app).get(`/api/capas/${uncategorizedCapa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(detail.status).toBe(404);
+  });
+
   it('une règle directe can_view=false est prioritaire sur un groupe autorisé (même fix que documents)', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
     const manager = tenant.users[0];
