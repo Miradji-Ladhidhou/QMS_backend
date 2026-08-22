@@ -90,6 +90,35 @@ describe('Visibilité du menu par rôle et par utilisateur', () => {
     expect(badKey.status).toBe(400);
   });
 
+  it("services et personnel sont masqués par défaut pour manager/member (jamais configuré), visibles pour l'admin", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'member' }] });
+    const [manager, member] = tenant.users;
+
+    const adminMenu = await request(app).get('/api/tenant/menu').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminMenu.body.visible).toContain('services');
+    expect(adminMenu.body.visible).toContain('employees');
+
+    const managerMenu = await request(app).get('/api/tenant/menu').set('Authorization', `Bearer ${manager.token}`);
+    expect(managerMenu.body.visible).not.toContain('services');
+    expect(managerMenu.body.visible).not.toContain('employees');
+    expect(managerMenu.body.visible).toContain('documents');
+
+    const memberMenu = await request(app).get('/api/tenant/menu').set('Authorization', `Bearer ${member.token}`);
+    expect(memberMenu.body.visible).not.toContain('services');
+
+    // L'admin peut explicitement les rendre visibles à un rôle malgré le défaut masqué.
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { manager: [], member: ['services', 'employees'] }, user_overrides: {} })
+      .expect(200);
+
+    const managerAfter = await request(app).get('/api/tenant/menu').set('Authorization', `Bearer ${manager.token}`);
+    expect(managerAfter.body.visible).toContain('services');
+    const memberAfter = await request(app).get('/api/tenant/menu').set('Authorization', `Bearer ${member.token}`);
+    expect(memberAfter.body.visible).not.toContain('services');
+  });
+
   it('un manager/member ne peut pas lire ou modifier les réglages de visibilité', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];

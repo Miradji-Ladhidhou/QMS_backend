@@ -24,10 +24,15 @@ const upload = multer({
 const LOGO_BUCKET = 'tenant-logos';
 
 // Sections de menu configurables (visibilité par rôle/utilisateur) — dupliqué depuis
-// Layout.jsx#NAV_ITEMS plutôt que partagé (deux repos séparés, pas de package commun). Les
-// entrées adminOnly (services, employees, settings) sont volontairement absentes : réservées à
-// l'admin de façon fixe, jamais configurables ici, pour qu'aucune combinaison de règles ne
-// puisse jamais faire disparaître Paramètres du menu d'un admin.
+// Layout.jsx#NAV_ITEMS plutôt que partagé (deux repos séparés, pas de package commun).
+// "Paramètres" reste volontairement absent et fixe (jamais configurable) : c'est le seul
+// endroit qui permet de corriger ce réglage, donc aucune combinaison de règles ne doit jamais
+// pouvoir le faire disparaître pour un admin. "services" et "employees" (Personnel), en
+// revanche, N'ONT PAS ce risque de verrouillage (leurs données GET sont déjà accessibles à
+// tous les rôles côté backend, seules les mutations restent admin-only) — configurables comme
+// les autres, mais avec un défaut différent (voir DEFAULT_HIDDEN_FOR_ROLE) : masqués pour
+// manager/member tant que l'admin n'a rien changé, pour ne modifier le comportement d'aucun
+// tenant existant au déploiement de cette fonctionnalité.
 const MENU_ITEM_KEYS = [
   'dashboard',
   'planning',
@@ -42,9 +47,12 @@ const MENU_ITEM_KEYS = [
   'suppliers',
   'management-reviews',
   'my-approvals',
+  'services',
+  'employees',
 ];
 const MENU_ITEM_KEY_SET = new Set(MENU_ITEM_KEYS);
 const CONFIGURABLE_ROLES = ['manager', 'member'];
+const DEFAULT_HIDDEN_FOR_ROLE = { manager: ['services', 'employees'], member: ['services', 'employees'] };
 // Mêmes fuseaux IANA que le sélecteur frontend (Intl.supportedValuesOf) — validé ici aussi
 // pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
 const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
@@ -232,7 +240,10 @@ router.get('/menu', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .maybeSingle();
 
-  const hiddenForRole = new Set(settings?.role_hidden_items?.[req.userRole] || []);
+  // undefined (rôle jamais configuré) => défaut ; [] explicite (l'admin a choisi de tout
+  // montrer) => respecté tel quel — distinction volontaire, voir DEFAULT_HIDDEN_FOR_ROLE.
+  const storedForRole = settings?.role_hidden_items?.[req.userRole];
+  const hiddenForRole = new Set(storedForRole !== undefined ? storedForRole : DEFAULT_HIDDEN_FOR_ROLE[req.userRole] || []);
   const overridesForUser = settings?.user_overrides?.[req.user.id] || {};
 
   const visible = MENU_ITEM_KEYS.filter((key) => {
@@ -243,8 +254,11 @@ router.get('/menu', async (req, res) => {
   res.json({ visible });
 });
 
-// GET /api/tenant/menu-settings — configuration brute, réservée admin (Paramètres > Visibilité
-// en a besoin telle quelle pour pré-remplir les cases à cocher).
+// GET /api/tenant/menu-settings — configuration EFFECTIVE (défauts résolus, voir
+// DEFAULT_HIDDEN_FOR_ROLE), réservée admin : Paramètres > Visibilité doit pré-cocher les
+// cases selon ce qui s'applique VRAIMENT, pas selon la ligne brute en base (souvent absente
+// tant que l'admin n'a jamais rien changé), sous peine d'afficher "visible" alors que
+// services/employees sont en réalité masqués par défaut pour manager/member.
 router.get('/menu-settings', requireRole('admin'), async (req, res) => {
   const { data, error } = await supabase
     .from('tenant_menu_settings')
@@ -256,9 +270,17 @@ router.get('/menu-settings', requireRole('admin'), async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les réglages de visibilité.' });
   }
 
+  const storedRoleHidden = data?.role_hidden_items || {};
+  const effectiveRoleHidden = Object.fromEntries(
+    CONFIGURABLE_ROLES.map((role) => [
+      role,
+      storedRoleHidden[role] !== undefined ? storedRoleHidden[role] : DEFAULT_HIDDEN_FOR_ROLE[role] || [],
+    ])
+  );
+
   res.json({
     items: MENU_ITEM_KEYS,
-    role_hidden_items: data?.role_hidden_items || {},
+    role_hidden_items: effectiveRoleHidden,
     user_overrides: data?.user_overrides || {},
   });
 });
