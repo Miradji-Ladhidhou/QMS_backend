@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
@@ -52,6 +52,7 @@ router.post(
     body('assigned_employee_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne assignée invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('task'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -108,6 +109,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('task'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -144,6 +146,7 @@ router.patch(
       .withMessage('Personne assignée invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('task'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -106,6 +106,7 @@ router.post(
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('complaint'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -164,6 +165,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('complaint'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -207,6 +209,7 @@ router.patch(
     body('customer_satisfied').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('complaint'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -223,6 +223,7 @@ router.post(
     body('preventive_action').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('capa'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -296,6 +297,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('capa'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -348,6 +350,7 @@ router.patch(
     body('comment').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('capa'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

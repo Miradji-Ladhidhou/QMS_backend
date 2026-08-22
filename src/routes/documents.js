@@ -24,6 +24,7 @@ import {
   resolveDocumentById,
   resolveCategoryFromBody,
   hasCategoryPermission,
+  requireValidDocumentCategoryId,
 } from '../middleware/documentPermissions.js';
 
 const router = Router();
@@ -609,6 +610,7 @@ router.post(
     body('review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
     body('review_frequency_months').optional({ values: 'falsy' }).isInt({ min: 1 }).withMessage('Fréquence de révision invalide.').toInt(),
   ],
+  requireValidDocumentCategoryId,
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

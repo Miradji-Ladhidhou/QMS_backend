@@ -184,6 +184,27 @@ export async function filterViewableCategories({ userId, userRole, categories })
   });
 }
 
+// Vérifie que le category_id soumis dans le corps de la requête appartient bien au tenant
+// courant, indépendamment du rôle (y compris admin, qui bypasse hasCategoryPermission
+// ci-dessus mais ne doit pas pouvoir poser un category_id inexistant ou d'un autre tenant) —
+// même garde-fou que requireValidCategoryId côté modules génériques (genericCategoryPermissions.js).
+export async function requireValidDocumentCategoryId(req, res, next) {
+  const categoryId = req.body?.category_id;
+  if (!categoryId) return next();
+
+  const { data, error } = await supabase
+    .from('document_categories')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', categoryId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(400).json({ error: 'Catégorie invalide.' });
+  }
+  next();
+}
+
 // --- Résolveurs de cible, pour requireCategoryPermission ci-dessous ---
 
 export async function resolveDocumentById(req) {

@@ -3,7 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
-import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -92,7 +92,7 @@ const AUDIT_VALIDATORS = [
 
 // POST /api/audits — planification (admin/manager uniquement : contrairement à CAPA/QQOQCCP,
 // un member n'ouvre pas d'audit de sa propre initiative, c'est une décision de pilotage SMQ).
-router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, async (req, res) => {
+router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, requireValidCategoryId('audit'), async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
@@ -141,6 +141,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('audit'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -178,6 +179,7 @@ router.patch(
     body('conclusion').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('audit'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

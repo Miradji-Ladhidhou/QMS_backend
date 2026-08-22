@@ -104,6 +104,37 @@ export async function filterViewableByCategory({ userId, userRole, items }) {
   });
 }
 
+// Middleware express : si req.body.category_id est renseigné, vérifie qu'il appartient bien à
+// CE tenant et à CE module (resourceType) avant de laisser passer — sinon 400. Ignoré
+// silencieusement si category_id est absent/vide (l'action ne touche pas la catégorie), donc
+// sans effet sur les champs habituellement "optional({ values: 'falsy' })" déjà en place.
+//
+// Sans ce contrôle, un category_id valide mais d'un autre module (ex : une catégorie créée pour
+// les risques, posée sur une CAPA) ou d'un autre tenant était accepté tel quel : la permission
+// restait correcte (toujours vérifiée par tenant_id + id, voir hasGenericCategoryPermission),
+// mais l'élément se retrouvait rattaché à une catégorie qui n'a pas de sens pour lui — invisible
+// à tout le monde sauf l'admin en cas de mismatch de tenant, ou mélangé au mauvais module côté
+// Paramètres en cas de mismatch de resource_type.
+export function requireValidCategoryId(resourceType) {
+  return async (req, res, next) => {
+    const categoryId = req.body?.category_id;
+    if (!categoryId) return next();
+
+    const { data, error } = await supabase
+      .from('categories')
+      .select('id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', categoryId)
+      .eq('resource_type', resourceType)
+      .maybeSingle();
+
+    if (error || !data) {
+      return res.status(400).json({ error: 'Catégorie invalide.' });
+    }
+    next();
+  };
+}
+
 // "Uniquement moi" (libre-service, sans passer par un admin) : renvoie l'id de la catégorie
 // personnelle restreinte de cet utilisateur pour ce module — une seule par (tenant,
 // resource_type, utilisateur), créée à la demande au premier appel. Jamais listée par GET

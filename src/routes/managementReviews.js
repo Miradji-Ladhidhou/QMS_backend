@@ -4,7 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQmsSnapshot } from '../services/qmsSnapshot.js';
-import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -99,6 +99,7 @@ router.post(
     body('participants').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('management_review'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -136,6 +137,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('management_review'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -171,6 +173,7 @@ router.patch(
     ...REVIEW_TEXT_FIELDS.filter((f) => f !== 'title').map((field) => body(field).optional({ values: 'falsy' }).trim()),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('management_review'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

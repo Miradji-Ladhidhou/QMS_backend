@@ -7,7 +7,7 @@ import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -196,11 +196,11 @@ async function createAnalysis(req, res) {
 }
 
 // POST /api/qqoqccp — création
-router.post('/', CREATE_VALIDATORS, createAnalysis);
+router.post('/', CREATE_VALIDATORS, requireValidCategoryId('qqoqccp'), createAnalysis);
 
 // POST /api/qqoqccp/quick-start — alias sémantique de POST /, pour un diagnostic destiné à
 // déboucher sur une CAPA (voir qqoqccp_analyses.linked_capa_id / capas.qqoqccp_analysis_id).
-router.post('/quick-start', CREATE_VALIDATORS, createAnalysis);
+router.post('/quick-start', CREATE_VALIDATORS, requireValidCategoryId('qqoqccp'), createAnalysis);
 
 // PATCH /api/qqoqccp/bulk-category — déplace plusieurs analyses d'un coup vers une catégorie.
 // Placée avant PATCH /:id pour ne pas être capturée comme un id. Réservé admin/manager (contrai-
@@ -214,6 +214,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('qqoqccp'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -253,6 +254,7 @@ router.patch(
     body('pourquoi').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('qqoqccp'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

@@ -6,7 +6,7 @@ import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
 import { buildAttendanceSheetPdf } from '../services/attendanceSheetPdf.js';
 import { buildTrainingCertificatePdf } from '../services/trainingCertificatePdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
-import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -96,17 +96,25 @@ router.get('/', async (req, res) => {
 // compte, voir employees.js).
 // Partagée entre GET /matrix (JSON) et GET /matrix/pdf (export imprimable) pour ne jamais
 // laisser les deux vues diverger sur la logique de statut (à jour/bientôt/expiré/jamais).
-async function buildMatrix(tenantId) {
-  const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: trainings, error: trainingsError }] =
+async function buildMatrix(tenantId, userId, userRole) {
+  const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: rawTrainings, error: trainingsError }] =
     await Promise.all([
       supabase.from('users').select('id, full_name').eq('tenant_id', tenantId).eq('training_exempt', false),
       supabase.from('employees').select('id, full_name').eq('tenant_id', tenantId).eq('is_active', true).eq('training_exempt', false),
-      supabase.from('trainings').select('id, title, frequency_months').eq('tenant_id', tenantId),
+      supabase
+        .from('trainings')
+        .select('id, title, frequency_months, category_id, category:categories(id, is_restricted)')
+        .eq('tenant_id', tenantId),
     ]);
 
   if (usersError || employeesError || trainingsError) {
     throw new Error('Impossible de construire la matrice des formations.');
   }
+
+  // Une formation restreinte (voir Paramètres > Catégories modules) sans permission ne doit
+  // apparaître dans la matrice ni dans son export PDF — jusqu'ici seule la liste /trainings
+  // appliquait ce filtre, cette vue croisée et /upcoming-renewals plus bas l'ignoraient.
+  const trainings = await filterViewableByCategory({ userId, userRole, items: rawTrainings });
 
   const latestByPair = await fetchLatestTrainingRecords(tenantId);
 
@@ -154,7 +162,7 @@ async function buildMatrix(tenantId) {
 
 router.get('/matrix', async (req, res) => {
   try {
-    const matrix = await buildMatrix(req.tenantId);
+    const matrix = await buildMatrix(req.tenantId, req.user.id, req.userRole);
     res.json(matrix);
   } catch (err) {
     // err.message est déjà un texte français sûr (voir buildMatrix/fetchLatestTrainingRecords
@@ -171,7 +179,7 @@ router.get('/matrix', async (req, res) => {
 // fichier (même raisonnement que /:id/pdf dans qqoqccp.js).
 router.get('/matrix/pdf', async (req, res) => {
   try {
-    const matrix = await buildMatrix(req.tenantId);
+    const matrix = await buildMatrix(req.tenantId, req.user.id, req.userRole);
     const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
     const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
     const pdfBuffer = await buildSkillMatrixPdf({ tenantName: tenant?.name, tenantLogo, matrix });
@@ -211,11 +219,14 @@ router.get('/upcoming-renewals', async (req, res) => {
   const employeeIds = [...new Set(upcoming.map((record) => record.employee_id).filter(Boolean))];
 
   const [
-    { data: trainings, error: trainingsError },
+    { data: rawTrainings, error: trainingsError },
     { data: users, error: usersError },
     { data: employees, error: employeesError },
   ] = await Promise.all([
-    supabase.from('trainings').select('id, title').in('id', trainingIds),
+    supabase
+      .from('trainings')
+      .select('id, title, category_id, category:categories(id, is_restricted)')
+      .in('id', trainingIds),
     userIds.length ? supabase.from('users').select('id, full_name').in('id', userIds) : Promise.resolve({ data: [] }),
     employeeIds.length
       ? supabase.from('employees').select('id, full_name').in('id', employeeIds)
@@ -226,11 +237,17 @@ router.get('/upcoming-renewals', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les renouvellements à venir.' });
   }
 
+  // Même filtre que /matrix ci-dessus : une formation restreinte sans permission ne doit pas
+  // apparaître dans les renouvellements à venir.
+  const trainings = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: rawTrainings });
+  const viewableTrainingIds = new Set(trainings.map((training) => training.id));
+  const visibleUpcoming = upcoming.filter((record) => viewableTrainingIds.has(record.training_id));
+
   const trainingsById = new Map(trainings.map((training) => [training.id, training]));
   const usersById = new Map(users.map((user) => [user.id, user]));
   const employeesById = new Map(employees.map((employee) => [employee.id, employee]));
 
-  const result = upcoming
+  const result = visibleUpcoming
     .map((record) => ({
       training: trainingsById.get(record.training_id),
       user: record.user_id ? usersById.get(record.user_id) : null,
@@ -256,6 +273,7 @@ router.post(
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('training'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -307,6 +325,7 @@ router.patch(
     body('ids.*').isUUID().withMessage('Identifiant invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('training'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -343,6 +362,7 @@ router.patch(
     body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('training'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {

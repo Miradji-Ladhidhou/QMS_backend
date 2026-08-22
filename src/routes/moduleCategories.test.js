@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
 
@@ -660,5 +660,93 @@ describe('Déplacement en masse (PATCH /api/<module>/bulk-category)', () => {
       .send({ ids: [taskRes.body.id], category_id: category.id });
     expect(allowed.status).toBe(200);
     expect(allowed.body.updated).toBe(1);
+  });
+});
+
+describe('Validation du category_id à l\'écriture (tenant + resource_type)', () => {
+  it("rejette la création d'une CAPA avec le category_id d'une catégorie d'un autre type de ressource (même tenant)", async () => {
+    tenant = await createTenant();
+    const riskCategory = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Catégorie risques' });
+
+    const res = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA de test', category_id: riskCategory.id });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejette la création d'une CAPA avec le category_id d'une catégorie d'un autre tenant, même admin", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const otherCategory = await createCategory(otherTenant.admin.token, { resourceType: 'capa', name: 'Catégorie autre tenant' });
+
+      const res = await request(app)
+        .post('/api/capas')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: 'CAPA de test', category_id: otherCategory.id });
+      expect(res.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it('rejette un déplacement en masse vers le category_id d\'un autre type de ressource', async () => {
+    tenant = await createTenant();
+    const capa = await createCapa(tenant.admin.token);
+    const riskCategory = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Catégorie risques' });
+
+    const res = await request(app)
+      .patch('/api/capas/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [capa.id], category_id: riskCategory.id });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejette la modification d'une CAPA vers le category_id d'un autre type de ressource", async () => {
+    tenant = await createTenant();
+    const capa = await createCapa(tenant.admin.token);
+    const riskCategory = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Catégorie risques' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: riskCategory.id });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepte category_id: null (retrait de catégorie) sans déclencher la validation', async () => {
+    tenant = await createTenant();
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Catégorie CAPA' });
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
+
+    const res = await request(app)
+      .patch(`/api/capas/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: null });
+    expect(res.status).toBe(200);
+    expect(res.body.category_id).toBeNull();
+  });
+
+  it("rejette l'upload d'un document avec le category_id d'un autre tenant, même admin", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const { data: otherCategory } = await admin
+        .from('document_categories')
+        .insert({ tenant_id: otherTenant.tenantId, name: 'Catégorie autre tenant' })
+        .select()
+        .single();
+
+      const res = await request(app)
+        .post('/api/documents')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .field('number', 'DOC-TEST-001')
+        .field('title', 'Document de test')
+        .field('category_id', otherCategory.id);
+      expect(res.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
   });
 });
