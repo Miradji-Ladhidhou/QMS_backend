@@ -814,6 +814,12 @@ create table google_drive_connections (
   root_folder_id       text not null,
   category_folder_ids  jsonb not null default '{}'::jsonb,
   connected_by         uuid references users (id) on delete set null,
+  -- false après un "Déconnecter" côté app : la ligne (et le refresh_token) est GARDÉE plutôt que
+  -- supprimée, pour que les documents déjà stockés sur Drive (storage_provider='google_drive')
+  -- restent résolvables/téléchargeables indéfiniment — seules /status, /health et /activate
+  -- filtrent sur is_active=true (un tenant déconnecté doit repasser par un vrai consentement
+  -- OAuth pour reconnecter, jamais une simple réactivation d'un token oublié).
+  is_active            boolean not null default true,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
 );

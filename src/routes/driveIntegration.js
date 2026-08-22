@@ -99,6 +99,7 @@ router.get('/callback', async (req, res) => {
       root_folder_id: rootFolderId,
       category_folder_ids: {},
       connected_by: userId,
+      is_active: true,
     },
     { onConflict: 'tenant_id' }
   );
@@ -131,11 +132,15 @@ router.get('/connect', requireRole('admin'), (req, res) => {
 });
 
 // GET /api/drive/status — état de connexion actuel du tenant, jamais les tokens eux-mêmes.
+// is_active=true uniquement : une connexion désactivée par /disconnect doit se présenter comme
+// "non connectée" ici même si sa ligne est conservée pour les documents déjà sur Drive (voir
+// /disconnect ci-dessous) — reconnecter exige un vrai passage par le consentement OAuth.
 router.get('/status', requireRole('admin'), async (req, res) => {
   const { data, error } = await supabase
     .from('google_drive_connections')
     .select('google_email, root_folder_id, created_at')
     .eq('tenant_id', req.tenantId)
+    .eq('is_active', true)
     .maybeSingle();
 
   if (error) {
@@ -169,6 +174,7 @@ router.post('/activate', requireRole('admin'), async (req, res) => {
     .from('google_drive_connections')
     .select('id')
     .eq('tenant_id', req.tenantId)
+    .eq('is_active', true)
     .maybeSingle();
 
   if (connectionError) {
@@ -199,6 +205,7 @@ router.get('/health', requireRole('admin'), async (req, res) => {
     .from('google_drive_connections')
     .select('*')
     .eq('tenant_id', req.tenantId)
+    .eq('is_active', true)
     .maybeSingle();
 
   if (error) {
@@ -217,13 +224,20 @@ router.get('/health', requireRole('admin'), async (req, res) => {
   }
 });
 
-// DELETE /api/drive/disconnect — supprime la connexion et repasse le tenant sur Supabase
-// Storage pour les nouveaux documents. Les documents déjà stockés sur Drive restent référencés
-// tels quels (storage_provider='google_drive' sur ces lignes n'est pas modifié) : ils ne sont
-// plus accessibles en écriture via l'app après déconnexion, mais rien n'est supprimé côté Drive
-// ni côté base.
+// DELETE /api/drive/disconnect — désactive la connexion (is_active=false) et repasse le tenant
+// sur Supabase Storage pour les nouveaux documents. NE SUPPRIME PAS la ligne : les documents
+// déjà stockés sur Drive (storage_provider='google_drive') ont encore besoin de ce
+// refresh_token pour rester téléchargeables/ouvrables — un vrai DELETE ici rendrait ces
+// documents définitivement irrésolvables, alors même que le message de confirmation affiché à
+// l'admin avant de cliquer promet explicitement le contraire (bug réel corrigé : "La connexion
+// Google Drive de cette entreprise est introuvable." sur un document créé avant la
+// déconnexion). /status, /health et /activate filtrent sur is_active=true, donc ce tenant
+// réapparaît bien comme "non connecté" malgré la ligne conservée.
 router.delete('/disconnect', requireRole('admin'), async (req, res) => {
-  const { error: deleteError } = await supabase.from('google_drive_connections').delete().eq('tenant_id', req.tenantId);
+  const { error: deleteError } = await supabase
+    .from('google_drive_connections')
+    .update({ is_active: false })
+    .eq('tenant_id', req.tenantId);
 
   if (deleteError) {
     return res.status(500).json({ error: 'Impossible de déconnecter Google Drive.' });
