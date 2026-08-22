@@ -18,6 +18,15 @@ async function createCapa(token, title = 'CAPA de test') {
   return res.body;
 }
 
+async function createComplaint(token) {
+  const res = await request(app)
+    .post('/api/complaints')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ customer_name: 'Client Test', received_date: '2026-01-15', description: 'Réclamation de test' });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
 describe('Partage d’un élément précis (record_shares)', () => {
   it("un membre ne voit une CAPA non assignée qu'après un partage direct avec lui", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
@@ -160,5 +169,30 @@ describe('Partage d’un élément précis (record_shares)', () => {
 
     const listRes = await request(app).get('/api/documents').set('Authorization', `Bearer ${member.token}`);
     expect(listRes.body.map((d) => d.id)).toContain(docRes.body.id);
+  });
+
+  it("un membre ne voit une réclamation non assignée qu'après un partage direct avec lui", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const complaint = await createComplaint(tenant.admin.token);
+
+    const beforeDetail = await request(app)
+      .get(`/api/complaints/${complaint.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(beforeDetail.status).toBe(404);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'complaint', resource_id: complaint.id, subject_type: 'user', subject_id: member.id })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/complaints').set('Authorization', `Bearer ${member.token}`);
+    expect(afterList.body.map((c) => c.id)).toContain(complaint.id);
+
+    const afterDetail = await request(app)
+      .get(`/api/complaints/${complaint.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(afterDetail.status).toBe(200);
   });
 });

@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 
 const router = Router();
 
@@ -20,7 +21,18 @@ router.get('/', async (req, res) => {
   let query = supabase.from('complaints').select(COMPLAINT_SELECT).eq('tenant_id', req.tenantId).order('received_date', { ascending: false });
 
   if (req.userRole === 'member') {
-    query = query.eq('assigned_to', req.user.id);
+    // Un partage (voir record_shares/recordSharing.js, bouton "Partager") donne accès à une
+    // réclamation précise en plus de celles déjà assignées — jamais une restriction.
+    const sharedIds = await getSharedResourceIds({
+      tenantId: req.tenantId,
+      resourceType: 'complaint',
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    query =
+      sharedIds.size > 0
+        ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
+        : query.eq('assigned_to', req.user.id);
   }
   if (req.query.status) {
     query = query.eq('status', req.query.status);
@@ -36,14 +48,28 @@ router.get('/', async (req, res) => {
 
 // GET /api/complaints/:id
 router.get('/:id', async (req, res) => {
-  let query = supabase.from('complaints').select(COMPLAINT_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id);
-  if (req.userRole === 'member') {
-    query = query.eq('assigned_to', req.user.id);
-  }
+  const { data, error } = await supabase
+    .from('complaints')
+    .select(COMPLAINT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
 
-  const { data, error } = await query.single();
   if (error || !data) {
     return res.status(404).json({ error: 'Réclamation introuvable.' });
+  }
+
+  if (req.userRole === 'member' && data.assigned_to !== req.user.id) {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId,
+      resourceType: 'complaint',
+      resourceId: data.id,
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    if (!shared) {
+      return res.status(404).json({ error: 'Réclamation introuvable.' });
+    }
   }
 
   res.json(data);

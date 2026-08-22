@@ -8,7 +8,7 @@ const router = Router();
 
 // Table source par type de ressource — utilisée pour vérifier que resource_id existe bien
 // dans ce tenant avant de créer un partage dessus (jamais un partage sur un id fantôme).
-const RESOURCE_TABLES = { document: 'documents', capa: 'capas' };
+const RESOURCE_TABLES = { document: 'documents', capa: 'capas', complaint: 'complaints' };
 
 router.use(requireAuth);
 // Gérer les partages est réservé à admin/manager : ce sont déjà les seuls rôles qui voient
