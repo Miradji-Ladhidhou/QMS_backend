@@ -450,3 +450,89 @@ describe('Catégories génériques (CAPA)', () => {
     expect(badType.status).toBe(400);
   });
 });
+
+describe('Catégorie personnelle "Uniquement moi" (POST /api/module-categories/personal)', () => {
+  it("un member peut créer une CAPA visible uniquement par lui, sans passer par un admin", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+
+    const personal = await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${memberA.token}`)
+      .send({ resource_type: 'capa' });
+    expect(personal.status).toBe(200);
+    expect(personal.body.id).toBeTruthy();
+
+    const capa = await createCapa(memberA.token, { category_id: personal.body.id });
+
+    const ownDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${memberA.token}`);
+    expect(ownDetail.status).toBe(200);
+    const ownList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
+    expect(ownList.body.map((c) => c.id)).toContain(capa.id);
+
+    const otherDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${memberB.token}`);
+    expect(otherDetail.status).toBe(404);
+    const otherList = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberB.token}`);
+    expect(otherList.body.map((c) => c.id)).not.toContain(capa.id);
+
+    const adminDetail = await request(app).get(`/api/capas/${capa.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminDetail.status).toBe(200);
+  });
+
+  it('renvoie toujours le même id pour le même utilisateur et le même module (une seule catégorie personnelle)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const first = await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ resource_type: 'complaint' });
+    const second = await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ resource_type: 'complaint' });
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(second.body.id).toBe(first.body.id);
+  });
+
+  it('deux utilisateurs différents obtiennent chacun leur propre catégorie personnelle, jamais partagée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+
+    const personalA = await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${memberA.token}`)
+      .send({ resource_type: 'qqoqccp' });
+    const personalB = await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${memberB.token}`)
+      .send({ resource_type: 'qqoqccp' });
+
+    expect(personalA.body.id).not.toBe(personalB.body.id);
+  });
+
+  it("une catégorie personnelle n'apparaît jamais dans GET /api/module-categories (ni pour l'admin, ni pour son propriétaire)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    await request(app)
+      .post('/api/module-categories/personal')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ resource_type: 'risk' });
+    await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Catégorie normale' });
+
+    const adminList = await request(app)
+      .get('/api/module-categories')
+      .query({ resource_type: 'risk' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminList.body.map((c) => c.name)).toEqual(['Catégorie normale']);
+
+    const memberList = await request(app)
+      .get('/api/module-categories')
+      .query({ resource_type: 'risk' })
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(memberList.body.map((c) => c.name)).toEqual(['Catégorie normale']);
+  });
+});

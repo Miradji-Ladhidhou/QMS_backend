@@ -15,7 +15,7 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 router.use(requireAuth);
 
 const RISK_SELECT =
-  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)';
+  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/risks — liste tenant-wide, tous les rôles (transparence : le registre des risques
 // concerne le SMQ dans son ensemble, comme les audits). Filtrable par statut/type/service. Une

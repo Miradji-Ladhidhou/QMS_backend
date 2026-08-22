@@ -13,7 +13,7 @@ const EVALUATION_DECISIONS = ['maintained', 'under_watch', 'to_replace'];
 
 router.use(requireAuth);
 
-const SUPPLIER_SELECT = '*, service:services(id, name), category:categories(id, name, color, is_restricted)';
+const SUPPLIER_SELECT = '*, service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/suppliers — liste tenant-wide par défaut (transparence, comme audits/risks : un
 // fournisseur n'est "possédé" par personne en particulier), sauf catégorie restreinte

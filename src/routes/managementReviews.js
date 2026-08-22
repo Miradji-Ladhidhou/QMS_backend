@@ -30,7 +30,7 @@ const REVIEW_TEXT_FIELDS = [
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('management_reviews')
-    .select('id, title, review_date, status, created_at, category_id, category:categories(id, name, color, is_restricted)')
+    .select('id, title, review_date, status, created_at, category_id, category:categories(id, name, color, is_restricted, owner_user_id)')
     .eq('tenant_id', req.tenantId)
     .order('review_date', { ascending: false });
 
@@ -52,7 +52,7 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   const { data: review, error } = await supabase
     .from('management_reviews')
-    .select('*, category:categories(id, name, color, is_restricted)')
+    .select('*, category:categories(id, name, color, is_restricted, owner_user_id)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();

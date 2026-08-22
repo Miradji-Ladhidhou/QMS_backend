@@ -14,7 +14,7 @@ const COMPLAINT_STATUSES = ['received', 'investigating', 'resolved', 'closed'];
 router.use(requireAuth);
 
 const COMPLAINT_SELECT =
-  '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
+  '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
 
 // GET /api/complaints — visible par tout le tenant par défaut (même modèle que les
 // Documents) — seule une catégorie explicitement restreinte (Paramètres > Catégories) limite

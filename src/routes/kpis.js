@@ -35,7 +35,7 @@ router.get('/', async (req, res) => {
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
     // répartition) et de nommer chaque courbe, sans une requête par KPI.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -72,7 +72,7 @@ router.get('/report', async (req, res) => {
     // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
     // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -198,7 +198,7 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)

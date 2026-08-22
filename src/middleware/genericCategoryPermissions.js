@@ -104,6 +104,46 @@ export async function filterViewableByCategory({ userId, userRole, items }) {
   });
 }
 
+// "Uniquement moi" (libre-service, sans passer par un admin) : renvoie l'id de la catégorie
+// personnelle restreinte de cet utilisateur pour ce module — une seule par (tenant,
+// resource_type, utilisateur), créée à la demande au premier appel. Jamais listée par GET
+// /api/module-categories (voir son filtre owner_user_id is null) ni dans le sélecteur de
+// catégorie normal : purement interne, seulement utilisée pour poser category_id sur un élément.
+export async function getOrCreatePersonalCategory({ tenantId, userId, resourceType }) {
+  const { data: existing, error: existingError } = await supabase
+    .from('categories')
+    .select('id')
+    .eq('tenant_id', tenantId)
+    .eq('resource_type', resourceType)
+    .eq('owner_user_id', userId)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  if (existing) return existing.id;
+
+  const { data: user } = await supabase.from('users').select('full_name').eq('id', userId).single();
+
+  const { data: category, error: categoryError } = await supabase
+    .from('categories')
+    .insert({
+      tenant_id: tenantId,
+      resource_type: resourceType,
+      name: `Personnel — ${user?.full_name || 'moi'}`,
+      is_restricted: true,
+      owner_user_id: userId,
+    })
+    .select('id')
+    .single();
+  if (categoryError) throw categoryError;
+
+  const { error: permissionError } = await supabase
+    .from('generic_category_permissions')
+    .insert({ tenant_id: tenantId, category_id: category.id, subject_type: 'user', subject_id: userId, can_view: true });
+  if (permissionError) throw permissionError;
+
+  return category.id;
+}
+
 // Filtre la liste des catégories elles-mêmes (pour les sélecteurs de formulaire) — miroir de
 // filterViewableCategories (documentPermissions.js), sur la table generic à la place.
 export async function filterViewableGenericCategories({ userId, userRole, categories }) {

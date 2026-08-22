@@ -2,13 +2,14 @@ import { Router } from 'express';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { filterViewableGenericCategories, hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
+import {
+  filterViewableGenericCategories,
+  hasGenericCategoryPermission,
+  getOrCreatePersonalCategory,
+} from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 const SUBJECT_TYPES = ['user', 'group'];
-// Audits et Risques volontairement absents : transparence totale assumée (voir routes/audits.js
-// et routes/risks.js) — une catégorie restreinte irait à l'encontre de ce choix, comme pour le
-// partage individuel (record_shares).
 const RESOURCE_TYPES = [
   'capa',
   'complaint',
@@ -38,6 +39,10 @@ router.get('/', [query('resource_type').isIn(RESOURCE_TYPES).withMessage('Type d
     .select('*')
     .eq('tenant_id', req.tenantId)
     .eq('resource_type', req.query.resource_type)
+    // Les catégories personnelles ("Uniquement moi", voir POST /personal) ne sont jamais
+    // listées ici : ni dans Paramètres > Catégories (l'admin n'a rien à en faire), ni dans le
+    // sélecteur de catégorie normal d'un formulaire de création.
+    .is('owner_user_id', null)
     .order('name', { ascending: true });
 
   if (error) {
@@ -48,6 +53,33 @@ router.get('/', [query('resource_type').isIn(RESOURCE_TYPES).withMessage('Type d
 
   res.json(viewable);
 });
+
+// POST /api/module-categories/personal — libre-service (tous les rôles, pas seulement admin) :
+// renvoie l'id de la catégorie "Uniquement moi" de l'utilisateur courant pour ce module,
+// créée au premier appel si besoin. Utilisé par les formulaires de création/édition quand
+// l'utilisateur choisit "Uniquement moi" plutôt qu'une catégorie existante — le category_id
+// obtenu est ensuite envoyé normalement, comme n'importe quel autre category_id.
+router.post(
+  '/personal',
+  [body('resource_type').isIn(RESOURCE_TYPES).withMessage('Type de ressource invalide.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Requête invalide.', details: errors.array() });
+    }
+
+    try {
+      const categoryId = await getOrCreatePersonalCategory({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        resourceType: req.body.resource_type,
+      });
+      res.json({ id: categoryId });
+    } catch {
+      res.status(500).json({ error: 'Impossible de préparer la visibilité personnelle.' });
+    }
+  }
+);
 
 // POST /api/module-categories — création (admin uniquement)
 router.post(

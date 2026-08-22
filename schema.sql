@@ -789,10 +789,18 @@ create table categories (
   name          text not null,
   color         text,
   is_restricted boolean not null default false,
+  -- Catégorie personnelle "Uniquement moi", créée en libre-service par un member/manager à la
+  -- création d'un élément (voir getOrCreatePersonalCategory, genericCategoryPermissions.js) —
+  -- null pour une catégorie normale gérée par un admin dans Paramètres. Le nom seul ne peut pas
+  -- être unique ici (deux personnes peuvent s'appeler pareil, ou vouloir toutes une catégorie
+  -- "Personnel") : l'identité réelle d'une catégorie personnelle est owner_user_id, pas le nom.
+  owner_user_id uuid references users (id) on delete cascade,
   created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now(),
-  unique (tenant_id, resource_type, name)
+  updated_at    timestamptz not null default now()
 );
+
+create unique index categories_admin_name_unique on categories (tenant_id, resource_type, name) where owner_user_id is null;
+create unique index categories_personal_owner_unique on categories (tenant_id, resource_type, owner_user_id) where owner_user_id is not null;
 
 -- Miroir de category_permissions (documents), pour les catégories génériques ci-dessus —
 -- table séparée plutôt que réutiliser category_permissions telle quelle : sa colonne

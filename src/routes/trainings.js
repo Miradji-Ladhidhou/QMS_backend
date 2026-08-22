@@ -67,7 +67,7 @@ router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('trainings')
     .select(
-      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted)'
+      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted, owner_user_id)'
     )
     .eq('tenant_id', req.tenantId)
     .order('title', { ascending: true });

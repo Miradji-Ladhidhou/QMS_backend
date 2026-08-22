@@ -26,7 +26,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const query = supabase
     .from('qqoqccp_analyses')
-    .select('id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted)')
+    .select('id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted, owner_user_id)')
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
@@ -64,7 +64,7 @@ router.get('/:id', async (req, res) => {
     // l'embed (ambigu). many-to-one via linked_capa_id = "LA capa que cette analyse
     // référence", un objet singulier — c'est le sens de "navigation inverse" recherché ici.
     .select(
-      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)'
+      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)'
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -106,7 +106,7 @@ router.get('/:id/pdf', async (req, res) => {
   const { data: analysis, error } = await supabase
     .from('qqoqccp_analyses')
     .select(
-      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted)'
+      '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)'
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)

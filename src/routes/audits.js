@@ -17,7 +17,7 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 router.use(requireAuth);
 
 const AUDIT_SELECT =
-  '*, lead:users!audits_lead_auditor_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted)';
+  '*, lead:users!audits_lead_auditor_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/audits — liste tenant-wide, tous les rôles (transparence : un audit concerne le
 // SMQ dans son ensemble, contrairement aux CAPA qui peuvent rester personnelles). Filtrable
