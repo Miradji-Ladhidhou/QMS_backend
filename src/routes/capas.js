@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
+import { hasGenericCategoryPermission, filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -23,6 +24,7 @@ const PATCHABLE_FIELDS = [
   'effectiveness_verified',
   'effectiveness_notes',
   'comment',
+  'category_id',
 ];
 
 // Colonnes explicites (sans "service", le champ texte libre historique) plutôt que '*' :
@@ -32,8 +34,8 @@ const PATCHABLE_FIELDS = [
 // service_id fait foi désormais, résolu ici en {id, name} comme pour audits/risks/complaints/
 // suppliers (voir leurs routes GET respectives, même pattern déjà en place chez eux).
 const CAPA_COLUMNS =
-  'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id';
-const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, full_name), service:services(id, name)`;
+  'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id, category_id';
+const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted)`;
 
 // Délai de traitement par défaut (en jours depuis la création) quand le tenant n'a pas
 // paramétré ses propres valeurs via PUT /api/capas/priority-delays.
@@ -112,16 +114,17 @@ router.get('/', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
+  // Un partage (voir record_shares/recordSharing.js, bouton Partager) donne accès à une CAPA
+  // précise en plus des règles normales — jamais une restriction, uniquement un octroi
+  // supplémentaire. Calculé pour tous les rôles non-admin : sert à la fois à élargir l'accès
+  // d'un member (comme avant) et à lever la restriction de catégorie ci-dessous pour
+  // manager/member.
+  const sharedIds =
+    req.userRole === 'admin'
+      ? new Set()
+      : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'capa', userId: req.user.id, userRole: req.userRole });
+
   if (req.userRole === 'member') {
-    // Un partage (voir record_shares/recordSharing.js, Paramètres > Partage sur une CAPA)
-    // donne accès à une CAPA précise en plus de celles déjà assignées — jamais une
-    // restriction, uniquement un octroi supplémentaire.
-    const sharedIds = await getSharedResourceIds({
-      tenantId: req.tenantId,
-      resourceType: 'capa',
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
     query =
       sharedIds.size > 0
         ? query.or(`assigned_to.eq.${req.user.id},id.in.(${[...sharedIds].join(',')})`)
@@ -134,7 +137,19 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les CAPA.' });
   }
 
-  res.json(data);
+  if (req.userRole === 'admin') {
+    return res.json(data);
+  }
+
+  // Catégorie restreinte (voir Paramètres > Catégories CAPA) : même principe que les
+  // documents — s'ajoute à la règle ci-dessus, un manager n'est plus automatiquement exempté.
+  // Un partage individuel lève cette restriction, même priorité que hasCategoryPermission.
+  const categoryViewableIds = new Set(
+    (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
+  );
+  const visible = data.filter((capa) => sharedIds.has(capa.id) || categoryViewableIds.has(capa.id));
+
+  res.json(visible);
 });
 
 // GET /api/capas/:id — détail avec commentaires de suivi
@@ -159,7 +174,7 @@ router.get('/:id', async (req, res) => {
   // partagées avec lui (voir record_shares/recordSharing.js) — la liste filtrait déjà cet
   // accès mais ce détail ne le faisait pas, ce qui permettait d'ouvrir n'importe quelle CAPA
   // du tenant en devinant/collant son id malgré la restriction affichée dans la liste.
-  if (req.userRole === 'member' && capa.assigned_to !== req.user.id) {
+  if (req.userRole !== 'admin') {
     const shared = await isSharedWithUser({
       tenantId: req.tenantId,
       resourceType: 'capa',
@@ -168,7 +183,21 @@ router.get('/:id', async (req, res) => {
       userRole: req.userRole,
     });
     if (!shared) {
-      return res.status(404).json({ error: 'CAPA introuvable.' });
+      if (req.userRole === 'member' && capa.assigned_to !== req.user.id) {
+        return res.status(404).json({ error: 'CAPA introuvable.' });
+      }
+      // Catégorie restreinte : même principe que les documents, s'applique désormais aussi
+      // au manager (qui voyait tout auparavant, hors restriction de catégorie inexistante).
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: capa.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'CAPA introuvable.' });
+      }
     }
   }
 
@@ -201,6 +230,7 @@ router.post(
     body('root_cause').optional({ values: 'falsy' }).trim(),
     body('corrective_action').optional({ values: 'falsy' }).trim(),
     body('preventive_action').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -221,6 +251,7 @@ router.post(
       root_cause: rootCause,
       corrective_action: correctiveAction,
       preventive_action: preventiveAction,
+      category_id: categoryId,
     } = req.body;
 
     // Un member peut ouvrir une CAPA mais elle lui est toujours auto-assignée : on ignore
@@ -244,6 +275,7 @@ router.post(
         root_cause: rootCause || null,
         corrective_action: correctiveAction || null,
         preventive_action: preventiveAction || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select(CAPA_SELECT)
@@ -290,6 +322,7 @@ router.patch(
     body('effectiveness_verified').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
     body('effectiveness_notes').optional({ values: 'falsy' }).trim(),
     body('comment').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);

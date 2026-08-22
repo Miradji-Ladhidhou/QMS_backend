@@ -772,6 +772,57 @@ create table record_shares (
   unique (tenant_id, resource_type, resource_id, subject_type, subject_id)
 );
 
+-- Catégories génériques réutilisables par plusieurs modules (CAPA, réclamations, QQOQCCP,
+-- fournisseurs, formations, revues de direction) — même principe que document_categories
+-- (restriction + permissions par utilisateur/groupe), mais polymorphe via resource_type plutôt
+-- qu'une table par module. Documents garde sa propre table (document_categories), déjà
+-- profondément intégrée (upload, import Excel, historique des versions...) : pas de migration
+-- risquée pour un bénéfice marginal, seule cette table sert les nouveaux modules. Audits et
+-- Risques volontairement absents de la liste resource_type : transparence totale assumée
+-- (voir routes/audits.js et routes/risks.js), une catégorie restreinte irait à l'encontre de
+-- ce choix, comme pour le partage individuel plus haut.
+create table categories (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants (id) on delete cascade,
+  resource_type text not null check (
+    resource_type in ('capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review')
+  ),
+  name          text not null,
+  color         text,
+  is_restricted boolean not null default false,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  unique (tenant_id, resource_type, name)
+);
+
+-- Miroir de category_permissions (documents), pour les catégories génériques ci-dessus —
+-- table séparée plutôt que réutiliser category_permissions telle quelle : sa colonne
+-- category_id référence déjà document_categories avec une contrainte FK stricte,
+-- incompatible avec une seconde table de catégories sans une migration plus risquée.
+create table generic_category_permissions (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null references tenants (id) on delete cascade,
+  category_id  uuid not null references categories (id) on delete cascade,
+  subject_type text not null check (subject_type in ('user', 'group')),
+  subject_id   uuid not null,
+  can_view     boolean not null default true,
+  can_edit     boolean not null default false,
+  can_approve  boolean not null default false,
+  can_delete   boolean not null default false,
+  created_at   timestamptz not null default now(),
+  unique (category_id, subject_type, subject_id)
+);
+
+-- category_id sur chaque module concerné, ajouté après coup (ALTER, pas inline dans leurs
+-- create table respectifs plus haut) : categories n'existe qu'à partir d'ici dans ce script,
+-- une référence inline y échouerait sur une installation neuve exécutée dans l'ordre du fichier.
+alter table capas add column category_id uuid references categories (id) on delete set null;
+alter table complaints add column category_id uuid references categories (id) on delete set null;
+alter table qqoqccp_analyses add column category_id uuid references categories (id) on delete set null;
+alter table suppliers add column category_id uuid references categories (id) on delete set null;
+alter table trainings add column category_id uuid references categories (id) on delete set null;
+alter table management_reviews add column category_id uuid references categories (id) on delete set null;
+
 -- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
 -- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).
 -- L'assigné est optionnel, et au plus l'un des deux (compte OU personnel sans compte),
@@ -1161,6 +1212,9 @@ create trigger trg_tenant_storage_settings_updated_at before update on tenant_st
 create trigger trg_google_drive_connections_updated_at before update on google_drive_connections
   for each row execute function set_updated_at();
 
+create trigger trg_categories_updated_at before update on categories
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -1282,6 +1336,8 @@ alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
 alter table record_shares enable row level security;
+alter table categories enable row level security;
+alter table generic_category_permissions enable row level security;
 alter table tenant_menu_settings enable row level security;
 alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
@@ -1486,6 +1542,16 @@ create policy group_members_isolation on group_members
   with check (exists (select 1 from groups g where g.id = group_members.group_id and g.tenant_id = auth_tenant_id()));
 
 create policy category_permissions_isolation on category_permissions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy categories_isolation on categories
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy generic_category_permissions_isolation on generic_category_permissions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
