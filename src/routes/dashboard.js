@@ -12,6 +12,7 @@ import {
   fetchRiskItems,
   fetchSupplierItems,
 } from '../services/planningItems.js';
+import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -166,15 +167,20 @@ router.get('/stats', async (req, res) => {
   }
 
   if (req.userRole === 'member') {
-    const { data: capas, error: capasError } = await supabase
+    const { data: rawCapas, error: capasError } = await supabase
       .from('capas')
-      .select('status')
+      .select('status, category_id, category:categories(id, is_restricted)')
       .eq('tenant_id', req.tenantId)
       .eq('assigned_to', req.user.id);
 
     if (capasError) {
       return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
     }
+
+    // Une catégorie restreinte reste un vrai gate même pour l'assigné (voir capas.js) : sans ce
+    // filtre, le compteur "mes CAPA" du dashboard afficherait un total supérieur à ce que la
+    // liste elle-même montre, pour une CAPA assignée mais dont la catégorie a été refusée.
+    const capas = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: rawCapas });
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
@@ -219,7 +225,7 @@ router.get('/stats', async (req, res) => {
 
   let capas = [];
   if (!serviceIds || serviceIds.length > 0) {
-    let capasQuery = supabase.from('capas').select('status').eq('tenant_id', req.tenantId);
+    let capasQuery = supabase.from('capas').select('status, category_id, category:categories(id, is_restricted)').eq('tenant_id', req.tenantId);
     if (serviceIds) {
       capasQuery = capasQuery.in('service_id', serviceIds);
     }
@@ -227,7 +233,9 @@ router.get('/stats', async (req, res) => {
     if (error) {
       return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
     }
-    capas = data;
+    // Même raisonnement que la branche member ci-dessus : un manager n'est plus exempté d'une
+    // catégorie restreinte (voir capas.js), le compteur ne doit pas le contredire.
+    capas = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
   }
 
   // Les documents n'ont pas de service_id (voir schema.sql) : aucun filtrage possible,

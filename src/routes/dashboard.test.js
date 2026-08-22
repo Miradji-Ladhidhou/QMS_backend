@@ -17,14 +17,22 @@ async function makeService(token, name) {
   return res.body.id;
 }
 
-async function makeCapa(token, title, { serviceId, status, assignedTo } = {}) {
+async function makeCapa(token, title, { serviceId, status, assignedTo, categoryId } = {}) {
   const res = await request(app)
     .post('/api/capas')
     .set('Authorization', `Bearer ${token}`)
-    .send({ title, service_id: serviceId, assigned_to: assignedTo });
+    .send({ title, service_id: serviceId, assigned_to: assignedTo, category_id: categoryId });
   if (status && status !== 'open') {
     await admin.from('capas').update({ status }).eq('id', res.body.id);
   }
+  return res.body.id;
+}
+
+async function makeRestrictedCategory(token, name = 'Restreinte') {
+  const res = await request(app)
+    .post('/api/module-categories')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ resource_type: 'capa', name, is_restricted: true });
   return res.body.id;
 }
 
@@ -46,6 +54,38 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
       .query({ service_id: serviceA })
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(filtered.body.capas).toEqual({ open: 1, in_progress: 0, overdue: 1, closed: 0 });
+  });
+
+  it("le compteur de CAPA n'inclut pas une catégorie restreinte sans permission — même pour son propre assigné", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'member' }] });
+    const [manager, member] = tenant.users;
+    const categoryId = await makeRestrictedCategory(tenant.admin.token);
+    const serviceId = await makeService(tenant.admin.token, 'Service unique');
+    await request(app)
+      .post(`/api/services/${serviceId}/assign-user`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: manager.id });
+
+    await makeCapa(tenant.admin.token, 'Ouverte à tous', { serviceId });
+    await makeCapa(tenant.admin.token, 'Restreinte', { serviceId, categoryId, assignedTo: member.id });
+
+    const adminStats = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminStats.body.capas.open).toBe(2);
+
+    const managerStats = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${manager.token}`);
+    expect(managerStats.body.capas.open).toBe(1);
+
+    const memberStats = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberStats.body.capas.open).toBe(0);
+
+    await request(app)
+      .post(`/api/module-categories/${categoryId}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
+      .expect(201);
+
+    const memberStatsAfter = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberStatsAfter.body.capas.open).toBe(1);
   });
 
   it('manager auto-scopé sur ses services, élargissement ponctuel possible', async () => {
