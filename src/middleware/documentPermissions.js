@@ -14,8 +14,11 @@ export async function getUserGroupIds(userId) {
 // Vérifie si l'utilisateur a la permission demandée (view/edit/approve/delete) sur une
 // catégorie donnée. categoryId === null (document sans catégorie) => toujours autorisé,
 // rien à restreindre. Catégorie non restreinte => toujours autorisé (comportement actuel
-// inchangé). Sinon, il faut une entrée dans category_permissions avec le bon flag à true,
-// directement (subject_type='user') ou via l'appartenance à un groupe autorisé.
+// inchangé). Sinon : une règle DIRECTE sur cet utilisateur (s'il en existe une) est toujours
+// prioritaire et décide seule, même à false — sans ça, un utilisateur explicitement exclu
+// (can_view=false) restait quand même visible via un groupe auquel il appartient, bug réel
+// rapporté ("je voulais cacher la catégorie à ce membre précis, ça n'a pas marché"). Le
+// groupe n'est consulté QUE si l'utilisateur n'a aucune règle directe sur cette catégorie.
 export async function hasCategoryPermission({ tenantId, userId, userRole, categoryId, permission, documentId }) {
   if (ADMIN_ROLES.includes(userRole)) return true;
 
@@ -49,7 +52,9 @@ export async function hasCategoryPermission({ tenantId, userId, userRole, catego
     .eq('subject_type', 'user')
     .eq('subject_id', userId);
 
-  if (!directError && directPerms?.some((row) => row[column])) return true;
+  if (!directError && directPerms && directPerms.length > 0) {
+    return directPerms.some((row) => row[column]);
+  }
 
   const groupIds = await getUserGroupIds(userId);
   if (groupIds.length === 0) return false;
@@ -81,33 +86,49 @@ export async function filterViewableDocuments({ tenantId, userId, userRole, docu
 
   const sharedDocumentIds = await getSharedResourceIds({ tenantId, resourceType: 'document', userId, userRole });
 
-  const { data: permissions, error } = await supabase
+  // Règles directes sur CET utilisateur d'abord — une catégorie où il a une règle directe
+  // (même can_view=false) ne consulte JAMAIS les groupes pour cette catégorie, même logique
+  // que hasCategoryPermission ci-dessus (voir son commentaire pour le bug que ça corrige).
+  const { data: directPerms, error: directError } = await supabase
     .from('category_permissions')
-    .select('category_id, subject_type, subject_id, can_view')
+    .select('category_id, can_view')
     .in('category_id', restrictedCategoryIds)
-    .eq('can_view', true);
+    .eq('subject_type', 'user')
+    .eq('subject_id', userId);
 
-  if (error) {
+  if (directError) {
     // En cas d'erreur de vérification, on refuse par prudence plutôt que d'exposer
     // potentiellement des documents restreints — un partage direct reste honoré.
     return documents.filter((doc) => !doc.category?.is_restricted || sharedDocumentIds.has(doc.id));
   }
 
-  const groupIds = await getUserGroupIds(userId);
+  const directDecisionByCategoryId = new Map(directPerms.map((row) => [row.category_id, row.can_view]));
+  const categoriesNeedingGroupCheck = restrictedCategoryIds.filter((id) => !directDecisionByCategoryId.has(id));
 
-  const viewableCategoryIds = new Set(
-    (permissions || [])
-      .filter(
-        (row) =>
-          (row.subject_type === 'user' && row.subject_id === userId) ||
-          (row.subject_type === 'group' && groupIds.includes(row.subject_id))
-      )
-      .map((row) => row.category_id)
-  );
+  let viewableCategoryIdsFromGroups = new Set();
+  if (categoriesNeedingGroupCheck.length > 0) {
+    const groupIds = await getUserGroupIds(userId);
+    if (groupIds.length > 0) {
+      const { data: groupPerms, error: groupError } = await supabase
+        .from('category_permissions')
+        .select('category_id')
+        .in('category_id', categoriesNeedingGroupCheck)
+        .eq('subject_type', 'group')
+        .in('subject_id', groupIds)
+        .eq('can_view', true);
 
-  return documents.filter(
-    (doc) => !doc.category?.is_restricted || viewableCategoryIds.has(doc.category_id) || sharedDocumentIds.has(doc.id)
-  );
+      if (!groupError) {
+        viewableCategoryIdsFromGroups = new Set((groupPerms || []).map((row) => row.category_id));
+      }
+    }
+  }
+
+  return documents.filter((doc) => {
+    if (!doc.category?.is_restricted) return true;
+    if (sharedDocumentIds.has(doc.id)) return true;
+    if (directDecisionByCategoryId.has(doc.category_id)) return directDecisionByCategoryId.get(doc.category_id);
+    return viewableCategoryIdsFromGroups.has(doc.category_id);
+  });
 }
 
 // Filtre une liste de catégories (comme filterViewableDocuments, mais la restriction
@@ -121,29 +142,46 @@ export async function filterViewableCategories({ userId, userRole, categories })
   const restrictedIds = categories.filter((c) => c.is_restricted).map((c) => c.id);
   if (restrictedIds.length === 0) return categories;
 
-  const { data: permissions, error } = await supabase
+  // Même priorité "règle directe d'abord" que hasCategoryPermission/filterViewableDocuments
+  // ci-dessus — sinon une catégorie explicitement masquée à cet utilisateur (can_view=false)
+  // réapparaîtrait quand même dans les sélecteurs si un de ses groupes y a accès.
+  const { data: directPerms, error: directError } = await supabase
     .from('category_permissions')
-    .select('category_id, subject_type, subject_id, can_view')
+    .select('category_id, can_view')
     .in('category_id', restrictedIds)
-    .eq('can_view', true);
+    .eq('subject_type', 'user')
+    .eq('subject_id', userId);
 
-  if (error) {
+  if (directError) {
     return categories.filter((c) => !c.is_restricted);
   }
 
-  const groupIds = await getUserGroupIds(userId);
+  const directDecisionByCategoryId = new Map(directPerms.map((row) => [row.category_id, row.can_view]));
+  const categoriesNeedingGroupCheck = restrictedIds.filter((id) => !directDecisionByCategoryId.has(id));
 
-  const viewableIds = new Set(
-    (permissions || [])
-      .filter(
-        (row) =>
-          (row.subject_type === 'user' && row.subject_id === userId) ||
-          (row.subject_type === 'group' && groupIds.includes(row.subject_id))
-      )
-      .map((row) => row.category_id)
-  );
+  let viewableIdsFromGroups = new Set();
+  if (categoriesNeedingGroupCheck.length > 0) {
+    const groupIds = await getUserGroupIds(userId);
+    if (groupIds.length > 0) {
+      const { data: groupPerms, error: groupError } = await supabase
+        .from('category_permissions')
+        .select('category_id')
+        .in('category_id', categoriesNeedingGroupCheck)
+        .eq('subject_type', 'group')
+        .in('subject_id', groupIds)
+        .eq('can_view', true);
 
-  return categories.filter((c) => !c.is_restricted || viewableIds.has(c.id));
+      if (!groupError) {
+        viewableIdsFromGroups = new Set((groupPerms || []).map((row) => row.category_id));
+      }
+    }
+  }
+
+  return categories.filter((c) => {
+    if (!c.is_restricted) return true;
+    if (directDecisionByCategoryId.has(c.id)) return directDecisionByCategoryId.get(c.id);
+    return viewableIdsFromGroups.has(c.id);
+  });
 }
 
 // --- Résolveurs de cible, pour requireCategoryPermission ci-dessous ---

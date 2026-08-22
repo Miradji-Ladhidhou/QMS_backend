@@ -157,6 +157,28 @@ describe('hasCategoryPermission', () => {
     expect(allowed).toBe(true);
   });
 
+  it('un refus direct (can_view=false) est prioritaire et ignore le groupe qui aurait autorisé', async () => {
+    // Bug réel corrigé : un utilisateur avait can_view=false en direct sur la catégorie, mais
+    // appartenait aussi à un groupe avec can_view=true — l'ancienne logique retombait sur le
+    // groupe dès que la règle directe n'était pas "true", laissant le document visible malgré
+    // l'exclusion explicite. group_members n'est volontairement pas mis en file ci-dessous :
+    // la règle directe doit décider seule, sans même consulter les groupes.
+    mockSupabaseQueues({
+      document_categories: [{ data: { is_restricted: true }, error: null }],
+      category_permissions: [{ data: [{ can_view: false }], error: null }],
+    });
+
+    const allowed = await hasCategoryPermission({
+      tenantId: 't1',
+      userId: 'u1',
+      userRole: 'employee',
+      categoryId: 'c1',
+      permission: 'view',
+    });
+
+    expect(allowed).toBe(false);
+  });
+
   it('refuse par prudence si la catégorie est introuvable', async () => {
     mockSupabaseQueues({
       document_categories: [{ data: null, error: { message: 'not found' } }],
@@ -263,6 +285,21 @@ describe('filterViewableDocuments', () => {
     const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
 
     expect(result.map((d) => d.id)).toEqual(['d1']);
+  });
+
+  it('exclut un document malgré un groupe autorisé, si une règle directe can_view=false existe pour cet utilisateur', async () => {
+    // Même bug que hasCategoryPermission ci-dessus, côté liste : group_members n'est pas mis
+    // en file, la règle directe doit décider seule sans même consulter les groupes.
+    mockSupabaseQueues({
+      record_shares: [{ data: [], error: null }],
+      category_permissions: [{ data: [{ category_id: 'restricted', can_view: false }], error: null }],
+    });
+
+    const documents = [{ id: 'd1', category_id: 'restricted', category: { is_restricted: true } }];
+
+    const result = await filterViewableDocuments({ tenantId: 't1', userId: 'u1', userRole: 'employee', documents });
+
+    expect(result.map((d) => d.id)).toEqual([]);
   });
 });
 

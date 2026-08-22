@@ -152,3 +152,69 @@ describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive c
     expect(versionDownload.body.url).toContain('/storage/v1/object/public/');
   });
 });
+
+// Bug réel rapporté : un membre appartenait à un groupe autorisé sur une catégorie restreinte,
+// et l'admin voulait lui masquer spécifiquement cette catégorie malgré son groupe — l'ancienne
+// logique retombait sur le groupe dès que la règle directe n'était pas "true", laissant les
+// documents visibles malgré l'exclusion explicite (can_view=false) ajoutée pour cet utilisateur.
+describe('Conflit groupe / utilisateur sur une catégorie restreinte', () => {
+  it('une règle directe can_view=false masque la catégorie même si le groupe de l’utilisateur y a accès', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Confidentiel', is_restricted: true })
+      .select()
+      .single();
+
+    const groupRes = await request(app)
+      .post('/api/groups')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Équipe qualité' });
+    expect(groupRes.status).toBe(201);
+
+    await request(app)
+      .post(`/api/groups/${groupRes.body.id}/members`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: member.id })
+      .expect(201);
+
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'group', subject_id: groupRes.body.id, can_view: true })
+      .expect(201);
+
+    const docRes = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CONFLICT-001')
+      .field('title', 'Document confidentiel')
+      .field('category_id', category.id);
+    expect(docRes.status).toBe(201);
+
+    // Étape 1 : le membre voit le document via son groupe, comme attendu.
+    const beforeExclusion = await request(app).get('/api/documents').set('Authorization', `Bearer ${member.token}`);
+    expect(beforeExclusion.body.map((d) => d.id)).toContain(docRes.body.id);
+
+    // Étape 2 : l'admin exclut spécifiquement ce membre de la catégorie.
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: false })
+      .expect(201);
+
+    const afterExclusionList = await request(app).get('/api/documents').set('Authorization', `Bearer ${member.token}`);
+    expect(afterExclusionList.body.map((d) => d.id)).not.toContain(docRes.body.id);
+
+    const afterExclusionDetail = await request(app)
+      .get(`/api/documents/${docRes.body.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(afterExclusionDetail.status).toBe(404);
+
+    // L'admin lui-même et un autre membre du groupe (aucune règle directe) ne sont pas affectés.
+    const adminList = await request(app).get('/api/documents').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminList.body.map((d) => d.id)).toContain(docRes.body.id);
+  });
+});
