@@ -220,6 +220,38 @@ describe('GET /api/documents/:id — champ can_edit', () => {
     const editableRes = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${member.token}`);
     expect(editableRes.body.can_edit).toBe(true);
   });
+
+  it("un membre avec seulement 'Voir' peut télécharger — le téléchargement n'exige que view, pas edit", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Restreinte téléchargement', is_restricted: true })
+      .select()
+      .single();
+
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true, can_edit: false })
+      .expect(201);
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CANEDIT-003')
+      .field('title', 'Document restreint avec fichier')
+      .field('category_id', category.id)
+      .attach('file', Buffer.from('contenu du fichier'), 'fichier.txt');
+    expect(doc.status).toBe(201);
+
+    const downloadRes = await request(app)
+      .get(`/api/documents/${doc.body.id}/download`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(downloadRes.status).toBe(200);
+    expect(downloadRes.body.url).toBeTruthy();
+  });
 });
 
 // Bug réel rapporté : un membre appartenait à un groupe autorisé sur une catégorie restreinte,
