@@ -425,10 +425,14 @@ router.patch(
   }
 );
 
-// DELETE /api/super-admin/users/:id — supprime le profil d'un utilisateur (public.users), tous
-// tenants confondus. Le compte auth.users est laissé intact, volontairement — même raison que
-// DELETE /tenants/:id ci-dessus : le supprimer casserait toute restauration ultérieure pour
-// cette ligne. Sans profil, ce compte ne peut plus rien faire (voir middleware/auth.js).
+// DELETE /api/super-admin/users/:id — suppression DÉFINITIVE d'un utilisateur, tous tenants
+// confondus (équivalent cross-tenant de DELETE /api/users/:id — voir routes/users.js pour le
+// détail de la cascade : compte Supabase Auth supprimé, ce qui entraîne automatiquement la
+// ligne public.users et tout ce qui en dépend, SAUF document_approvals qui survit avec
+// approver_id à null). Auparavant ne supprimait que le profil public.users en laissant le
+// compte Auth intact — ce qui libérait le profil sans jamais libérer l'email, empêchant de
+// recréer un compte avec la même adresse (bug réel rapporté) tout en laissant l'app dans un
+// état cassé pour ce compte (connexion Auth possible, mais plus aucun profil pour l'utiliser).
 router.delete('/users/:id', async (req, res) => {
   if (req.params.id === req.user.id) {
     return res.status(403).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
@@ -444,9 +448,9 @@ router.delete('/users/:id', async (req, res) => {
     return res.status(404).json({ error: 'Utilisateur introuvable.' });
   }
 
-  const { error: deleteError } = await supabase.from('users').delete().eq('id', target.id);
+  const { error: deleteError } = await supabase.auth.admin.deleteUser(target.id);
   if (deleteError) {
-    return res.status(500).json({ error: 'Erreur lors de la suppression du profil.' });
+    return res.status(500).json({ error: 'Erreur lors de la suppression du compte.' });
   }
 
   await logSuperAdminAction({

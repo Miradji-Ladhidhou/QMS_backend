@@ -279,7 +279,7 @@ describe('DELETE /api/super-admin/users/:id', () => {
     expect(res.status).toBe(403);
   });
 
-  it('supprime le profil d’un utilisateur d’un autre tenant sans toucher son compte auth', async () => {
+  it("supprime définitivement le compte d'un utilisateur d'un autre tenant (profil ET compte auth), et libère son email", async () => {
     tenant = await createTenant();
     targetTenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     await makeSuperAdmin(tenant);
@@ -294,7 +294,19 @@ describe('DELETE /api/super-admin/users/:id', () => {
     expect(profile.data).toBeNull();
 
     const authUser = await admin.auth.admin.getUserById(targetUser.id);
-    expect(authUser.data.user).not.toBeNull();
+    expect(authUser.data.user).toBeNull();
+
+    // Email libéré, exactement le scénario rapporté ("email déjà existant" en essayant de
+    // recréer un compte après une suppression qui ne supprimait en réalité que le profil).
+    const reinvite = await request(app)
+      .post(`/api/super-admin/tenants/${targetTenant.tenantId}/users`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ email: targetUser.email, full_name: 'Nouveau titulaire', role: 'member' });
+    expect(reinvite.status).toBe(201);
+
+    // Pas suivi par targetTenant.authUserIds (créé après createTenant) : nettoyage manuel pour
+    // ne pas laisser un compte auth orphelin une fois le tenant supprimé par cleanup().
+    await admin.auth.admin.deleteUser(reinvite.body.id).catch(() => {});
   });
 });
 
