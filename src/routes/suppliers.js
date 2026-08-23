@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
@@ -12,6 +13,7 @@ const SUPPLIER_STATUSES = ['active', 'inactive', 'suspended'];
 const EVALUATION_DECISIONS = ['maintained', 'under_watch', 'to_replace'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('suppliers'));
 
 const SUPPLIER_SELECT = '*, service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)';
 

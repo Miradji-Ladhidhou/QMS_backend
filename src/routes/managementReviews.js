@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQmsSnapshot } from '../services/qmsSnapshot.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -14,6 +15,7 @@ const REVIEW_STATUSES = ['draft', 'completed'];
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('management-reviews'));
 
 const REVIEW_TEXT_FIELDS = [
   'title',

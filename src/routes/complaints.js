@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -12,6 +13,7 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 const COMPLAINT_STATUSES = ['received', 'investigating', 'resolved', 'closed'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('complaints'));
 
 const COMPLAINT_SELECT =
   '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';

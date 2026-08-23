@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
@@ -19,6 +20,7 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 const MANAGER_ROLES = ['admin', 'manager'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('qqoqccp'));
 
 // GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier.
 // Visible par tout le tenant par défaut (même modèle que les Documents) — seule une catégorie

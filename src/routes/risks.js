@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
@@ -13,6 +14,7 @@ const RISK_STATUSES = ['identified', 'treating', 'treated', 'accepted', 'closed'
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('risks'));
 
 const RISK_SELECT =
   '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';

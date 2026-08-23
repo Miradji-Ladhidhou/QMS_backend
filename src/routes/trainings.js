@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { buildSkillMatrixPdf } from '../services/skillMatrixPdf.js';
 import { buildAttendanceSheetPdf } from '../services/attendanceSheetPdf.js';
 import { buildTrainingCertificatePdf } from '../services/trainingCertificatePdf.js';
@@ -19,6 +20,7 @@ const STATUS = {
 };
 
 router.use(requireAuth);
+router.use(requireMenuVisible('trainings'));
 
 function addMonths(dateStr, months) {
   const date = new Date(dateStr);

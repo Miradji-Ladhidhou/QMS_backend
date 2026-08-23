@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -42,6 +43,7 @@ const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, 
 const DEFAULT_PRIORITY_DELAYS = { critical: 30, high: 60, medium: 90, low: 120 };
 
 router.use(requireAuth);
+router.use(requireMenuVisible('capas'));
 
 async function closeOverdueCapas(tenantId) {
   const today = new Date().toISOString().slice(0, 10);

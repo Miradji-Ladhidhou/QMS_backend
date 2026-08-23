@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
@@ -15,6 +16,7 @@ const FINDING_TYPES = ['major_nc', 'minor_nc', 'observation', 'strength'];
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('audits'));
 
 const AUDIT_SELECT =
   '*, lead:users!audits_lead_auditor_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)';

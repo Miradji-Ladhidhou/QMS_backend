@@ -133,3 +133,74 @@ describe('Visibilité du menu par rôle et par utilisateur', () => {
     expect(patchRes.status).toBe(403);
   });
 });
+
+// Un menu masqué ne masquait jusque-là QUE la barre latérale (raccourcis dashboard et API
+// restaient accessibles tels quels, bug réel rapporté) — requireMenuVisible (voir
+// middleware/menuVisibility.js) bloque désormais aussi l'API elle-même, sur les 9 modules
+// "métier" (les autres clés — dashboard/planning/documents/my-approvals/services/employees —
+// restent volontairement un réglage d'affichage pur, voir le commentaire sur DEFAULT_HIDDEN_FOR_ROLE).
+describe('Visibilité de menu = accès API réellement bloqué (requireMenuVisible)', () => {
+  it('un member avec "risks" masqué reçoit 403 sur GET /api/risks, un autre member non concerné passe', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { member: ['risks'] }, user_overrides: {} })
+      .expect(200);
+
+    const blocked = await request(app).get('/api/risks').set('Authorization', `Bearer ${memberA.token}`);
+    expect(blocked.status).toBe(403);
+
+    // Exception par utilisateur : rétablit l'accès pour memberB seul.
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { member: ['risks'] }, user_overrides: { [memberB.id]: { risks: true } } })
+      .expect(200);
+
+    const allowed = await request(app).get('/api/risks').set('Authorization', `Bearer ${memberB.token}`);
+    expect(allowed.status).toBe(200);
+  });
+
+  it("l'admin garde l'accès à un module même masqué pour son propre rôle dans role_hidden_items", async () => {
+    tenant = await createTenant();
+
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { manager: ['capas'], member: ['capas'] }, user_overrides: {} })
+      .expect(200);
+
+    const res = await request(app).get('/api/capas').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+  });
+
+  it('le blocage couvre toutes les routes du module, pas seulement la liste (POST /api/suppliers)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { manager: ['suppliers'] }, user_overrides: {} })
+      .expect(200);
+
+    const res = await request(app)
+      .post('/api/suppliers')
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ name: 'Fournisseur test' });
+    expect(res.status).toBe(403);
+  });
+
+  it('un module non masqué (par défaut) reste normalement accessible (capas, kpis)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const capas = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
+    expect(capas.status).toBe(200);
+    const kpis = await request(app).get('/api/kpis').set('Authorization', `Bearer ${member.token}`);
+    expect(kpis.status).toBe(200);
+  });
+});

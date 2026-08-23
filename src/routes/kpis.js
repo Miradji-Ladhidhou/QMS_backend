@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
@@ -21,6 +22,7 @@ export const RECORDS_SELECT =
   'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
 
 router.use(requireAuth);
+router.use(requireMenuVisible('kpis'));
 
 // GET /api/kpis — liste avec valeurs historiques. Sans ?folder_id, renvoie TOUS les KPI du
 // tenant (utilisé par le tableau de bord et le rapport PDF, qui ont besoin de l'ensemble

@@ -3,6 +3,7 @@ import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { MENU_ITEM_KEYS, CONFIGURABLE_ROLES, DEFAULT_HIDDEN_FOR_ROLE, getVisibleMenuKeys } from '../middleware/menuVisibility.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
 
 const router = Router();
@@ -33,26 +34,7 @@ const LOGO_BUCKET = 'tenant-logos';
 // les autres, mais avec un défaut différent (voir DEFAULT_HIDDEN_FOR_ROLE) : masqués pour
 // manager/member tant que l'admin n'a rien changé, pour ne modifier le comportement d'aucun
 // tenant existant au déploiement de cette fonctionnalité.
-const MENU_ITEM_KEYS = [
-  'dashboard',
-  'planning',
-  'documents',
-  'capas',
-  'complaints',
-  'trainings',
-  'kpis',
-  'qqoqccp',
-  'audits',
-  'risks',
-  'suppliers',
-  'management-reviews',
-  'my-approvals',
-  'services',
-  'employees',
-];
 const MENU_ITEM_KEY_SET = new Set(MENU_ITEM_KEYS);
-const CONFIGURABLE_ROLES = ['manager', 'member'];
-const DEFAULT_HIDDEN_FOR_ROLE = { manager: ['services', 'employees'], member: ['services', 'employees'] };
 // Mêmes fuseaux IANA que le sélecteur frontend (Intl.supportedValuesOf) — validé ici aussi
 // pour ne jamais enregistrer une valeur qu'Intl.DateTimeFormat ne saurait pas interpréter.
 const VALID_TIMEZONES = new Set(Intl.supportedValuesOf('timeZone'));
@@ -230,28 +212,8 @@ function isValidUserOverrides(value) {
 // réglage ne s'applique jamais au rôle admin, pour qu'aucune combinaison de règles ne puisse
 // jamais cacher Paramètres > Visibilité à celui/celle qui doit pouvoir la corriger.
 router.get('/menu', async (req, res) => {
-  if (req.userRole === 'admin') {
-    return res.json({ visible: MENU_ITEM_KEYS });
-  }
-
-  const { data: settings } = await supabase
-    .from('tenant_menu_settings')
-    .select('role_hidden_items, user_overrides')
-    .eq('tenant_id', req.tenantId)
-    .maybeSingle();
-
-  // undefined (rôle jamais configuré) => défaut ; [] explicite (l'admin a choisi de tout
-  // montrer) => respecté tel quel — distinction volontaire, voir DEFAULT_HIDDEN_FOR_ROLE.
-  const storedForRole = settings?.role_hidden_items?.[req.userRole];
-  const hiddenForRole = new Set(storedForRole !== undefined ? storedForRole : DEFAULT_HIDDEN_FOR_ROLE[req.userRole] || []);
-  const overridesForUser = settings?.user_overrides?.[req.user.id] || {};
-
-  const visible = MENU_ITEM_KEYS.filter((key) => {
-    if (Object.prototype.hasOwnProperty.call(overridesForUser, key)) return overridesForUser[key];
-    return !hiddenForRole.has(key);
-  });
-
-  res.json({ visible });
+  const visible = await getVisibleMenuKeys({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole });
+  res.json({ visible: [...visible] });
 });
 
 // GET /api/tenant/menu-settings — configuration EFFECTIVE (défauts résolus, voir
