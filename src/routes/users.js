@@ -348,4 +348,36 @@ router.patch(
   }
 );
 
+// DELETE /api/users/:id — suppression DÉFINITIVE (admin uniquement), distincte de la
+// désactivation ci-dessus (réversible). Supprime le compte Supabase Auth, ce qui cascade
+// automatiquement (voir schema.sql) sur la ligne users, ses appartenances de groupe,
+// préférences de notification, catégorie personnelle "Uniquement moi" etc. — SAUF
+// document_approvals, dont approver_id passe à NULL (ON DELETE SET NULL, pas CASCADE) : la
+// décision/signature d'une approbation déjà rendue doit survivre à la suppression du compte
+// qui l'a rendue, exigence de traçabilité QMS. Les autres références (created_by, assigned_to,
+// lead_auditor...) passent aussi à NULL, jamais en cascade — aucune donnée métier n'est perdue.
+router.delete('/:id', requireRole('admin'), async (req, res) => {
+  if (req.params.id === req.user.id) {
+    return res.status(403).json({ error: 'Vous ne pouvez pas supprimer votre propre compte.' });
+  }
+
+  const { data: target, error: targetError } = await supabase
+    .from('users')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (targetError || !target) {
+    return res.status(404).json({ error: 'Utilisateur introuvable.' });
+  }
+
+  const { error } = await supabase.auth.admin.deleteUser(req.params.id);
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression du compte.' });
+  }
+
+  res.status(204).end();
+});
+
 export default router;

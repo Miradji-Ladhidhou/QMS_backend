@@ -648,7 +648,10 @@ create table document_approvals (
   id              uuid primary key default gen_random_uuid(),
   tenant_id       uuid not null references tenants (id) on delete cascade,
   workflow_id     uuid not null references document_workflows (id) on delete cascade,
-  approver_id     uuid not null references users (id) on delete cascade,
+  -- Nullable + ON DELETE SET NULL (pas CASCADE) : la décision/signature doit survivre à la
+  -- suppression définitive d'un compte utilisateur, même si l'identité de l'approbateur ne
+  -- peut alors plus être résolue (voir migration 23, document_approvals_survive_user_deletion).
+  approver_id     uuid references users (id) on delete set null,
   decision        text not null default 'pending' check (decision in ('pending', 'approved', 'rejected')),
   comment         text,
   decided_at      timestamptz,
