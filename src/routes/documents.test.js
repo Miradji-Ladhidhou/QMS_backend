@@ -457,3 +457,93 @@ describe('Reclassement de documents existants (PATCH /:id/category et /bulk-cate
     }
   });
 });
+
+describe('DELETE /api/documents/bulk — suppression en masse', () => {
+  async function createCategory(tenantId, name, extra = {}) {
+    const { data } = await admin.from('document_categories').insert({ tenant_id: tenantId, name, ...extra }).select().single();
+    return data.id;
+  }
+
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app).post('/api/documents').set('Authorization', `Bearer ${token}`).field('number', number).field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it("un admin peut supprimer plusieurs documents d'un coup", async () => {
+    tenant = await createTenant();
+    const docA = await createDocument(tenant.admin.token, 'DOC-DEL-001');
+    const docB = await createDocument(tenant.admin.token, 'DOC-DEL-002');
+
+    const res = await request(app)
+      .delete('/api/documents/bulk')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [docA.id, docB.id] });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(2);
+
+    const { data } = await admin.from('documents').select('id').in('id', [docA.id, docB.id]);
+    expect(data).toHaveLength(0);
+  });
+
+  it('un member ne peut pas supprimer des documents en masse', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const doc = await createDocument(tenant.admin.token, 'DOC-DEL-003');
+
+    const res = await request(app)
+      .delete('/api/documents/bulk')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [doc.id] });
+    expect(res.status).toBe(403);
+  });
+
+  it("un id d'un autre tenant est silencieusement ignoré", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const otherDoc = await createDocument(otherTenant.admin.token, 'DOC-DEL-OTHER-001');
+
+      const res = await request(app)
+        .delete('/api/documents/bulk')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ ids: [otherDoc.id] });
+      expect(res.status).toBe(200);
+      expect(res.body.deleted).toBe(0);
+
+      const { data } = await admin.from('documents').select('id').eq('id', otherDoc.id).maybeSingle();
+      expect(data).not.toBeNull();
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it("un manager sans can_delete sur une catégorie restreinte voit ce document silencieusement ignoré, les autres supprimés", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const restrictedCategory = await createCategory(tenant.tenantId, 'Restreinte', { is_restricted: true });
+    const restrictedDoc = await createDocument(tenant.admin.token, 'DOC-DEL-RESTRICTED', { category_id: restrictedCategory });
+    const openDoc = await createDocument(tenant.admin.token, 'DOC-DEL-OPEN');
+
+    // Le manager a can_view mais pas can_delete sur la catégorie restreinte.
+    await request(app)
+      .post(`/api/categories/${restrictedCategory}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true, can_delete: false })
+      .expect(201);
+
+    const res = await request(app)
+      .delete('/api/documents/bulk')
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ ids: [restrictedDoc.id, openDoc.id] });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+
+    const { data: stillRestricted } = await admin.from('documents').select('id').eq('id', restrictedDoc.id).maybeSingle();
+    expect(stillRestricted).not.toBeNull();
+    const { data: openGone } = await admin.from('documents').select('id').eq('id', openDoc.id).maybeSingle();
+    expect(openGone).toBeNull();
+  });
+});

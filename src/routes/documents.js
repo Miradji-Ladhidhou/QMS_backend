@@ -1304,6 +1304,61 @@ router.patch(
   }
 );
 
+// DELETE /api/documents/bulk — suppression en masse. Placée avant DELETE /:id pour ne pas être
+// capturée comme un id, même convention que /bulk-category. Contrairement aux autres modules,
+// requireRole('admin','manager') ne suffit pas seul ici : chaque document reste soumis à
+// can_delete si sa catégorie est restreinte (même règle que DELETE /:id ci-dessous) — les ids
+// refusés sont silencieusement ignorés plutôt que de faire échouer toute la sélection, même
+// convention que les autres bulk (cross-tenant, etc.).
+router.delete(
+  '/bulk',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins un document.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: docs } = await supabase
+      .from('documents')
+      .select('id, category_id')
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids);
+
+    const allowedIds = [];
+    for (const doc of docs || []) {
+      const allowed = await hasCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: doc.category_id,
+        permission: 'delete',
+      });
+      if (allowed) allowedIds.push(doc.id);
+    }
+
+    if (allowedIds.length === 0) {
+      return res.json({ deleted: 0 });
+    }
+
+    const { error, count } = await supabase
+      .from('documents')
+      .delete({ count: 'exact' })
+      .eq('tenant_id', req.tenantId)
+      .in('id', allowedIds);
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+    }
+
+    res.json({ deleted: count });
+  }
+);
+
 // DELETE /api/documents/:id — réservé aux admins/managers, et soumis à can_delete si la
 // catégorie est restreinte (un manager n'a pas le bypass admin — il lui faut une permission
 // explicite can_delete pour supprimer un document d'une catégorie restreinte).
