@@ -409,10 +409,10 @@ router.get('/alerts', async (req, res) => {
 
 // Colonnes partagées entre le modèle généré (GET .../import-template.xlsx) et le parseur de
 // l'import (POST .../import) — un seul point de vérité pour ne jamais les laisser diverger.
-// Plusieurs lignes avec le même Numéro = plusieurs versions du même document (historique) —
-// voir POST /import : regroupées et triées par Date de création, la plus récente devient le
-// document courant, les autres sont archivées dans document_versions (sans fichier), exactement
-// comme le fait POST /:id/versions pour une nouvelle version normale.
+// La ligne décrit l'état COURANT du document (dernière version) ; son historique de versions
+// antérieures se remplit via les paires de colonnes "Historique Vn - Version/Date" générées par
+// buildHistoryColumns() ci-dessous, jamais via plusieurs lignes portant le même Numéro (qui
+// reste rejeté comme un doublon, voir POST /import).
 const IMPORT_COLUMNS = {
   number: 'Numéro *',
   title: 'Titre *',
@@ -424,6 +424,25 @@ const IMPORT_COLUMNS = {
   reviewDate: 'Prochaine révision (JJ/MM/AAAA)',
   reviewFrequency: 'Fréquence de révision (mois)',
 };
+
+// 10 emplacements d'historique par défaut dans le modèle généré — au-delà, l'utilisateur duplique
+// une paire de colonnes à la main dans Excel avant l'import (le parseur, lui, n'a pas de limite :
+// il lit HISTORY_SLOTS emplacements nommés, quel que soit leur nombre réel dans le fichier reçu).
+const HISTORY_SLOTS = 10;
+function historyVersionHeader(i) {
+  return `Historique V${i} - Version`;
+}
+function historyDateHeader(i) {
+  return `Historique V${i} - Date (JJ/MM/AAAA)`;
+}
+function buildHistoryColumns() {
+  const columns = [];
+  for (let i = 1; i <= HISTORY_SLOTS; i += 1) {
+    columns.push({ header: historyVersionHeader(i), key: `historyVersion${i}`, width: 14 });
+    columns.push({ header: historyDateHeader(i), key: `historyDate${i}`, width: 22 });
+  }
+  return columns;
+}
 
 // Compare les en-têtes en ignorant l'astérisque des colonnes obligatoires, la casse et les
 // espaces superflus — un fichier renvoyé après passage par Excel peut légèrement modifier le
@@ -469,35 +488,28 @@ router.get('/import-template.xlsx', async (req, res) => {
     { header: IMPORT_COLUMNS.createdAt, key: 'createdAt', width: 26 },
     { header: IMPORT_COLUMNS.reviewDate, key: 'reviewDate', width: 26 },
     { header: IMPORT_COLUMNS.reviewFrequency, key: 'reviewFrequency', width: 24 },
+    ...buildHistoryColumns(),
   ];
   sheet.getRow(1).font = { bold: true };
+  // Une seule ligne par document : son historique de versions antérieures se remplit dans les
+  // colonnes "Historique Vn - Version/Date" à droite (V1 = la plus ancienne), pas sur des
+  // lignes supplémentaires — voir POST /import.
   sheet.addRow({
     number: 'QP-001',
     title: 'Exemple de procédure',
     description: "Ligne d'exemple — à modifier ou supprimer avant import.",
     category: categories?.[0]?.name || '',
-    version: '1.0',
-    status: DOCUMENT_STATUS_LABELS_FR.obsolete,
+    version: '2.0',
+    status: DOCUMENT_STATUS_LABELS_FR.approved,
     createdAt: '01/01/2023',
     reviewDate: '',
     reviewFrequency: '',
-  });
-  // Même Numéro sur deux lignes = historique de versions du même document (voir POST /import) :
-  // la ligne la plus récente (par Date de création) devient le document actif, les autres sont
-  // archivées comme versions passées — exactement comme "Nouvelle version" dans l'application.
-  sheet.addRow({
-    number: 'QP-001',
-    title: 'Exemple de procédure',
-    description: "Deuxième ligne d'exemple — même Numéro que la précédente = historique de versions.",
-    category: categories?.[0]?.name || '',
-    version: '2.0',
-    status: DOCUMENT_STATUS_LABELS_FR.approved,
-    createdAt: '15/06/2024',
-    reviewDate: '',
-    reviewFrequency: '',
+    historyVersion1: '1.0',
+    historyDate1: '01/01/2023',
+    historyVersion2: '1.1',
+    historyDate2: '15/06/2024',
   });
   sheet.getRow(2).font = { italic: true, color: { argb: 'FF94A3B8' } };
-  sheet.getRow(3).font = { italic: true, color: { argb: 'FF94A3B8' } };
   sheet.getRow(1).eachCell((cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -1398,10 +1410,15 @@ router.post('/import', upload.single('file'), async (req, res) => {
   );
 
   const results = [];
-  // Plusieurs lignes avec le même Numéro = historique de versions de ce document (voir
-  // IMPORT_COLUMNS.status ci-dessus) : regroupées ici avant de décider laquelle est l'état
-  // courant, plutôt que rejetées comme un doublon (comportement précédent).
-  const rowsByNumber = new Map();
+  const seenNumbersInFile = new Set();
+  // Repli commun pour les lignes sans date de création (jamais `new Date()` par ligne : voir la
+  // note sur les inserts groupés PostgREST plus bas — tous les objets du batch doivent avoir
+  // exactement les mêmes clés).
+  const importDateStr = new Date().toISOString().slice(0, 10);
+  const toInsertDocs = [];
+  // Parallèle à toInsertDocs : les créneaux d'historique de CETTE ligne (colonnes "Historique
+  // Vn - Version/Date", voir buildHistoryColumns) — rattachés une fois le document créé.
+  const rowMeta = [];
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -1417,50 +1434,18 @@ router.post('/import', upload.single('file'), async (req, res) => {
       results.push({ row: rowNumber, status: 'error', message: 'Titre requis.' });
       continue;
     }
-    if (existingNumbers.has(number)) {
+    if (existingNumbers.has(number) || seenNumbersInFile.has(number)) {
       results.push({ row: rowNumber, status: 'error', message: `Numéro "${number}" déjà utilisé.`, number });
       continue;
     }
 
-    if (!rowsByNumber.has(number)) rowsByNumber.set(number, []);
-    rowsByNumber.get(number).push({
-      rowNumber,
-      title,
-      description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
-      categoryNameRaw: String(getRowValue(row, IMPORT_COLUMNS.category) ?? '').trim(),
-      version: String(getRowValue(row, IMPORT_COLUMNS.version) ?? '').trim() || '1.0',
-      statusRaw: String(getRowValue(row, IMPORT_COLUMNS.status) ?? '').trim(),
-      createdAtDate: parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.createdAt)),
-      reviewDateRaw: getRowValue(row, IMPORT_COLUMNS.reviewDate),
-      reviewFrequencyRaw: getRowValue(row, IMPORT_COLUMNS.reviewFrequency),
-    });
-  }
-
-  // Repli commun pour les lignes sans date (plutôt qu'un `new Date()` par ligne, dont les
-  // millisecondes casseraient l'ordre de fichier voulu comme départage) : le tri restant
-  // stable (garanti depuis ES2019), deux lignes sans date gardent l'ordre du fichier.
-  const importDateStr = new Date().toISOString().slice(0, 10);
-  const toInsertDocs = [];
-  const historicalEntries = []; // { number, version, statusCode, createdAtDate, resultRef }
-
-  for (const [number, entries] of rowsByNumber) {
-    const sorted = [...entries].sort((a, b) => {
-      const aDate = a.createdAtDate || importDateStr;
-      const bDate = b.createdAtDate || importDateStr;
-      return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
-    });
-    const winner = sorted[sorted.length - 1];
-    const historical = sorted.slice(0, -1);
-
-    // Catégorie : seule celle de la ligne gagnante compte (document_versions n'a pas de
-    // catégorie propre) — vérifiée seulement ici pour ne jamais faire un contrôle de
-    // permission inutile sur une ligne qui finira de toute façon en historique.
+    const categoryNameRaw = String(getRowValue(row, IMPORT_COLUMNS.category) ?? '').trim();
     let categoryId = null;
     let categoryWarning = null;
-    if (winner.categoryNameRaw) {
-      const category = categoriesByName.get(winner.categoryNameRaw.toLowerCase());
+    if (categoryNameRaw) {
+      const category = categoriesByName.get(categoryNameRaw.toLowerCase());
       if (!category) {
-        categoryWarning = `Catégorie "${winner.categoryNameRaw}" introuvable — document créé sans catégorie.`;
+        categoryWarning = `Catégorie "${categoryNameRaw}" introuvable — document créé sans catégorie.`;
       } else {
         const allowed = await hasCategoryPermission({
           tenantId: req.tenantId,
@@ -1470,80 +1455,85 @@ router.post('/import', upload.single('file'), async (req, res) => {
           permission: 'edit',
         });
         if (!allowed) {
-          for (const entry of sorted) {
-            results.push(
-              entry === winner
-                ? {
-                    row: entry.rowNumber,
-                    status: 'error',
-                    message: `Vous n'avez pas la permission de créer un document dans la catégorie "${winner.categoryNameRaw}".`,
-                    number,
-                  }
-                : { row: entry.rowNumber, status: 'error', message: 'Non traitée : la ligne courante de ce document a été rejetée.', number }
-            );
-          }
+          results.push({
+            row: rowNumber,
+            status: 'error',
+            message: `Vous n'avez pas la permission de créer un document dans la catégorie "${categoryNameRaw}".`,
+            number,
+          });
           continue;
         }
         categoryId = category.id;
       }
     }
 
+    const statusRaw = String(getRowValue(row, IMPORT_COLUMNS.status) ?? '').trim();
     let statusCode = null;
     let statusWarning = null;
-    if (winner.statusRaw) {
-      const matched = statusCodeByLabel.get(normalizeHeader(winner.statusRaw));
+    if (statusRaw) {
+      const matched = statusCodeByLabel.get(normalizeHeader(statusRaw));
       if (matched) statusCode = matched;
-      else statusWarning = `Statut "${winner.statusRaw}" non reconnu — document créé en Brouillon.`;
+      else statusWarning = `Statut "${statusRaw}" non reconnu — document créé en Brouillon.`;
     }
 
-    const reviewFrequencyRaw = winner.reviewFrequencyRaw;
+    const version = String(getRowValue(row, IMPORT_COLUMNS.version) ?? '').trim() || '1.0';
+    const createdAtDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.createdAt));
+    const reviewFrequencyRaw = getRowValue(row, IMPORT_COLUMNS.reviewFrequency);
     const reviewFrequency =
       reviewFrequencyRaw !== null && reviewFrequencyRaw !== undefined && String(reviewFrequencyRaw).trim() !== ''
         ? parseInt(reviewFrequencyRaw, 10)
         : null;
     const effectiveFrequency = Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : defaultFrequency;
 
-    let reviewDate = parseFlexibleDate(winner.reviewDateRaw);
+    let reviewDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.reviewDate));
     if (!reviewDate && effectiveFrequency) {
-      reviewDate = addMonthsIso(winner.createdAtDate || importDateStr, effectiveFrequency);
+      reviewDate = addMonthsIso(createdAtDate || importDateStr, effectiveFrequency);
     }
 
-    // La date de création du DOCUMENT (la fiche elle-même) reste celle de sa toute première
-    // version connue — jamais touchée par une nouvelle version dans le flux normal de l'appli
-    // (voir POST /:id/versions, qui ne modifie jamais documents.created_at), même logique ici.
-    const earliestDate = sorted[0].createdAtDate;
+    // Historique de versions antérieures pour CE document, décrit sur la même ligne (V1 = la
+    // plus ancienne). Un créneau vide (ni version ni date) est ignoré ; un créneau partiellement
+    // rempli est complété avec un repli et un avertissement plutôt que rejeté.
+    const historySlots = [];
+    const historyWarnings = [];
+    for (let slot = 1; slot <= HISTORY_SLOTS; slot += 1) {
+      const slotVersionRaw = String(getRowValue(row, historyVersionHeader(slot)) ?? '').trim();
+      const slotDate = parseFlexibleDate(getRowValue(row, historyDateHeader(slot)));
+      if (!slotVersionRaw && !slotDate) continue;
 
+      const finalVersion = slotVersionRaw || `v${slot}`;
+      if (!slotVersionRaw) historyWarnings.push(`Historique V${slot} : version manquante, "${finalVersion}" utilisé.`);
+      const finalDate = slotDate || importDateStr;
+      if (!slotDate) historyWarnings.push(`Historique V${slot} : date manquante ou invalide, date du jour utilisée.`);
+
+      historySlots.push({ version: finalVersion, date: finalDate });
+    }
+
+    seenNumbersInFile.add(number);
     toInsertDocs.push({
       tenant_id: req.tenantId,
       category_id: categoryId,
       number,
-      title: winner.title,
-      description: winner.description,
-      version: winner.version,
+      title,
+      description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
+      version,
       status: statusCode || 'draft',
       // Toujours une valeur concrète (jamais `undefined` pour retomber sur le défaut now() de
       // la base) : un insert groupé PostgREST exige que tous les objets du tableau aient
       // exactement le même jeu de clés. Si une seule ligne avait "created_at" et une autre non,
       // le batch entier échouait (bug réel rencontré : 500 générique côté PostgREST).
-      created_at: earliestDate ? `${earliestDate}T00:00:00Z` : new Date().toISOString(),
+      created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : new Date().toISOString(),
       review_date: reviewDate,
       review_frequency_months: Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : null,
       created_by: req.user.id,
     });
 
-    const combinedWarning = [categoryWarning, statusWarning].filter(Boolean).join(' ') || null;
-    results.push({ row: winner.rowNumber, status: 'pending', number, warning: combinedWarning });
-
-    for (const entry of historical) {
-      let historicalStatusCode = null;
-      if (entry.statusRaw) {
-        historicalStatusCode = statusCodeByLabel.get(normalizeHeader(entry.statusRaw)) || null;
-      }
-      const resultRef = { row: entry.rowNumber, status: 'pending-archived', number, version: entry.version };
-      results.push(resultRef);
-      historicalEntries.push({ number, version: entry.version, statusCode: historicalStatusCode, createdAtDate: entry.createdAtDate, resultRef });
-    }
+    const combinedWarning = [categoryWarning, statusWarning, ...historyWarnings].filter(Boolean).join(' ') || null;
+    const resultRef = { row: rowNumber, status: 'pending', number, warning: combinedWarning };
+    results.push(resultRef);
+    rowMeta.push({ number, resultRef, historySlots });
   }
+
+  let archivedCount = 0;
 
   if (toInsertDocs.length > 0) {
     const { data: inserted, error: insertError } = await supabase
@@ -1575,29 +1565,25 @@ router.post('/import', upload.single('file'), async (req, res) => {
     // Historique de versions : sans fichier (comme le reste de cet import), archivé exactement
     // comme le fait POST /:id/versions pour une nouvelle version normale.
     const versionsToInsert = [];
-    for (const historical of historicalEntries) {
-      const created = insertedByNumber.get(historical.number);
-      if (!created) {
-        historical.resultRef.status = 'error';
-        historical.resultRef.message = 'Non créée : le document courant de ce numéro a échoué.';
-        continue;
+    for (const meta of rowMeta) {
+      if (meta.historySlots.length === 0) continue;
+      const created = insertedByNumber.get(meta.number);
+      if (!created) continue; // la ligne elle-même a échoué, déjà signalé ci-dessus
+
+      for (const slot of meta.historySlots) {
+        versionsToInsert.push({
+          document_id: created.id,
+          tenant_id: req.tenantId,
+          version: slot.version,
+          file_path: null,
+          file_name: null,
+          storage_provider: null,
+          status: null,
+          change_note: null,
+          changed_by: req.user.id,
+          created_at: `${slot.date}T00:00:00Z`,
+        });
       }
-      historical.resultRef.status = 'archived';
-      historical.resultRef.document_id = created.id;
-      historical.resultRef.title = created.title;
-      historical.resultRef.message = `Ajoutée à l'historique de "${created.title}" (version ${historical.version}).`;
-      versionsToInsert.push({
-        document_id: created.id,
-        tenant_id: req.tenantId,
-        version: historical.version,
-        file_path: null,
-        file_name: null,
-        storage_provider: null,
-        status: historical.statusCode,
-        change_note: null,
-        changed_by: req.user.id,
-        created_at: historical.createdAtDate ? `${historical.createdAtDate}T00:00:00Z` : new Date().toISOString(),
-      });
     }
 
     if (versionsToInsert.length > 0) {
@@ -1606,20 +1592,26 @@ router.post('/import', upload.single('file'), async (req, res) => {
         // Ne fait pas échouer tout l'import : les documents eux-mêmes sont déjà créés avec
         // succès, seul l'historique de versions manque — on le signale sans annuler le reste.
         console.error("Échec de l'archivage de l'historique de versions importé :", versionsError);
-        historicalEntries.forEach((historical) => {
-          if (historical.resultRef.status === 'archived') {
-            historical.resultRef.status = 'error';
-            historical.resultRef.message = "Document créé, mais échec de l'ajout à l'historique de versions.";
-            delete historical.resultRef.document_id;
+        rowMeta.forEach((meta) => {
+          if (meta.historySlots.length > 0 && meta.resultRef.status !== 'error') {
+            meta.resultRef.message = [meta.resultRef.message, "l'ajout de l'historique de versions a échoué."]
+              .filter(Boolean)
+              .join(' — ');
+          }
+        });
+      } else {
+        archivedCount = versionsToInsert.length;
+        rowMeta.forEach((meta) => {
+          if (meta.historySlots.length > 0 && meta.resultRef.status !== 'error') {
+            const suffix = `${meta.historySlots.length} version(s) archivée(s) dans l'historique.`;
+            meta.resultRef.message = [meta.resultRef.message, suffix].filter(Boolean).join(' — ');
           }
         });
       }
     }
   }
 
-  // document_audit_log.document_id est NOT NULL (voir schema.sql) : une entrée par document
-  // créé (pas par ligne — une ligne archivée en historique ne recrée pas le document, elle
-  // s'y attache, donc pas de deuxième entrée "created_via_import" pour le même document_id).
+  // document_audit_log.document_id est NOT NULL (voir schema.sql) : une entrée par document créé.
   await Promise.all(
     results
       .filter((result) => (result.status === 'created' || result.status === 'warning') && result.document_id)
@@ -1636,7 +1628,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
   res.status(201).json({
     created_count: results.filter((r) => r.status === 'created' || r.status === 'warning').length,
-    archived_count: results.filter((r) => r.status === 'archived').length,
+    archived_count: archivedCount,
     error_count: results.filter((r) => r.status === 'error').length,
     results,
   });

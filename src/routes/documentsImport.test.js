@@ -13,6 +13,15 @@ afterEach(async () => {
   }
 });
 
+function historyHeaders() {
+  const headers = {};
+  for (let i = 1; i <= 10; i += 1) {
+    headers[`historyVersion${i}`] = `Historique V${i} - Version`;
+    headers[`historyDate${i}`] = `Historique V${i} - Date (JJ/MM/AAAA)`;
+  }
+  return headers;
+}
+
 const IMPORT_HEADERS = {
   number: 'Numéro *',
   title: 'Titre *',
@@ -23,6 +32,7 @@ const IMPORT_HEADERS = {
   createdAt: 'Date de création (JJ/MM/AAAA)',
   reviewDate: 'Prochaine révision (JJ/MM/AAAA)',
   reviewFrequency: 'Fréquence de révision (mois)',
+  ...historyHeaders(),
 };
 
 async function buildImportFile(rows) {
@@ -34,30 +44,46 @@ async function buildImportFile(rows) {
   return Buffer.from(buffer);
 }
 
+async function downloadTemplateWorkbook(token) {
+  const res = await request(app)
+    .get('/api/documents/import-template.xlsx')
+    .set('Authorization', `Bearer ${token}`)
+    .buffer(true)
+    .parse((response, callback) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => callback(null, Buffer.concat(chunks)));
+    });
+  expect(res.status).toBe(200);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(res.body);
+  return workbook;
+}
+
 describe('GET /api/documents/import-template.xlsx', () => {
-  it('contient la colonne Statut et le libellé renommé "Prochaine révision"', async () => {
+  it('contient la colonne Statut, le libellé renommé "Prochaine révision" et 10 emplacements d\'historique', async () => {
     tenant = await createTenant();
-
-    const res = await request(app)
-      .get('/api/documents/import-template.xlsx')
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .buffer(true)
-      .parse((response, callback) => {
-        const chunks = [];
-        response.on('data', (chunk) => chunks.push(chunk));
-        response.on('end', () => callback(null, Buffer.concat(chunks)));
-      });
-
-    expect(res.status).toBe(200);
-
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(res.body);
+    const workbook = await downloadTemplateWorkbook(tenant.admin.token);
     const sheet = workbook.getWorksheet('Documents');
     const headerRow = sheet.getRow(1).values.filter(Boolean);
 
     expect(headerRow).toContain('Statut');
     expect(headerRow).toContain('Prochaine révision (JJ/MM/AAAA)');
     expect(headerRow).not.toContain('Date de révision (JJ/MM/AAAA)');
+    expect(headerRow).toContain('Historique V1 - Version');
+    expect(headerRow).toContain('Historique V1 - Date (JJ/MM/AAAA)');
+    expect(headerRow).toContain('Historique V10 - Version');
+    expect(headerRow).toContain('Historique V10 - Date (JJ/MM/AAAA)');
+    expect(headerRow).not.toContain('Historique V11 - Version');
+  });
+
+  it("l'exemple d'historique de version tient sur une seule ligne (pas deux lignes avec le même Numéro)", async () => {
+    tenant = await createTenant();
+    const workbook = await downloadTemplateWorkbook(tenant.admin.token);
+    const sheet = workbook.getWorksheet('Documents');
+
+    // Une seule ligne d'exemple (ligne 1 = en-têtes, ligne 2 = exemple), pas de ligne 3.
+    expect(sheet.getRow(3).values.filter((v) => v !== undefined && v !== null)).toHaveLength(0);
   });
 });
 
@@ -114,83 +140,21 @@ describe('POST /api/documents/import — statut', () => {
   });
 });
 
-describe('POST /api/documents/import — historique de versions (même Numéro sur plusieurs lignes)', () => {
-  it('crée un seul document (la ligne la plus récente) et archive les autres comme versions passées', async () => {
+describe('POST /api/documents/import — historique de versions (colonnes Historique Vn)', () => {
+  it('les créneaux Historique V1/V2 remplis créent le document courant + 2 versions archivées', async () => {
     tenant = await createTenant();
     const file = await buildImportFile([
       {
         number: 'QP-100',
-        title: 'Procédure v1',
-        version: '1.0',
-        status: 'Obsolète',
-        createdAt: '01/01/2023',
-      },
-      {
-        number: 'QP-100',
-        title: 'Procédure v2',
+        title: 'Procédure la plus récente',
         version: '2.0',
         status: 'Approuvé',
-        createdAt: '15/06/2024',
+        createdAt: '01/01/2023',
+        historyVersion1: '1.0',
+        historyDate1: '01/01/2023',
+        historyVersion2: '1.1',
+        historyDate2: '15/06/2023',
       },
-    ]);
-
-    const res = await request(app)
-      .post('/api/documents/import')
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .attach('file', file, 'import.xlsx');
-
-    expect(res.status).toBe(201);
-    expect(res.body.created_count).toBe(1);
-    expect(res.body.archived_count).toBe(1);
-
-    const row1 = res.body.results.find((r) => r.row === 2);
-    const row2 = res.body.results.find((r) => r.row === 3);
-    expect(row1.status).toBe('archived');
-    expect(row2.status).toBe('created');
-
-    const { data: doc } = await admin
-      .from('documents')
-      .select('id, title, version, status, created_at')
-      .eq('number', 'QP-100')
-      .single();
-    expect(doc.title).toBe('Procédure v2');
-    expect(doc.version).toBe('2.0');
-    expect(doc.status).toBe('approved');
-    // La date de création du document reste celle de la toute première version (2023), pas de
-    // la version courante (2024).
-    expect(doc.created_at.slice(0, 4)).toBe('2023');
-
-    const { data: versions } = await admin.from('document_versions').select('version, status').eq('document_id', doc.id);
-    expect(versions).toHaveLength(1);
-    expect(versions[0].version).toBe('1.0');
-    expect(versions[0].status).toBe('obsolete');
-  });
-
-  it("l'ordre des lignes dans le fichier n'a pas d'importance, seule la date compte", async () => {
-    tenant = await createTenant();
-    // v2 (plus récente) écrite AVANT v1 dans le fichier.
-    const file = await buildImportFile([
-      { number: 'QP-200', title: 'Plus récente', version: '2.0', createdAt: '15/06/2024' },
-      { number: 'QP-200', title: 'Plus ancienne', version: '1.0', createdAt: '01/01/2023' },
-    ]);
-
-    const res = await request(app)
-      .post('/api/documents/import')
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .attach('file', file, 'import.xlsx');
-
-    expect(res.status).toBe(201);
-    const { data: doc } = await admin.from('documents').select('title, version').eq('number', 'QP-200').single();
-    expect(doc.title).toBe('Plus récente');
-    expect(doc.version).toBe('2.0');
-  });
-
-  it('trois versions du même document : deux archivées, une courante', async () => {
-    tenant = await createTenant();
-    const file = await buildImportFile([
-      { number: 'QP-300', title: 'V1', version: '1.0', createdAt: '01/01/2022' },
-      { number: 'QP-300', title: 'V2', version: '2.0', createdAt: '01/01/2023' },
-      { number: 'QP-300', title: 'V3', version: '3.0', createdAt: '01/01/2024' },
     ]);
 
     const res = await request(app)
@@ -202,10 +166,88 @@ describe('POST /api/documents/import — historique de versions (même Numéro s
     expect(res.body.created_count).toBe(1);
     expect(res.body.archived_count).toBe(2);
 
-    const { data: doc } = await admin.from('documents').select('id, title').eq('number', 'QP-300').single();
-    expect(doc.title).toBe('V3');
+    const row = res.body.results.find((r) => r.number === 'QP-100');
+    expect(row.status).toBe('created');
+    expect(row.message).toMatch(/2 version\(s\) archivée/);
+
+    const { data: doc } = await admin
+      .from('documents')
+      .select('id, title, version, status')
+      .eq('number', 'QP-100')
+      .single();
+    expect(doc.title).toBe('Procédure la plus récente');
+    expect(doc.version).toBe('2.0');
+    expect(doc.status).toBe('approved');
+
+    const { data: versions } = await admin
+      .from('document_versions')
+      .select('version, created_at')
+      .eq('document_id', doc.id)
+      .order('version', { ascending: true });
+    expect(versions.map((v) => v.version)).toEqual(['1.0', '1.1']);
+    expect(versions[0].created_at.slice(0, 10)).toBe('2023-01-01');
+    expect(versions[1].created_at.slice(0, 10)).toBe('2023-06-15');
+  });
+
+  it('un créneau vide (ni version ni date) est ignoré — aucune version archivée créée', async () => {
+    tenant = await createTenant();
+    const file = await buildImportFile([{ number: 'QP-EMPTY', title: 'Sans historique' }]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    expect(res.body.archived_count).toBe(0);
+
+    const { data: doc } = await admin.from('documents').select('id').eq('number', 'QP-EMPTY').single();
+    const { data: versions } = await admin.from('document_versions').select('id').eq('document_id', doc.id);
+    expect(versions).toHaveLength(0);
+  });
+
+  it('un créneau avec seulement une date (version manquante) est complété avec un avertissement, pas rejeté', async () => {
+    tenant = await createTenant();
+    const file = await buildImportFile([
+      { number: 'QP-PARTIAL', title: 'Historique partiel', historyDate1: '01/01/2023' },
+    ]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    const row = res.body.results.find((r) => r.number === 'QP-PARTIAL');
+    expect(row.status).toBe('warning');
+    expect(row.message).toMatch(/version manquante/);
+
+    const { data: doc } = await admin.from('documents').select('id').eq('number', 'QP-PARTIAL').single();
     const { data: versions } = await admin.from('document_versions').select('version').eq('document_id', doc.id);
-    expect(versions.map((v) => v.version).sort()).toEqual(['1.0', '2.0']);
+    expect(versions).toHaveLength(1);
+    expect(versions[0].version).toBe('v1');
+  });
+
+  it('les 10 emplacements peuvent tous être remplis sur une seule ligne', async () => {
+    tenant = await createTenant();
+    const row = { number: 'QP-FULL', title: 'Dix versions historiques' };
+    for (let i = 1; i <= 10; i += 1) {
+      row[`historyVersion${i}`] = `${i}.0`;
+      row[`historyDate${i}`] = `0${(i % 9) + 1}/01/2020`;
+    }
+    const file = await buildImportFile([row]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    expect(res.body.archived_count).toBe(10);
+
+    const { data: doc } = await admin.from('documents').select('id').eq('number', 'QP-FULL').single();
+    const { data: versions } = await admin.from('document_versions').select('id').eq('document_id', doc.id);
+    expect(versions).toHaveLength(10);
   });
 });
 
@@ -224,5 +266,25 @@ describe('POST /api/documents/import — comportements existants préservés', (
     const row = res.body.results.find((r) => r.number === 'DOC-EXIST');
     expect(row.status).toBe('error');
     expect(row.message).toMatch(/déjà utilisé/);
+  });
+
+  it('un Numéro répété sur deux lignes du même fichier est rejeté (pas un mécanisme de version)', async () => {
+    tenant = await createTenant();
+    const file = await buildImportFile([
+      { number: 'DOC-DUPE', title: 'Première ligne' },
+      { number: 'DOC-DUPE', title: 'Deuxième ligne, même numéro' },
+    ]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    expect(res.body.created_count).toBe(1);
+    expect(res.body.error_count).toBe(1);
+    const errorRow = res.body.results.find((r) => r.row === 3);
+    expect(errorRow.status).toBe('error');
+    expect(errorRow.message).toMatch(/déjà utilisé/);
   });
 });
