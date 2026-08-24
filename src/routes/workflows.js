@@ -9,7 +9,10 @@ import { requireCategoryPermission, resolveDocumentFromWorkflow } from '../middl
 const router = Router();
 
 // Signature électronique simple (eIDAS, non qualifiée) : hash SHA-256 de l'engagement pris,
-// horodaté et lié à la version exacte du document au moment de l'approbation.
+// horodaté et lié à la version exacte du document au moment de l'approbation. Repose sur la
+// session déjà ouverte de l'approbateur (pas de ressaisie de mot de passe à l'approbation,
+// retirée sur demande) — n'apporte donc plus la garantie d'identité "fraîche au moment du
+// clic" qu'un re-authentification aurait fournie, seulement celle de la session JWT en cours.
 function generateSignatureHash({ documentId, version, approverId, timestamp, decision }) {
   return createHash('sha256').update(`${documentId}${version}${approverId}${timestamp}${decision}`).digest('hex');
 }
