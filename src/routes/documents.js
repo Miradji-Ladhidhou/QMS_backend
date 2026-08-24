@@ -37,6 +37,15 @@ const upload = multer({
 });
 
 const DOCUMENT_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
+// Mêmes libellés que STATUS_LABELS côté frontend (lib/documentStatus.js) — utilisé pour la
+// colonne "Statut" du modèle d'import Excel (import de documents), en français comme le reste
+// du fichier généré, jamais les codes internes ('draft', 'approved'...).
+const DOCUMENT_STATUS_LABELS_FR = {
+  draft: 'Brouillon',
+  in_review: 'En revue',
+  approved: 'Approuvé',
+  obsolete: 'Obsolète',
+};
 const STORAGE_BUCKET = 'qms-documents';
 
 // Un document peut légitimement être de presque n'importe quel type (Word, Excel, PDF,
@@ -400,14 +409,19 @@ router.get('/alerts', async (req, res) => {
 
 // Colonnes partagées entre le modèle généré (GET .../import-template.xlsx) et le parseur de
 // l'import (POST .../import) — un seul point de vérité pour ne jamais les laisser diverger.
+// Plusieurs lignes avec le même Numéro = plusieurs versions du même document (historique) —
+// voir POST /import : regroupées et triées par Date de création, la plus récente devient le
+// document courant, les autres sont archivées dans document_versions (sans fichier), exactement
+// comme le fait POST /:id/versions pour une nouvelle version normale.
 const IMPORT_COLUMNS = {
   number: 'Numéro *',
   title: 'Titre *',
   description: 'Description',
   category: 'Catégorie',
   version: 'Version',
+  status: 'Statut',
   createdAt: 'Date de création (JJ/MM/AAAA)',
-  reviewDate: 'Date de révision (JJ/MM/AAAA)',
+  reviewDate: 'Prochaine révision (JJ/MM/AAAA)',
   reviewFrequency: 'Fréquence de révision (mois)',
 };
 
@@ -441,6 +455,8 @@ router.get('/import-template.xlsx', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .order('name', { ascending: true });
 
+  const statusOptions = Object.values(DOCUMENT_STATUS_LABELS_FR);
+
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('Documents');
   sheet.columns = [
@@ -449,6 +465,7 @@ router.get('/import-template.xlsx', async (req, res) => {
     { header: IMPORT_COLUMNS.description, key: 'description', width: 40 },
     { header: IMPORT_COLUMNS.category, key: 'category', width: 22 },
     { header: IMPORT_COLUMNS.version, key: 'version', width: 10 },
+    { header: IMPORT_COLUMNS.status, key: 'status', width: 14 },
     { header: IMPORT_COLUMNS.createdAt, key: 'createdAt', width: 26 },
     { header: IMPORT_COLUMNS.reviewDate, key: 'reviewDate', width: 26 },
     { header: IMPORT_COLUMNS.reviewFrequency, key: 'reviewFrequency', width: 24 },
@@ -460,14 +477,38 @@ router.get('/import-template.xlsx', async (req, res) => {
     description: "Ligne d'exemple — à modifier ou supprimer avant import.",
     category: categories?.[0]?.name || '',
     version: '1.0',
-    createdAt: '',
+    status: DOCUMENT_STATUS_LABELS_FR.obsolete,
+    createdAt: '01/01/2023',
+    reviewDate: '',
+    reviewFrequency: '',
+  });
+  // Même Numéro sur deux lignes = historique de versions du même document (voir POST /import) :
+  // la ligne la plus récente (par Date de création) devient le document actif, les autres sont
+  // archivées comme versions passées — exactement comme "Nouvelle version" dans l'application.
+  sheet.addRow({
+    number: 'QP-001',
+    title: 'Exemple de procédure',
+    description: "Deuxième ligne d'exemple — même Numéro que la précédente = historique de versions.",
+    category: categories?.[0]?.name || '',
+    version: '2.0',
+    status: DOCUMENT_STATUS_LABELS_FR.approved,
+    createdAt: '15/06/2024',
     reviewDate: '',
     reviewFrequency: '',
   });
   sheet.getRow(2).font = { italic: true, color: { argb: 'FF94A3B8' } };
+  sheet.getRow(3).font = { italic: true, color: { argb: 'FF94A3B8' } };
   sheet.getRow(1).eachCell((cell) => {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
     cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  });
+
+  // Liste déroulante plutôt qu'un texte libre : évite qu'une valeur mal orthographiée
+  // ("Approuvée" au lieu de "Approuvé") tombe silencieusement en avertissement à l'import.
+  sheet.dataValidations.add('F2:F1000', {
+    type: 'list',
+    allowBlank: true,
+    formulae: [`"${statusOptions.join(',')}"`],
   });
 
   if (categories && categories.length > 0) {
@@ -1351,11 +1392,16 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
   const categoriesByName = new Map((categories || []).map((category) => [category.name.trim().toLowerCase(), category]));
   const existingNumbers = new Set((existingDocs || []).map((document) => document.number));
-  const seenNumbersInFile = new Set();
   const defaultFrequency = tenant?.document_review_frequency_months || null;
+  const statusCodeByLabel = new Map(
+    Object.entries(DOCUMENT_STATUS_LABELS_FR).map(([code, label]) => [normalizeHeader(label), code])
+  );
 
   const results = [];
-  const toInsert = [];
+  // Plusieurs lignes avec le même Numéro = historique de versions de ce document (voir
+  // IMPORT_COLUMNS.status ci-dessus) : regroupées ici avant de décider laquelle est l'état
+  // courant, plutôt que rejetées comme un doublon (comportement précédent).
+  const rowsByNumber = new Map();
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -1371,18 +1417,50 @@ router.post('/import', upload.single('file'), async (req, res) => {
       results.push({ row: rowNumber, status: 'error', message: 'Titre requis.' });
       continue;
     }
-    if (existingNumbers.has(number) || seenNumbersInFile.has(number)) {
+    if (existingNumbers.has(number)) {
       results.push({ row: rowNumber, status: 'error', message: `Numéro "${number}" déjà utilisé.`, number });
       continue;
     }
 
-    const categoryNameRaw = String(getRowValue(row, IMPORT_COLUMNS.category) ?? '').trim();
+    if (!rowsByNumber.has(number)) rowsByNumber.set(number, []);
+    rowsByNumber.get(number).push({
+      rowNumber,
+      title,
+      description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
+      categoryNameRaw: String(getRowValue(row, IMPORT_COLUMNS.category) ?? '').trim(),
+      version: String(getRowValue(row, IMPORT_COLUMNS.version) ?? '').trim() || '1.0',
+      statusRaw: String(getRowValue(row, IMPORT_COLUMNS.status) ?? '').trim(),
+      createdAtDate: parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.createdAt)),
+      reviewDateRaw: getRowValue(row, IMPORT_COLUMNS.reviewDate),
+      reviewFrequencyRaw: getRowValue(row, IMPORT_COLUMNS.reviewFrequency),
+    });
+  }
+
+  // Repli commun pour les lignes sans date (plutôt qu'un `new Date()` par ligne, dont les
+  // millisecondes casseraient l'ordre de fichier voulu comme départage) : le tri restant
+  // stable (garanti depuis ES2019), deux lignes sans date gardent l'ordre du fichier.
+  const importDateStr = new Date().toISOString().slice(0, 10);
+  const toInsertDocs = [];
+  const historicalEntries = []; // { number, version, statusCode, createdAtDate, resultRef }
+
+  for (const [number, entries] of rowsByNumber) {
+    const sorted = [...entries].sort((a, b) => {
+      const aDate = a.createdAtDate || importDateStr;
+      const bDate = b.createdAtDate || importDateStr;
+      return aDate < bDate ? -1 : aDate > bDate ? 1 : 0;
+    });
+    const winner = sorted[sorted.length - 1];
+    const historical = sorted.slice(0, -1);
+
+    // Catégorie : seule celle de la ligne gagnante compte (document_versions n'a pas de
+    // catégorie propre) — vérifiée seulement ici pour ne jamais faire un contrôle de
+    // permission inutile sur une ligne qui finira de toute façon en historique.
     let categoryId = null;
-    let warningMessage = null;
-    if (categoryNameRaw) {
-      const category = categoriesByName.get(categoryNameRaw.toLowerCase());
+    let categoryWarning = null;
+    if (winner.categoryNameRaw) {
+      const category = categoriesByName.get(winner.categoryNameRaw.toLowerCase());
       if (!category) {
-        warningMessage = `Catégorie "${categoryNameRaw}" introuvable — document créé sans catégorie.`;
+        categoryWarning = `Catégorie "${winner.categoryNameRaw}" introuvable — document créé sans catégorie.`;
       } else {
         const allowed = await hasCategoryPermission({
           tenantId: req.tenantId,
@@ -1392,56 +1470,85 @@ router.post('/import', upload.single('file'), async (req, res) => {
           permission: 'edit',
         });
         if (!allowed) {
-          results.push({
-            row: rowNumber,
-            status: 'error',
-            message: `Vous n'avez pas la permission de créer un document dans la catégorie "${categoryNameRaw}".`,
-            number,
-          });
+          for (const entry of sorted) {
+            results.push(
+              entry === winner
+                ? {
+                    row: entry.rowNumber,
+                    status: 'error',
+                    message: `Vous n'avez pas la permission de créer un document dans la catégorie "${winner.categoryNameRaw}".`,
+                    number,
+                  }
+                : { row: entry.rowNumber, status: 'error', message: 'Non traitée : la ligne courante de ce document a été rejetée.', number }
+            );
+          }
           continue;
         }
         categoryId = category.id;
       }
     }
 
-    const version = String(getRowValue(row, IMPORT_COLUMNS.version) ?? '').trim() || '1.0';
-    const createdAtDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.createdAt));
-    const reviewFrequencyRaw = getRowValue(row, IMPORT_COLUMNS.reviewFrequency);
+    let statusCode = null;
+    let statusWarning = null;
+    if (winner.statusRaw) {
+      const matched = statusCodeByLabel.get(normalizeHeader(winner.statusRaw));
+      if (matched) statusCode = matched;
+      else statusWarning = `Statut "${winner.statusRaw}" non reconnu — document créé en Brouillon.`;
+    }
+
+    const reviewFrequencyRaw = winner.reviewFrequencyRaw;
     const reviewFrequency =
       reviewFrequencyRaw !== null && reviewFrequencyRaw !== undefined && String(reviewFrequencyRaw).trim() !== ''
         ? parseInt(reviewFrequencyRaw, 10)
         : null;
     const effectiveFrequency = Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : defaultFrequency;
 
-    let reviewDate = parseFlexibleDate(getRowValue(row, IMPORT_COLUMNS.reviewDate));
+    let reviewDate = parseFlexibleDate(winner.reviewDateRaw);
     if (!reviewDate && effectiveFrequency) {
-      reviewDate = addMonthsIso(createdAtDate || new Date().toISOString().slice(0, 10), effectiveFrequency);
+      reviewDate = addMonthsIso(winner.createdAtDate || importDateStr, effectiveFrequency);
     }
 
-    seenNumbersInFile.add(number);
-    toInsert.push({
+    // La date de création du DOCUMENT (la fiche elle-même) reste celle de sa toute première
+    // version connue — jamais touchée par une nouvelle version dans le flux normal de l'appli
+    // (voir POST /:id/versions, qui ne modifie jamais documents.created_at), même logique ici.
+    const earliestDate = sorted[0].createdAtDate;
+
+    toInsertDocs.push({
       tenant_id: req.tenantId,
       category_id: categoryId,
       number,
-      title,
-      description: String(getRowValue(row, IMPORT_COLUMNS.description) ?? '').trim() || null,
-      version,
+      title: winner.title,
+      description: winner.description,
+      version: winner.version,
+      status: statusCode || 'draft',
       // Toujours une valeur concrète (jamais `undefined` pour retomber sur le défaut now() de
       // la base) : un insert groupé PostgREST exige que tous les objets du tableau aient
       // exactement le même jeu de clés. Si une seule ligne avait "created_at" et une autre non,
       // le batch entier échouait (bug réel rencontré : 500 générique côté PostgREST).
-      created_at: createdAtDate ? `${createdAtDate}T00:00:00Z` : new Date().toISOString(),
+      created_at: earliestDate ? `${earliestDate}T00:00:00Z` : new Date().toISOString(),
       review_date: reviewDate,
       review_frequency_months: Number.isInteger(reviewFrequency) && reviewFrequency > 0 ? reviewFrequency : null,
       created_by: req.user.id,
     });
-    results.push({ row: rowNumber, status: 'pending', number, warning: warningMessage });
+
+    const combinedWarning = [categoryWarning, statusWarning].filter(Boolean).join(' ') || null;
+    results.push({ row: winner.rowNumber, status: 'pending', number, warning: combinedWarning });
+
+    for (const entry of historical) {
+      let historicalStatusCode = null;
+      if (entry.statusRaw) {
+        historicalStatusCode = statusCodeByLabel.get(normalizeHeader(entry.statusRaw)) || null;
+      }
+      const resultRef = { row: entry.rowNumber, status: 'pending-archived', number, version: entry.version };
+      results.push(resultRef);
+      historicalEntries.push({ number, version: entry.version, statusCode: historicalStatusCode, createdAtDate: entry.createdAtDate, resultRef });
+    }
   }
 
-  if (toInsert.length > 0) {
+  if (toInsertDocs.length > 0) {
     const { data: inserted, error: insertError } = await supabase
       .from('documents')
-      .insert(toInsert)
+      .insert(toInsertDocs)
       .select('id, number, title');
 
     if (insertError) {
@@ -1464,13 +1571,58 @@ router.post('/import', upload.single('file'), async (req, res) => {
       }
       delete result.warning;
     });
+
+    // Historique de versions : sans fichier (comme le reste de cet import), archivé exactement
+    // comme le fait POST /:id/versions pour une nouvelle version normale.
+    const versionsToInsert = [];
+    for (const historical of historicalEntries) {
+      const created = insertedByNumber.get(historical.number);
+      if (!created) {
+        historical.resultRef.status = 'error';
+        historical.resultRef.message = 'Non créée : le document courant de ce numéro a échoué.';
+        continue;
+      }
+      historical.resultRef.status = 'archived';
+      historical.resultRef.document_id = created.id;
+      historical.resultRef.title = created.title;
+      historical.resultRef.message = `Ajoutée à l'historique de "${created.title}" (version ${historical.version}).`;
+      versionsToInsert.push({
+        document_id: created.id,
+        tenant_id: req.tenantId,
+        version: historical.version,
+        file_path: null,
+        file_name: null,
+        storage_provider: null,
+        status: historical.statusCode,
+        change_note: null,
+        changed_by: req.user.id,
+        created_at: historical.createdAtDate ? `${historical.createdAtDate}T00:00:00Z` : new Date().toISOString(),
+      });
+    }
+
+    if (versionsToInsert.length > 0) {
+      const { error: versionsError } = await supabase.from('document_versions').insert(versionsToInsert);
+      if (versionsError) {
+        // Ne fait pas échouer tout l'import : les documents eux-mêmes sont déjà créés avec
+        // succès, seul l'historique de versions manque — on le signale sans annuler le reste.
+        console.error("Échec de l'archivage de l'historique de versions importé :", versionsError);
+        historicalEntries.forEach((historical) => {
+          if (historical.resultRef.status === 'archived') {
+            historical.resultRef.status = 'error';
+            historical.resultRef.message = "Document créé, mais échec de l'ajout à l'historique de versions.";
+            delete historical.resultRef.document_id;
+          }
+        });
+      }
+    }
   }
 
   // document_audit_log.document_id est NOT NULL (voir schema.sql) : une entrée par document
-  // créé, pas une entrée globale sans document_id.
+  // créé (pas par ligne — une ligne archivée en historique ne recrée pas le document, elle
+  // s'y attache, donc pas de deuxième entrée "created_via_import" pour le même document_id).
   await Promise.all(
     results
-      .filter((result) => result.document_id)
+      .filter((result) => (result.status === 'created' || result.status === 'warning') && result.document_id)
       .map((result) =>
         logAudit({
           tenantId: req.tenantId,
@@ -1484,6 +1636,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
 
   res.status(201).json({
     created_count: results.filter((r) => r.status === 'created' || r.status === 'warning').length,
+    archived_count: results.filter((r) => r.status === 'archived').length,
     error_count: results.filter((r) => r.status === 'error').length,
     results,
   });
