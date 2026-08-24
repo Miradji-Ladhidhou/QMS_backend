@@ -228,6 +228,35 @@ router.patch(
 // DELETE /api/suppliers/:id — admin/manager uniquement. Cascade sur les évaluations (voir
 // schema.sql) ; les CAPA déjà créées à partir d'une évaluation survivent
 // (supplier_evaluation_id passe à null, on delete set null).
+// DELETE /api/suppliers/bulk — suppression en masse. Placée avant DELETE /:id pour ne pas
+// être capturée comme un id, même convention que /bulk-category.
+router.delete(
+  '/bulk',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins un fournisseur.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { error, count } = await supabase
+      .from('suppliers')
+      .delete({ count: 'exact' })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids);
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+    }
+
+    res.json({ deleted: count });
+  }
+);
+
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase.from('suppliers').delete({ count: 'exact' }).eq('tenant_id', req.tenantId).eq('id', req.params.id);
 

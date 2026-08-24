@@ -209,6 +209,36 @@ router.patch(
 );
 
 // DELETE /api/tasks/:id — admin/manager ou créateur
+// DELETE /api/tasks/bulk — suppression en masse. Placée avant DELETE /:id pour ne pas être
+// capturée comme un id, même convention que /bulk-category. Un member ne supprime que ses
+// propres tâches (mêmes règles que DELETE /:id) : les ids qu'il ne peut pas supprimer sont
+// silencieusement ignorés plutôt que de faire échouer toute la sélection.
+router.delete(
+  '/bulk',
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une tâche.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    let query = supabase.from('tasks').delete({ count: 'exact' }).eq('tenant_id', req.tenantId).in('id', req.body.ids);
+    if (!MANAGER_ROLES.includes(req.userRole)) {
+      query = query.eq('created_by', req.user.id);
+    }
+
+    const { error, count } = await query;
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+    }
+
+    res.json({ deleted: count });
+  }
+);
+
 router.delete('/:id', async (req, res) => {
   const { data: existing, error: fetchError } = await supabase
     .from('tasks')

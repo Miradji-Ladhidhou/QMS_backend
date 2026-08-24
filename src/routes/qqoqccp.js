@@ -474,6 +474,35 @@ router.post(
 );
 
 // DELETE /api/qqoqccp/:id — suppression
+// DELETE /api/qqoqccp/bulk — suppression en masse. Placée avant DELETE /:id pour ne pas être
+// capturée comme un id, même convention que /bulk-category.
+router.delete(
+  '/bulk',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une analyse.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { error, count } = await supabase
+      .from('qqoqccp_analyses')
+      .delete({ count: 'exact' })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids);
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+    }
+
+    res.json({ deleted: count });
+  }
+);
+
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase
     .from('qqoqccp_analyses')
