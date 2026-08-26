@@ -18,6 +18,7 @@ function historyHeaders() {
   for (let i = 1; i <= 10; i += 1) {
     headers[`historyVersion${i}`] = `Historique V${i} - Version`;
     headers[`historyDate${i}`] = `Historique V${i} - Date (JJ/MM/AAAA)`;
+    headers[`historyComment${i}`] = `Historique V${i} - Commentaire`;
   }
   return headers;
 }
@@ -72,8 +73,10 @@ describe('GET /api/documents/import-template.xlsx', () => {
     expect(headerRow).not.toContain('Date de révision (JJ/MM/AAAA)');
     expect(headerRow).toContain('Historique V1 - Version');
     expect(headerRow).toContain('Historique V1 - Date (JJ/MM/AAAA)');
+    expect(headerRow).toContain('Historique V1 - Commentaire');
     expect(headerRow).toContain('Historique V10 - Version');
     expect(headerRow).toContain('Historique V10 - Date (JJ/MM/AAAA)');
+    expect(headerRow).toContain('Historique V10 - Commentaire');
     expect(headerRow).not.toContain('Historique V11 - Version');
   });
 
@@ -187,6 +190,58 @@ describe('POST /api/documents/import — historique de versions (colonnes Histor
     expect(versions.map((v) => v.version)).toEqual(['1.0', '1.1']);
     expect(versions[0].created_at.slice(0, 10)).toBe('2023-01-01');
     expect(versions[1].created_at.slice(0, 10)).toBe('2023-06-15');
+  });
+
+  it('le commentaire d\'un créneau est archivé comme change_note, séparément du numéro de version', async () => {
+    tenant = await createTenant();
+    const file = await buildImportFile([
+      {
+        number: 'QP-COMMENT',
+        title: 'Historique commenté',
+        historyVersion1: '1.0',
+        historyDate1: '01/01/2023',
+        historyComment1: 'Création initiale.',
+        historyVersion2: '1.1',
+        historyDate2: '15/06/2024',
+        historyComment2: 'Modification structure plus ajout process.',
+      },
+    ]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    expect(res.body.archived_count).toBe(2);
+
+    const { data: doc } = await admin.from('documents').select('id').eq('number', 'QP-COMMENT').single();
+    const { data: versions } = await admin
+      .from('document_versions')
+      .select('version, change_note')
+      .eq('document_id', doc.id)
+      .order('version', { ascending: true });
+    expect(versions).toEqual([
+      { version: '1.0', change_note: 'Création initiale.' },
+      { version: '1.1', change_note: 'Modification structure plus ajout process.' },
+    ]);
+  });
+
+  it('un créneau sans commentaire archive change_note à null (pas de chaîne vide)', async () => {
+    tenant = await createTenant();
+    const file = await buildImportFile([
+      { number: 'QP-NO-COMMENT', title: 'Sans commentaire', historyVersion1: '1.0', historyDate1: '01/01/2023' },
+    ]);
+
+    const res = await request(app)
+      .post('/api/documents/import')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', file, 'import.xlsx');
+
+    expect(res.status).toBe(201);
+    const { data: doc } = await admin.from('documents').select('id').eq('number', 'QP-NO-COMMENT').single();
+    const { data: versions } = await admin.from('document_versions').select('change_note').eq('document_id', doc.id);
+    expect(versions[0].change_note).toBeNull();
   });
 
   it('un créneau vide (ni version ni date) est ignoré — aucune version archivée créée', async () => {

@@ -435,11 +435,15 @@ function historyVersionHeader(i) {
 function historyDateHeader(i) {
   return `Historique V${i} - Date (JJ/MM/AAAA)`;
 }
+function historyCommentHeader(i) {
+  return `Historique V${i} - Commentaire`;
+}
 function buildHistoryColumns() {
   const columns = [];
   for (let i = 1; i <= HISTORY_SLOTS; i += 1) {
     columns.push({ header: historyVersionHeader(i), key: `historyVersion${i}`, width: 14 });
     columns.push({ header: historyDateHeader(i), key: `historyDate${i}`, width: 22 });
+    columns.push({ header: historyCommentHeader(i), key: `historyComment${i}`, width: 32 });
   }
   return columns;
 }
@@ -506,8 +510,10 @@ router.get('/import-template.xlsx', async (req, res) => {
     reviewFrequency: '',
     historyVersion1: '1.0',
     historyDate1: '01/01/2023',
+    historyComment1: 'Création initiale.',
     historyVersion2: '1.1',
     historyDate2: '15/06/2024',
+    historyComment2: 'Modification de la structure, ajout du process.',
   });
   sheet.getRow(2).font = { italic: true, color: { argb: 'FF94A3B8' } };
   sheet.getRow(1).eachCell((cell) => {
@@ -1602,14 +1608,15 @@ router.post('/import', upload.single('file'), async (req, res) => {
     for (let slot = 1; slot <= HISTORY_SLOTS; slot += 1) {
       const slotVersionRaw = String(getRowValue(row, historyVersionHeader(slot)) ?? '').trim();
       const slotDate = parseFlexibleDate(getRowValue(row, historyDateHeader(slot)));
-      if (!slotVersionRaw && !slotDate) continue;
+      const slotComment = String(getRowValue(row, historyCommentHeader(slot)) ?? '').trim() || null;
+      if (!slotVersionRaw && !slotDate && !slotComment) continue;
 
       const finalVersion = slotVersionRaw || `v${slot}`;
       if (!slotVersionRaw) historyWarnings.push(`Historique V${slot} : version manquante, "${finalVersion}" utilisé.`);
       const finalDate = slotDate || importDateStr;
       if (!slotDate) historyWarnings.push(`Historique V${slot} : date manquante ou invalide, date du jour utilisée.`);
 
-      historySlots.push({ version: finalVersion, date: finalDate });
+      historySlots.push({ version: finalVersion, date: finalDate, comment: slotComment });
     }
 
     seenNumbersInFile.add(number);
@@ -1683,7 +1690,7 @@ router.post('/import', upload.single('file'), async (req, res) => {
           file_name: null,
           storage_provider: null,
           status: null,
-          change_note: null,
+          change_note: slot.comment,
           changed_by: req.user.id,
           created_at: `${slot.date}T00:00:00Z`,
         });
