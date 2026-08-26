@@ -547,3 +547,101 @@ describe('DELETE /api/documents/bulk — suppression en masse', () => {
     expect(openGone).toBeNull();
   });
 });
+
+// "Nouvelle version" et "Ajouter un document" sont deux boutons distincts côté frontend, qui
+// doivent rester deux actions indépendantes côté backend : l'un ne doit jamais changer l'autre
+// (voir demande explicite — POST /:id/versions ne bouge plus le numéro de version, et le nouveau
+// POST /:id/versions/bump ne touche jamais au fichier).
+describe('POST /api/documents/:id/versions et /versions/bump — fichier et numéro de version indépendants', () => {
+  it('POST /:id/versions remplace le fichier sans changer le numéro de version', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-SPLIT-001')
+      .field('title', 'Document initial')
+      .attach('file', Buffer.from('v1'), 'v1.txt');
+    const originalVersion = created.body.version;
+
+    const res = await request(app)
+      .post(`/api/documents/${created.body.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', Buffer.from('v1-bis'), 'v1-bis.txt');
+
+    expect(res.status).toBe(201);
+    expect(res.body.version).toBe(originalVersion);
+    expect(res.body.file_name).toBe('v1-bis.txt');
+    expect(res.body.status).toBe('draft');
+
+    const { data: archived } = await admin
+      .from('document_versions')
+      .select('version, file_name')
+      .eq('document_id', created.body.id)
+      .single();
+    expect(archived.version).toBe(originalVersion);
+    expect(archived.file_name).toBe('v1.txt');
+  });
+
+  it('POST /:id/versions/bump fait évoluer le numéro de version sans toucher au fichier', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-SPLIT-002')
+      .field('title', 'Document à faire évoluer')
+      .attach('file', Buffer.from('contenu'), 'original.txt');
+    const originalVersion = created.body.version;
+
+    const res = await request(app)
+      .post(`/api/documents/${created.body.id}/versions/bump`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ change_note: 'Révision administrative' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.version).not.toBe(originalVersion);
+    expect(res.body.file_name).toBe('original.txt');
+    expect(res.body.file_path).toBe(created.body.file_path);
+    expect(res.body.status).toBe('draft');
+
+    const { data: archived } = await admin
+      .from('document_versions')
+      .select('version, file_name, change_note')
+      .eq('document_id', created.body.id)
+      .single();
+    expect(archived.version).toBe(originalVersion);
+    expect(archived.file_name).toBe('original.txt');
+    expect(archived.change_note).toBe('Révision administrative');
+  });
+
+  it('POST /:id/versions/bump respecte requireCategoryPermission("edit") comme /:id/versions', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Restreinte bump', is_restricted: true })
+      .select()
+      .single();
+
+    await request(app)
+      .post(`/api/categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true, can_edit: false })
+      .expect(201);
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-SPLIT-003')
+      .field('title', 'Document restreint')
+      .field('category_id', category.id)
+      .attach('file', Buffer.from('contenu'), 'original.txt');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.body.id}/versions/bump`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(404);
+  });
+});

@@ -758,14 +758,45 @@ router.post(
   }
 );
 
-// POST /api/documents/:id/versions — nouvelle version, archive l'ancienne
+// Archive la version courante avant de la remplacer/faire évoluer — storage_provider capturé
+// ICI (avant que la mise à jour appelante n'écrase documents.storage_provider) : un tenant
+// peut changer de provider entre deux versions, et sans cette capture une ancienne version
+// stockée sur Drive deviendrait irrésolvable une fois documents.storage_provider écrasé par
+// la nouvelle valeur.
+async function archiveCurrentVersion(document, req) {
+  return supabase.from('document_versions').insert({
+    document_id: document.id,
+    tenant_id: req.tenantId,
+    version: document.version,
+    file_path: document.file_path,
+    file_name: document.file_name,
+    storage_provider: document.storage_provider,
+    status: document.status,
+    change_note: req.body.change_note || null,
+    changed_by: req.user.id,
+  });
+}
+
+// Une révision remet le compteur à zéro : recalculée depuis la fréquence propre à ce document,
+// sinon celle du tenant — seulement si l'une des deux est paramétrée, pour ne rien changer aux
+// tenants qui n'utilisent pas cette fonctionnalité.
+async function computeReviewDateUpdate(document, req) {
+  const effectiveFrequency =
+    document.review_frequency_months ||
+    (await supabase.from('tenants').select('document_review_frequency_months').eq('id', req.tenantId).single()).data
+      ?.document_review_frequency_months;
+  if (!effectiveFrequency) return {};
+  return { review_date: addMonthsIso(new Date().toISOString().slice(0, 10), effectiveFrequency) };
+}
+
+// POST /api/documents/:id/versions — ajoute/remplace le fichier, sans changer le numéro de version
 router.post(
   '/:id/versions',
   upload.single('file'),
   requireCategoryPermission('edit', resolveDocumentById),
   async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: 'Un fichier est requis pour créer une nouvelle version.' });
+    return res.status(400).json({ error: 'Un fichier est requis.' });
   }
 
   const { data: document, error: fetchError } = await supabase
@@ -779,28 +810,11 @@ router.post(
     return res.status(404).json({ error: 'Document introuvable.' });
   }
 
-  // Archive la version courante avant de la remplacer — storage_provider capturé ICI (avant
-  // que la mise à jour ci-dessous n'écrase documents.storage_provider) : un tenant peut
-  // changer de provider entre deux versions, et sans cette capture une ancienne version
-  // stockée sur Drive deviendrait irrésolvable une fois documents.storage_provider écrasé par
-  // la nouvelle valeur.
-  const { error: archiveError } = await supabase.from('document_versions').insert({
-    document_id: document.id,
-    tenant_id: req.tenantId,
-    version: document.version,
-    file_path: document.file_path,
-    file_name: document.file_name,
-    storage_provider: document.storage_provider,
-    status: document.status,
-    change_note: req.body.change_note || null,
-    changed_by: req.user.id,
-  });
+  const { error: archiveError } = await archiveCurrentVersion(document, req);
 
   if (archiveError) {
-    return res.status(500).json({ error: "Impossible d'archiver la version précédente." });
+    return res.status(500).json({ error: "Impossible d'archiver le fichier précédent." });
   }
-
-  const newVersion = bumpVersion(document.version);
 
   let storage;
   try {
@@ -817,35 +831,70 @@ router.post(
       storage,
       file: req.file,
       categoryId: document.category_id || null,
-      supabasePath: `${req.tenantId}/${document.id}/${newVersion}-${sanitizeFileName(req.file.originalname)}`,
+      // Le numéro de version ne change pas ici : Date.now() garantit un chemin de stockage
+      // unique même si "Ajouter un document" est utilisé plusieurs fois de suite sur la même
+      // version (upsert désactivé côté storage, un chemin réutilisé échouerait sinon).
+      supabasePath: `${req.tenantId}/${document.id}/${document.version}-${Date.now()}-${sanitizeFileName(req.file.originalname)}`,
     });
   } catch (uploadError) {
-    console.error("Échec de l'upload d'une nouvelle version de document :", uploadError);
+    console.error("Échec de l'upload d'un document :", uploadError);
     return res.status(500).json({ error: uploadError.message || "Échec de l'upload du fichier." });
   }
 
   const extractedText = await extractText(req.file);
 
-  // Une révision remet le compteur à zéro : recalculée depuis la fréquence propre à ce
-  // document, sinon celle du tenant — seulement si l'une des deux est paramétrée, pour ne
-  // rien changer aux tenants qui n'utilisent pas cette fonctionnalité.
   const update = {
-    version: newVersion,
     file_path: uploadResult.filePath,
     file_name: uploadResult.fileName,
     storage_provider: uploadResult.storageProvider,
     extracted_text: extractedText,
     status: 'draft',
     approved_by: null,
+    ...(await computeReviewDateUpdate(document, req)),
   };
 
-  const effectiveFrequency =
-    document.review_frequency_months ||
-    (await supabase.from('tenants').select('document_review_frequency_months').eq('id', req.tenantId).single()).data
-      ?.document_review_frequency_months;
-  if (effectiveFrequency) {
-    update.review_date = addMonthsIso(new Date().toISOString().slice(0, 10), effectiveFrequency);
+  const { data, error } = await supabase
+    .from('documents')
+    .update(update)
+    .eq('id', document.id)
+    .select('*, category:document_categories(id, name, color)')
+    .single();
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la mise à jour du document.' });
   }
+
+  res.status(201).json(data);
+});
+
+// POST /api/documents/:id/versions/bump — fait évoluer le numéro de version, sans changer le fichier
+router.post(
+  '/:id/versions/bump',
+  requireCategoryPermission('edit', resolveDocumentById),
+  async (req, res) => {
+  const { data: document, error: fetchError } = await supabase
+    .from('documents')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (fetchError || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const { error: archiveError } = await archiveCurrentVersion(document, req);
+
+  if (archiveError) {
+    return res.status(500).json({ error: "Impossible d'archiver la version précédente." });
+  }
+
+  const update = {
+    version: bumpVersion(document.version),
+    status: 'draft',
+    approved_by: null,
+    ...(await computeReviewDateUpdate(document, req)),
+  };
 
   const { data, error } = await supabase
     .from('documents')
