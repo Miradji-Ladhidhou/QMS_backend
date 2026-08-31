@@ -35,7 +35,7 @@ const PATCHABLE_FIELDS = [
 // service_id fait foi désormais, résolu ici en {id, name} comme pour audits/risks/complaints/
 // suppliers (voir leurs routes GET respectives, même pattern déjà en place chez eux).
 const CAPA_COLUMNS =
-  'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id, category_id';
+  'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id, haccp_monitoring_log_id, category_id';
 const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)`;
 
 // Délai de traitement par défaut (en jours depuis la création) quand le tenant n'a pas

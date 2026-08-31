@@ -16,6 +16,7 @@ export const MENU_ITEM_KEYS = [
   'qqoqccp',
   'audits',
   'risks',
+  'haccp',
   'suppliers',
   'management-reviews',
   'my-approvals',

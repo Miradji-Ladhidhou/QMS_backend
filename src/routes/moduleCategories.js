@@ -19,6 +19,7 @@ const RESOURCE_TYPES = [
   'management_review',
   'audit',
   'risk',
+  'haccp_plan',
   'task',
   'kpi',
 ];

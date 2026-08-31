@@ -114,3 +114,38 @@ export async function generateQqoqccpSuggestion(analysisData) {
 export async function generateCapaSuggestion(context) {
   return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context);
 }
+
+const HACCP_HAZARD_RESPONSE_CONTRACT = `Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "hazards": [
+    {
+      "hazard_type": "biological",
+      "description": "string",
+      "likelihood": 3,
+      "severity": 3,
+      "suggested_controls": "string"
+    }
+  ]
+}
+Où hazard_type vaut exactement 'biological', 'chemical', 'physical' ou 'allergen', et likelihood/severity sont des entiers entre 1 et 5 (échelle standard 1 = très improbable/mineur, 5 = très probable/critique).`;
+
+const HACCP_HAZARD_SYSTEM_PROMPT = `Tu es un expert en sécurité alimentaire (méthode HACCP, Codex Alimentarius) qui aide à réaliser l'analyse des dangers d'un plan HACCP.
+
+À partir du nom et de la description d'une étape du procédé de fabrication fournis par l'utilisateur, identifie les dangers biologiques, chimiques, physiques et allergènes raisonnablement susceptibles de survenir à CETTE étape précise, avec pour chacun une évaluation de probabilité (likelihood) et de gravité (severity) sur une échelle de 1 à 5, ainsi que des mesures de maîtrise usuelles.
+
+Ne propose que des dangers pertinents pour l'étape décrite — pas une liste générique. Limite-toi à 5 dangers maximum, les plus significatifs.
+
+${HACCP_HAZARD_RESPONSE_CONTRACT}`;
+
+function buildHazardUserPrompt({ stepName, stepDescription }) {
+  return `Étape du procédé : ${stepName}
+Description : ${stepDescription || 'non renseignée'}`;
+}
+
+// stepData : { stepName, stepDescription } — voir POST /haccp/plans/:planId/steps/:stepId/hazard-suggestion.
+// Rien n'est persisté par cet appel : le frontend affiche les suggestions dans une liste à
+// cocher (AiHazardSuggestion.jsx), chaque danger accepté devient une ligne haccp_hazards
+// distincte via POST /haccp/plans/:planId/steps/:stepId/hazards.
+export async function generateHaccpHazardSuggestion(stepData) {
+  return callGroq(HACCP_HAZARD_SYSTEM_PROMPT, buildHazardUserPrompt(stepData));
+}
