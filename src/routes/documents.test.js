@@ -645,3 +645,38 @@ describe('POST /api/documents/:id/versions et /versions/bump — fichier et num�
     expect(res.status).toBe(404);
   });
 });
+
+// GET /api/documents expose latest_version_comment (le change_note de la version archivée la
+// plus récente) pour l'export CSV/PDF — sans ce champ, la colonne "Commentaire dernière
+// version" resterait toujours vide côté frontend.
+describe('GET /api/documents — champ latest_version_comment', () => {
+  it("renvoie null sans historique, puis le change_note de l'archivage le plus récent", async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-COMMENT-001')
+      .field('title', 'Document avec historique')
+      .attach('file', Buffer.from('v1'), 'v1.txt');
+
+    const noHistory = await request(app).get('/api/documents').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(noHistory.body.find((d) => d.id === created.body.id).latest_version_comment).toBeNull();
+
+    await request(app)
+      .post(`/api/documents/${created.body.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('change_note', 'Première correction')
+      .attach('file', Buffer.from('v2'), 'v2.txt');
+
+    await request(app)
+      .post(`/api/documents/${created.body.id}/versions/bump`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ change_note: 'Montée de version administrative' });
+
+    const afterTwoChanges = await request(app).get('/api/documents').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterTwoChanges.body.find((d) => d.id === created.body.id).latest_version_comment).toBe(
+      'Montée de version administrative'
+    );
+  });
+});

@@ -359,7 +359,25 @@ router.get('/', async (req, res) => {
     documents: data,
   });
 
-  res.json(viewable);
+  // Commentaire de la version la plus récente par document — une seule requête groupée
+  // (plutôt qu'une par document) : on trie par date décroissante puis on ne garde que la
+  // première occurrence rencontrée pour chaque document_id.
+  const documentIds = viewable.map((doc) => doc.id);
+  let latestCommentByDocId = new Map();
+  if (documentIds.length > 0) {
+    const { data: versions } = await supabase
+      .from('document_versions')
+      .select('document_id, change_note, created_at')
+      .in('document_id', documentIds)
+      .order('created_at', { ascending: false });
+    for (const version of versions || []) {
+      if (!latestCommentByDocId.has(version.document_id)) {
+        latestCommentByDocId.set(version.document_id, version.change_note);
+      }
+    }
+  }
+
+  res.json(viewable.map((doc) => ({ ...doc, latest_version_comment: latestCommentByDocId.get(doc.id) || null })));
 });
 
 // GET /api/documents/search?q=terme — recherche plein texte (titre, description, contenu extrait)
