@@ -5,6 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { generateHaccpHazardSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { buildHaccpAuditPdf } from '../services/haccpAuditPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -42,8 +44,56 @@ async function loadPlanForTenant(tenantId, planId) {
   return data;
 }
 
+// Assemble un plan avec ses étapes, chacune avec ses dangers, chacun avec son CCP (le cas
+// échéant) — 3 requêtes plutôt qu'un N+1 (une par étape). Réutilisé par GET /plans/:id (JSON)
+// et par les exports PDF (un seul plan ou plusieurs) : même forme de données dans les deux cas.
+async function loadPlanSteps(tenantId, plan) {
+  const { data: steps, error: stepsError } = await supabase
+    .from('haccp_process_steps')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('plan_id', plan.id)
+    .order('step_number', { ascending: true });
+  if (stepsError) throw new Error('Impossible de récupérer les étapes du procédé.');
+
+  const stepIds = steps.map((step) => step.id);
+  let hazards = [];
+  if (stepIds.length > 0) {
+    const { data, error } = await supabase
+      .from('haccp_hazards')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .in('step_id', stepIds)
+      .order('created_at', { ascending: true });
+    if (error) throw new Error("Impossible de récupérer l'analyse des dangers.");
+    hazards = data;
+  }
+
+  const hazardIds = hazards.map((hazard) => hazard.id);
+  let ccps = [];
+  if (hazardIds.length > 0) {
+    const { data, error } = await supabase
+      .from('haccp_ccps')
+      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name)')
+      .eq('tenant_id', tenantId)
+      .in('hazard_id', hazardIds);
+    if (error) throw new Error('Impossible de récupérer les points critiques.');
+    ccps = data;
+  }
+
+  const ccpByHazardId = new Map(ccps.map((ccp) => [ccp.hazard_id, ccp]));
+  const hazardsByStepId = new Map();
+  for (const hazard of hazards) {
+    const list = hazardsByStepId.get(hazard.step_id) || [];
+    list.push({ ...hazard, ccp: ccpByHazardId.get(hazard.id) || null });
+    hazardsByStepId.set(hazard.step_id, list);
+  }
+
+  return steps.map((step) => ({ ...step, hazards: hazardsByStepId.get(step.id) || [] }));
+}
+
 // GET /api/haccp/plans/:id — plan complet avec ses étapes, chacune avec ses dangers, chacun
-// avec son CCP (le cas échéant) — assemblé en 3 requêtes plutôt qu'en N+1 (une par étape).
+// avec son CCP (le cas échéant).
 router.get('/plans/:id', async (req, res) => {
   const plan = await loadPlanForTenant(req.tenantId, req.params.id);
   if (!plan) {
@@ -61,54 +111,12 @@ router.get('/plans/:id', async (req, res) => {
     return res.status(404).json({ error: 'Plan HACCP introuvable.' });
   }
 
-  const { data: steps, error: stepsError } = await supabase
-    .from('haccp_process_steps')
-    .select('*')
-    .eq('tenant_id', req.tenantId)
-    .eq('plan_id', plan.id)
-    .order('step_number', { ascending: true });
-  if (stepsError) {
-    return res.status(500).json({ error: 'Impossible de récupérer les étapes du procédé.' });
+  let stepsWithHazards;
+  try {
+    stepsWithHazards = await loadPlanSteps(req.tenantId, plan);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
-
-  const stepIds = steps.map((step) => step.id);
-  let hazards = [];
-  if (stepIds.length > 0) {
-    const { data, error } = await supabase
-      .from('haccp_hazards')
-      .select('*')
-      .eq('tenant_id', req.tenantId)
-      .in('step_id', stepIds)
-      .order('created_at', { ascending: true });
-    if (error) {
-      return res.status(500).json({ error: "Impossible de récupérer l'analyse des dangers." });
-    }
-    hazards = data;
-  }
-
-  const hazardIds = hazards.map((hazard) => hazard.id);
-  let ccps = [];
-  if (hazardIds.length > 0) {
-    const { data, error } = await supabase
-      .from('haccp_ccps')
-      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name)')
-      .eq('tenant_id', req.tenantId)
-      .in('hazard_id', hazardIds);
-    if (error) {
-      return res.status(500).json({ error: 'Impossible de récupérer les points critiques.' });
-    }
-    ccps = data;
-  }
-
-  const ccpByHazardId = new Map(ccps.map((ccp) => [ccp.hazard_id, ccp]));
-  const hazardsByStepId = new Map();
-  for (const hazard of hazards) {
-    const list = hazardsByStepId.get(hazard.step_id) || [];
-    list.push({ ...hazard, ccp: ccpByHazardId.get(hazard.id) || null });
-    hazardsByStepId.set(hazard.step_id, list);
-  }
-
-  const stepsWithHazards = steps.map((step) => ({ ...step, hazards: hazardsByStepId.get(step.id) || [] }));
 
   res.json({ ...plan, steps: stepsWithHazards, is_private_to_me: plan.category?.owner_user_id === req.user.id });
 });
@@ -870,5 +878,118 @@ router.post(
     res.status(201).json(capa);
   }
 );
+
+// Une entrée par CCP : { total, outOfLimits, linkedCapas, lastRecordedAt } — une seule requête
+// groupée sur tous les CCP demandés plutôt qu'une par CCP (voir le même principe pour
+// latest_version_comment dans routes/documents.js).
+async function computeMonitoringSummaryByCcpId(tenantId, ccpIds) {
+  const summary = new Map();
+  if (ccpIds.length === 0) return summary;
+
+  const { data: logs, error } = await supabase
+    .from('haccp_monitoring_logs')
+    .select('ccp_id, within_limits, linked_capa_id, recorded_at')
+    .eq('tenant_id', tenantId)
+    .in('ccp_id', ccpIds);
+  if (error) throw new Error('Impossible de récupérer la synthèse de surveillance.');
+
+  for (const log of logs || []) {
+    const entry = summary.get(log.ccp_id) || { total: 0, outOfLimits: 0, linkedCapas: 0, lastRecordedAt: null };
+    entry.total += 1;
+    if (!log.within_limits) entry.outOfLimits += 1;
+    if (log.linked_capa_id) entry.linkedCapas += 1;
+    if (!entry.lastRecordedAt || log.recorded_at > entry.lastRecordedAt) entry.lastRecordedAt = log.recorded_at;
+    summary.set(log.ccp_id, entry);
+  }
+  return summary;
+}
+
+// Charge un ou plusieurs plans déjà assemblés (steps -> hazards -> ccp) + la synthèse de
+// surveillance de tous leurs CCP, prêts pour buildHaccpAuditPdf. Ne filtre PAS par permission
+// de catégorie : à l'appelant de ne passer que des plans déjà vérifiés visibles.
+async function loadPlansForPdf(tenantId, plans) {
+  const assembled = [];
+  for (const plan of plans) {
+    assembled.push({ ...plan, steps: await loadPlanSteps(tenantId, plan) });
+  }
+
+  const ccpIds = assembled.flatMap((plan) => plan.steps.flatMap((step) => step.hazards.map((h) => h.ccp?.id).filter(Boolean)));
+  const monitoringSummaryByCcpId = await computeMonitoringSummaryByCcpId(tenantId, ccpIds);
+
+  return { assembled, monitoringSummaryByCcpId };
+}
+
+// GET /api/haccp/plans/:id/pdf — export détaillé d'UN plan (dangers, CCP, synthèse de
+// surveillance), même mécanique que GET /qqoqccp/:id/pdf.
+router.get('/plans/:id/pdf', async (req, res) => {
+  const plan = await loadPlanForTenant(req.tenantId, req.params.id);
+  if (!plan) {
+    return res.status(404).json({ error: 'Plan HACCP introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: plan.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
+    return res.status(404).json({ error: 'Plan HACCP introuvable.' });
+  }
+
+  let assembled, monitoringSummaryByCcpId;
+  try {
+    ({ assembled, monitoringSummaryByCcpId } = await loadPlansForPdf(req.tenantId, [plan]));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildHaccpAuditPdf({ tenantName: tenant?.name, tenantLogo, plans: assembled, monitoringSummaryByCcpId });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="haccp-${plan.id}.pdf"`);
+  res.send(pdfBuffer);
+});
+
+// POST /api/haccp/plans/pdf — export combiné de plusieurs plans (une page par plan) : ids
+// explicites dans le body (même convention que /plans/bulk-category et /plans/bulk), ou tous
+// les plans visibles par l'appelant si absent/vide.
+router.post('/plans/pdf', [body('ids').optional().isArray().withMessage('Liste invalide.')], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+  }
+
+  let query = supabase.from('haccp_plans').select(PLAN_SELECT).eq('tenant_id', req.tenantId).order('created_at', { ascending: false });
+  if (req.body.ids?.length > 0) query = query.in('id', req.body.ids);
+
+  const { data: plans, error } = await query;
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les plans HACCP.' });
+  }
+
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: plans });
+  if (visible.length === 0) {
+    return res.status(404).json({ error: 'Aucun plan HACCP à exporter.' });
+  }
+
+  let assembled, monitoringSummaryByCcpId;
+  try {
+    ({ assembled, monitoringSummaryByCcpId } = await loadPlansForPdf(req.tenantId, visible));
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildHaccpAuditPdf({ tenantName: tenant?.name, tenantLogo, plans: assembled, monitoringSummaryByCcpId });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="haccp-analyses-${new Date().toISOString().slice(0, 10)}.pdf"`);
+  res.send(pdfBuffer);
+});
 
 export default router;

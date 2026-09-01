@@ -264,3 +264,59 @@ describe('POST /api/haccp/steps/:stepId/hazard-suggestion — permissions et val
     expect(notFound.status).toBe(404);
   });
 });
+
+describe('Export PDF — GET /api/haccp/plans/:id/pdf et POST /api/haccp/plans/pdf', () => {
+  it("GET /plans/:id/pdf renvoie un PDF pour un plan avec dangers/CCP/surveillance, 404 pour un plan inexistant", async () => {
+    tenant = await createTenant();
+    const plan = await makePlan(tenant.admin.token);
+    const step = await makeStep(tenant.admin.token, plan.body.id);
+    const hazard = await makeHazard(tenant.admin.token, step.body.id);
+    await request(app)
+      .patch(`/api/haccp/hazards/${hazard.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ is_significant: true })
+      .expect(200);
+    const ccp = await makeCcp(tenant.admin.token, hazard.body.id);
+    await request(app)
+      .post(`/api/haccp/ccps/${ccp.body.id}/monitoring-logs`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ recorded_value: '92°C', within_limits: true });
+
+    const res = await request(app).get(`/api/haccp/plans/${plan.body.id}/pdf`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.body.length).toBeGreaterThan(1000);
+
+    const notFound = await request(app)
+      .get('/api/haccp/plans/00000000-0000-0000-0000-000000000000/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(notFound.status).toBe(404);
+  });
+
+  it('POST /plans/pdf sans ids exporte tous les plans visibles ; avec ids, seulement ceux-là', async () => {
+    tenant = await createTenant();
+    const planA = await makePlan(tenant.admin.token, { title: 'Plan A' });
+    await makePlan(tenant.admin.token, { title: 'Plan B' });
+
+    const all = await request(app).post('/api/haccp/plans/pdf').set('Authorization', `Bearer ${tenant.admin.token}`).send({});
+    expect(all.status).toBe(200);
+    expect(all.headers['content-type']).toBe('application/pdf');
+
+    const scoped = await request(app)
+      .post('/api/haccp/plans/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [planA.body.id] });
+    expect(scoped.status).toBe(200);
+    // Le contenu texte n'est pas trivialement inspectable dans un buffer PDF compressé ; on se
+    // contente ici de vérifier que la restriction ne fait pas échouer la requête et produit un
+    // document plus léger qu'avec les deux plans (signal indirect que moins de contenu a été
+    // généré).
+    expect(scoped.body.length).toBeLessThan(all.body.length);
+
+    const empty = await request(app)
+      .post('/api/haccp/plans/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: ['00000000-0000-0000-0000-000000000000'] });
+    expect(empty.status).toBe(404);
+  });
+});
