@@ -7,7 +7,9 @@ const MODEL = 'openai/gpt-oss-120b';
 // flux "créer une CAPA depuis X" — audits, revues, réclamations, risques, fournisseurs) :
 // un seul contrat JSON, un seul composant frontend de rendu (AiCapaSuggestion.jsx) capable
 // d'afficher n'importe laquelle de ces suggestions sans distinction.
-const RESPONSE_CONTRACT = `- title : un titre court (objet, maximum une dizaine de mots) formulé comme un intitulé de non-conformité, pas une phrase complète
+const RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français, quelle que soit la langue du contexte fourni en entrée.
+
+- title : un titre court (objet, maximum une dizaine de mots) formulé comme un intitulé de non-conformité, pas une phrase complète
 - synthesis : une synthèse concise du problème (2 à 3 phrases), utilisable telle quelle comme description de la non-conformité
 - root_causes : un tableau de chaînes de caractères, les causes racines probables
 - suggested_actions : un tableau d'objets {title, description, suggested_priority}, où suggested_priority vaut exactement 'low', 'medium', 'high' ou 'critical' — des actions CORRECTIVES, pour traiter le problème déjà survenu
@@ -115,7 +117,9 @@ export async function generateCapaSuggestion(context) {
   return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context);
 }
 
-const HACCP_HAZARD_RESPONSE_CONTRACT = `Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+const HACCP_HAZARD_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (description, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de hazard_type reste l'un des identifiants anglais fixes ci-dessous.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
   "hazards": [
     {
