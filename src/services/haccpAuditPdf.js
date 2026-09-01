@@ -1,4 +1,24 @@
 import PDFDocument from 'pdfkit';
+import { createRequire } from 'module';
+
+// Les 14 polices standard de pdfkit (Helvetica ici) sont limitées à l'encodage WinAnsi
+// (Windows-1252, 256 caractères) : tout caractère hors de cette plage — dont ≥/≤, mais surtout
+// des puces, tirets ou apostrophes typographiques copiés-collés depuis un traitement de texte —
+// ressort en mojibake (bug réel constaté sur un champ "Périmètre" contenant une liste à puces).
+// DejaVu Sans (licence Bitstream Vera, libre y compris en usage commercial) couvre un jeu de
+// caractères bien plus large ; embarquée ici plutôt que de translittérer au cas par cas.
+const require = createRequire(import.meta.url);
+const DEJAVU_SANS = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans.ttf');
+
+// Limite connue : la ligature "fi" (glyphe unique en OpenType/ccmp, y compris dans DejaVu Sans)
+// s'affiche correctement à l'écran/à l'impression, mais pdfkit 0.15 ne génère pas d'entrée
+// ToUnicode correcte pour un glyphe qui représente deux points de code — le texte extrait
+// (recherche/copier-coller dans le PDF) perd le "i" ("finaux" -> "fnaux"). Vérifié : ce n'est
+// pas contrôlable via l'option `features` de pdfkit/fontkit (ccmp n'est pas désactivable, et
+// n'apparaît même pas dans le même registre que "liga"). Impact jugé mineur (rendu visuel
+// intact) au regard du bug bien plus grave que corrige cette police (mojibake visible avec
+// Helvetica/WinAnsi) — non résolu plutôt que de complexifier davantage pour un défaut de
+// recherche/copier-coller uniquement.
 
 // Mêmes teintes que les autres rapports PDF de l'application (voir qqoqccpPdf.js pour la note
 // sur l'absence de module de constantes partagé).
@@ -28,20 +48,6 @@ function formatDateTime(dateStr) {
 function formatDate(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('fr-FR');
-}
-
-// La police standard de pdfkit (Helvetica, encodage WinAnsi) ne couvre pas les symboles
-// mathématiques ≥/≤ — un critical_limits typique ("≥ 85°C") ressortait en mojibake ("e 85°C").
-// Plutôt que d'embarquer une police Unicode complète pour ces deux caractères, on les
-// translittère : bug réel repéré en relisant un export généré avec des données de test.
-const PDF_CHAR_REPLACEMENTS = { '≥': '>=', '≤': '<=' };
-function sanitizeForPdf(value) {
-  if (value === null || value === undefined) return value;
-  let result = String(value);
-  for (const [from, to] of Object.entries(PDF_CHAR_REPLACEMENTS)) {
-    result = result.split(from).join(to);
-  }
-  return result;
 }
 
 // tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js, même try/catch que les
@@ -103,9 +109,9 @@ function drawTable(doc, { sectionTitle, columns, rows, emptyLabel }) {
 
   rows.forEach((row, rowIndex) => {
     doc.fontSize(7.5);
-    const cellValues = columns.map((col) => sanitizeForPdf(row[col.key]));
+    const cellValues = columns.map((col) => row[col.key]);
     const cellHeights = columns.map((col, i) =>
-      doc.heightOfString(cellValues[i] === null || cellValues[i] === undefined || cellValues[i] === '' ? '—' : cellValues[i], {
+      doc.heightOfString(cellValues[i] === null || cellValues[i] === undefined || cellValues[i] === '' ? '—' : String(cellValues[i]), {
         width: widths[i] - CELL_PADDING * 2,
       })
     );
@@ -142,23 +148,23 @@ function drawTable(doc, { sectionTitle, columns, rows, emptyLabel }) {
 // outOfLimits, linkedCapas, lastRecordedAt } — calculée par l'appelant (voir routes/haccp.js),
 // pas ici : ce module ne fait aucun accès base de données.
 function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
-  doc.fontSize(14).fillColor(NAVY).text(sanitizeForPdf(plan.title), PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.fontSize(14).fillColor(NAVY).text(plan.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.moveDown(0.15);
   doc
     .fontSize(8.5)
     .fillColor(MUTED)
     .text(
       `Statut : ${PLAN_STATUS_LABELS[plan.status] || plan.status}` +
-        (plan.product_description ? `    —    Produit : ${sanitizeForPdf(plan.product_description)}` : '') +
-        (plan.service?.name ? `    —    Service : ${sanitizeForPdf(plan.service.name)}` : '') +
-        (plan.team ? `    —    Équipe : ${sanitizeForPdf(plan.team)}` : ''),
+        (plan.product_description ? `    —    Produit : ${plan.product_description}` : '') +
+        (plan.service?.name ? `    —    Service : ${plan.service.name}` : '') +
+        (plan.team ? `    —    Équipe : ${plan.team}` : ''),
       PAGE_MARGIN,
       doc.y,
       { width: CONTENT_WIDTH }
     );
   if (plan.scope) {
     doc.moveDown(0.1);
-    doc.fontSize(8.5).fillColor(MUTED).text(`Périmètre : ${sanitizeForPdf(plan.scope)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.fontSize(8.5).fillColor(MUTED).text(`Périmètre : ${plan.scope}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   }
   doc.moveDown(0.6);
 
@@ -260,7 +266,16 @@ export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSu
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
+
+    doc.registerFont('Body', DEJAVU_SANS);
+    doc.font('Body');
+    // pdfkit ne réapplique pas .font() tout seul sur les pages ajoutées automatiquement (saut
+    // de page par overflow de texte) : sans ce rappel dans 'pageAdded', la police repasserait
+    // silencieusement sur Helvetica dès la 2e page.
+    doc.on('pageAdded', () => {
+      doc.font('Body');
+      drawPageHeader(doc, tenantName, tenantLogo);
+    });
 
     drawPageHeader(doc, tenantName, tenantLogo);
 

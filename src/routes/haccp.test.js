@@ -293,6 +293,31 @@ describe('Export PDF — GET /api/haccp/plans/:id/pdf et POST /api/haccp/plans/p
     expect(notFound.status).toBe(404);
   });
 
+  // Bug réel corrigé : un champ contenant une liste à puces/apostrophes typographiques/symboles
+  // ≥ ≤ (copiés-collés depuis un traitement de texte) ressortait en mojibake avec la police
+  // Helvetica par défaut de pdfkit (encodage WinAnsi) — voir haccpAuditPdf.js, qui embarque
+  // désormais DejaVu Sans. Ce test ne peut pas vérifier le rendu visuel, seulement qu'aucun de
+  // ces caractères ne fait planter la génération.
+  it('génère un PDF valide avec des caractères hors de la plage WinAnsi (puces, guillemets, ≥/≤)', async () => {
+    tenant = await createTenant();
+    const plan = await makePlan(tenant.admin.token, {
+      scope: '• Réception\n• Fabrication\n• Emballage — livraison aux clients finaux',
+    });
+    const step = await makeStep(tenant.admin.token, plan.body.id, { description: 'Contrôle « qualité » de l’étape' });
+    const hazard = await makeHazard(tenant.admin.token, step.body.id);
+    await request(app)
+      .patch(`/api/haccp/hazards/${hazard.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ is_significant: true })
+      .expect(200);
+    await makeCcp(tenant.admin.token, hazard.body.id, { critical_limits: '≥ 85°C, ≤ 4°C' });
+
+    const res = await request(app).get(`/api/haccp/plans/${plan.body.id}/pdf`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.body.slice(0, 5).toString()).toBe('%PDF-');
+  });
+
   it('POST /plans/pdf sans ids exporte tous les plans visibles ; avec ids, seulement ceux-là', async () => {
     tenant = await createTenant();
     const planA = await makePlan(tenant.admin.token, { title: 'Plan A' });
