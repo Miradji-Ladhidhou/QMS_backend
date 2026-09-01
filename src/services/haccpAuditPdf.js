@@ -143,30 +143,73 @@ function drawTable(doc, { sectionTitle, columns, rows, emptyLabel }) {
   doc.moveDown(0.8);
 }
 
+const INFO_GRID_COLUMNS = 4;
+const INFO_GRID_ROW_HEIGHT = 28;
+
+// fields : [{ label, value }] — étiquette en petites capitales grises au-dessus de la valeur,
+// même hiérarchie typographique que les fiches de détail du frontend (label muted au-dessus
+// d'une valeur plus sombre), 4 colonnes réparties sur CONTENT_WIDTH.
+function drawInfoGrid(doc, fields) {
+  const colWidth = CONTENT_WIDTH / INFO_GRID_COLUMNS;
+  const startY = doc.y;
+
+  fields.forEach((field, i) => {
+    const col = i % INFO_GRID_COLUMNS;
+    const row = Math.floor(i / INFO_GRID_COLUMNS);
+    const x = PAGE_MARGIN + col * colWidth;
+    const y = startY + row * INFO_GRID_ROW_HEIGHT;
+    doc.fontSize(7).fillColor(MUTED).text(field.label.toUpperCase(), x, y, { width: colWidth - 12 });
+    doc.fontSize(9.5).fillColor(INK).text(field.value, x, y + 11, { width: colWidth - 12 });
+  });
+
+  doc.y = startY + Math.ceil(fields.length / INFO_GRID_COLUMNS) * INFO_GRID_ROW_HEIGHT;
+}
+
+// Le périmètre est souvent saisi comme une liste (une ligne par étape/activité) — rendue en
+// vraie liste à puces plutôt qu'aplatie sur une ligne, quel que soit le style de puce déjà
+// présent dans le texte source (•, -, *...) : on l'enlève et on en repose une propre, avec un
+// espacement cohérent. Un texte sans retour à la ligne reste un simple paragraphe.
+function drawScopeList(doc, scope) {
+  const items = scope
+    .split('\n')
+    .map((line) => line.replace(/^[•\-*]\s*/, '').trim())
+    .filter(Boolean);
+
+  doc.fontSize(9).fillColor(NAVY).text('Périmètre', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.moveDown(0.25);
+
+  if (items.length <= 1) {
+    doc.fontSize(8.5).fillColor(INK).text(items[0] || scope, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.moveDown(0.5);
+    return;
+  }
+
+  items.forEach((item) => {
+    doc.fontSize(8.5).fillColor(INK).text(`•  ${item}`, PAGE_MARGIN + 10, doc.y, { width: CONTENT_WIDTH - 10 });
+    doc.moveDown(0.2);
+  });
+  doc.moveDown(0.3);
+}
+
 // Un plan par section : titre + infos générales, puis 3 tableaux (analyse des dangers, points
 // critiques, synthèse de la surveillance). monitoringSummaryByCcpId : Map ccpId -> { total,
 // outOfLimits, linkedCapas, lastRecordedAt } — calculée par l'appelant (voir routes/haccp.js),
 // pas ici : ce module ne fait aucun accès base de données.
 function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
   doc.fontSize(14).fillColor(NAVY).text(plan.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.moveDown(0.15);
-  doc
-    .fontSize(8.5)
-    .fillColor(MUTED)
-    .text(
-      `Statut : ${PLAN_STATUS_LABELS[plan.status] || plan.status}` +
-        (plan.product_description ? `    —    Produit : ${plan.product_description}` : '') +
-        (plan.service?.name ? `    —    Service : ${plan.service.name}` : '') +
-        (plan.team ? `    —    Équipe : ${plan.team}` : ''),
-      PAGE_MARGIN,
-      doc.y,
-      { width: CONTENT_WIDTH }
-    );
+  doc.moveDown(0.3);
+
+  const infoFields = [{ label: 'Statut', value: PLAN_STATUS_LABELS[plan.status] || plan.status }];
+  if (plan.product_description) infoFields.push({ label: 'Produit', value: plan.product_description });
+  if (plan.service?.name) infoFields.push({ label: 'Service', value: plan.service.name });
+  if (plan.team) infoFields.push({ label: 'Équipe', value: plan.team });
+  drawInfoGrid(doc, infoFields);
+
+  doc.moveDown(0.4);
   if (plan.scope) {
-    doc.moveDown(0.1);
-    doc.fontSize(8.5).fillColor(MUTED).text(`Périmètre : ${plan.scope}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    drawScopeList(doc, plan.scope);
   }
-  doc.moveDown(0.6);
+  doc.moveDown(0.3);
 
   const hazardRows = [];
   const ccpRows = [];
