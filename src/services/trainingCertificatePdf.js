@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Mêmes teintes que les autres générateurs PDF (voir listReportPdf.js) — un peu plus de
 // couleurs ici pour un rendu "diplôme" plutôt que tableau de données. Fichier séparé de
@@ -54,6 +55,7 @@ export function buildTrainingCertificatePdf({
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
 
     // Cadre décoratif double filet, façon diplôme.
     doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill('#ffffff');

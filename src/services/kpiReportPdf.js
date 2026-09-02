@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 const NAVY = '#1F3864';
 const NAVY_LIGHT = '#D5DCE8';
@@ -569,6 +570,7 @@ export function buildKpiReportPdf({ tenantName, tenantLogo, kpis, detailStatsByK
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
 
     drawPageHeader(doc, tenantName, tenantLogo);
 

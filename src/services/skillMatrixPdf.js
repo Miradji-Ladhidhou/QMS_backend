@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Mêmes teintes que kpiReportPdf.js / qqoqccpPdf.js, dupliquées pour la même raison (pas de
 // couplage utile entre ces services au-delà de la charte de couleur).
@@ -126,6 +127,7 @@ export function buildSkillMatrixPdf({ tenantName, tenantLogo, matrix }) {
     doc.on('data', (c) => chunks.push(c));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
 
     const people = matrix[0]?.people.map((entry) => entry.person) ?? [];
     const trainings = matrix.map((entry) => entry.training);

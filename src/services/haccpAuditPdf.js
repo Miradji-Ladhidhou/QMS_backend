@@ -1,24 +1,5 @@
 import PDFDocument from 'pdfkit';
-import { createRequire } from 'module';
-
-// Les 14 polices standard de pdfkit (Helvetica ici) sont limitées à l'encodage WinAnsi
-// (Windows-1252, 256 caractères) : tout caractère hors de cette plage — dont ≥/≤, mais surtout
-// des puces, tirets ou apostrophes typographiques copiés-collés depuis un traitement de texte —
-// ressort en mojibake (bug réel constaté sur un champ "Périmètre" contenant une liste à puces).
-// DejaVu Sans (licence Bitstream Vera, libre y compris en usage commercial) couvre un jeu de
-// caractères bien plus large ; embarquée ici plutôt que de translittérer au cas par cas.
-const require = createRequire(import.meta.url);
-const DEJAVU_SANS = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans.ttf');
-
-// Limite connue : la ligature "fi" (glyphe unique en OpenType/ccmp, y compris dans DejaVu Sans)
-// s'affiche correctement à l'écran/à l'impression, mais pdfkit 0.15 ne génère pas d'entrée
-// ToUnicode correcte pour un glyphe qui représente deux points de code — le texte extrait
-// (recherche/copier-coller dans le PDF) perd le "i" ("finaux" -> "fnaux"). Vérifié : ce n'est
-// pas contrôlable via l'option `features` de pdfkit/fontkit (ccmp n'est pas désactivable, et
-// n'apparaît même pas dans le même registre que "liga"). Impact jugé mineur (rendu visuel
-// intact) au regard du bug bien plus grave que corrige cette police (mojibake visible avec
-// Helvetica/WinAnsi) — non résolu plutôt que de complexifier davantage pour un défaut de
-// recherche/copier-coller uniquement.
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Mêmes teintes que les autres rapports PDF de l'application (voir qqoqccpPdf.js pour la note
 // sur l'absence de module de constantes partagé).
@@ -310,15 +291,8 @@ export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSu
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
 
-    doc.registerFont('Body', DEJAVU_SANS);
-    doc.font('Body');
-    // pdfkit ne réapplique pas .font() tout seul sur les pages ajoutées automatiquement (saut
-    // de page par overflow de texte) : sans ce rappel dans 'pageAdded', la police repasserait
-    // silencieusement sur Helvetica dès la 2e page.
-    doc.on('pageAdded', () => {
-      doc.font('Body');
-      drawPageHeader(doc, tenantName, tenantLogo);
-    });
+    useUnicodeFont(doc);
+    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
 
     drawPageHeader(doc, tenantName, tenantLogo);
 

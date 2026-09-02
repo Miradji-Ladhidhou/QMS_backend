@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Génère le PDF en mémoire (pas de fichier temporaire) : on collecte les chunks du flux
 // pdfkit dans un buffer, résolu à l'évènement 'end'.
@@ -9,6 +10,7 @@ export function buildCertificatePdf({ document, workflow, approvals }) {
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
 
     doc.fontSize(18).fillColor('#1F3864').text('Certificat de signature électronique', { align: 'center' });
     doc.moveDown();

@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Mêmes teintes que listReportPdf.js/skillMatrixPdf.js, dupliquées pour la même raison (pas
 // de module de constantes partagé entre les générateurs PDF, voir la note dans listReportPdf.js).
@@ -74,6 +75,7 @@ export function buildAttendanceSheetPdf({
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
     doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, trainingTitle));
 
     drawPageHeader(doc, tenantName, tenantLogo, trainingTitle);

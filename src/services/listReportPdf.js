@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { useUnicodeFont } from './pdfFonts.js';
 
 // Mêmes teintes que qqoqccpPdf.js/kpiReportPdf.js pour une identité visuelle cohérente entre
 // tous les rapports PDF de l'application — dupliquées plutôt qu'importées, voir la note dans
@@ -65,6 +66,7 @@ export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, co
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
+    useUnicodeFont(doc);
     doc.on('pageAdded', () => {
       drawPageHeader(doc, tenantName, title);
       drawLogo(doc, tenantLogo);
