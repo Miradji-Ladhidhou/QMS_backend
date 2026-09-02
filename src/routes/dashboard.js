@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { supabase } from '../services/supabase.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '../services/serviceScope.js';
 import {
   fetchCapaItems,
@@ -13,6 +13,7 @@ import {
   fetchSupplierItems,
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { filterViewableDocuments } from '../middleware/documentPermissions.js';
 
 const router = Router();
 
@@ -169,6 +170,83 @@ async function countManagementReviewsDraft(tenantId) {
   return count || 0;
 }
 
+// Métriques tenant entier (aucun filtre de service, vision "admin"), sans dépendre d'un
+// utilisateur précis — réutilisée par la route pour la vue par défaut (serviceIds === null,
+// voir plus bas) ET par dashboardSnapshotJob.js (aucun req.user disponible dans un job planifié).
+// userRole: 'admin' fait passer filterViewableByCategory en accès total (comportement voulu :
+// un instantané doit refléter la vérité tenant entier, pas la vue d'un manager en particulier).
+async function computeTenantMetrics(tenantId) {
+  const scopeUser = { userId: null, userRole: 'admin' };
+
+  const { data: rawCapas, error: capasError } = await supabase
+    .from('capas')
+    .select('status, category_id, category:categories(id, is_restricted)')
+    .eq('tenant_id', tenantId);
+  if (capasError) throw new Error('Impossible de récupérer les CAPA.');
+  const capas = await filterViewableByCategory({ ...scopeUser, items: rawCapas });
+
+  const documentsToReview = await countDocumentsToReview(tenantId);
+  const trainingsToRenew = await countTrainingsToRenew(tenantId, null);
+  const kpiSummary = await computeKpiSummary(tenantId);
+  const managementReviewsDraft = await countManagementReviewsDraft(tenantId);
+  const haccpActivePlans = await countActiveHaccpPlans(tenantId, null);
+
+  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
+    fetchCapaItems(tenantId, { serviceIds: null, ...scopeUser }),
+    fetchDocumentItems(tenantId),
+    fetchTrainingItems(tenantId, { userIds: null }),
+    fetchTaskItems(tenantId, scopeUser),
+    fetchAuditItems(tenantId, { serviceIds: null, ...scopeUser }),
+    fetchComplaintItems(tenantId, { serviceIds: null, ...scopeUser }),
+    fetchRiskItems(tenantId, { serviceIds: null, ...scopeUser }),
+    fetchSupplierItems(tenantId, { serviceIds: null, ...scopeUser }),
+  ]);
+  const overdueTotal = countOverdueItems([
+    capaItems,
+    documentItems,
+    trainingItems,
+    taskItems,
+    auditItems,
+    complaintItems,
+    riskItems,
+    supplierItems,
+  ]);
+
+  return {
+    capas: countCapasByStatus(capas),
+    documents: { to_review: documentsToReview },
+    trainings: { to_renew: trainingsToRenew },
+    kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
+    audits: countActiveAndOverdue(auditItems),
+    complaints: countActiveAndOverdue(complaintItems),
+    risks: countActiveAndOverdue(riskItems),
+    suppliers: countActiveAndOverdue(supplierItems),
+    management_reviews: { draft: managementReviewsDraft },
+    haccp: { active_plans: haccpActivePlans },
+    overdue: { total: overdueTotal },
+  };
+}
+
+// Delta simple entre deux objets de métriques (même forme que computeTenantMetrics), aplati en
+// clés jointes par "." pour rester lisible côté frontend sans imbrication à reproduire
+// manuellement (ex. "capas.open": 3, "audits.active": -1). Ignore les tableaux (kpis.preview) :
+// une tendance n'a de sens que sur un nombre.
+function diffMetrics(current, previous) {
+  const trends = {};
+  for (const [group, values] of Object.entries(current)) {
+    if (typeof values !== 'object' || values === null || Array.isArray(values)) continue;
+    for (const [key, value] of Object.entries(values)) {
+      if (typeof value !== 'number') continue;
+      const previousValue = previous?.[group]?.[key];
+      if (typeof previousValue !== 'number') continue;
+      trends[`${group}.${key}`] = value - previousValue;
+    }
+  }
+  return trends;
+}
+
+export { computeTenantMetrics };
+
 // GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings, kpis, audits,
 // complaints, risks, suppliers, management_reviews, haccp, overdue}, filtrage par service selon
 // le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
@@ -237,6 +315,9 @@ router.get('/stats', async (req, res) => {
       management_reviews: { draft: 0 },
       haccp: { active_plans: 0 },
       overdue: { total: overdueTotal },
+      // Pas de tendances pour member : la vue personnelle ne correspond à aucun instantané
+      // (toujours tenant entier, voir computeTenantMetrics/dashboardSnapshotJob.js).
+      trends: null,
     });
   }
 
@@ -248,65 +329,186 @@ router.get('/stats', async (req, res) => {
     requestedServiceIds,
   });
 
-  let capas = [];
-  if (!serviceIds || serviceIds.length > 0) {
-    let capasQuery = supabase.from('capas').select('status, category_id, category:categories(id, is_restricted)').eq('tenant_id', req.tenantId);
-    if (serviceIds) {
-      capasQuery = capasQuery.in('service_id', serviceIds);
-    }
-    const { data, error } = await capasQuery;
-    if (error) {
+  let metrics;
+
+  if (serviceIds === null) {
+    // Vue non filtrée : entièrement calculée par computeTenantMetrics, réutilisée telle
+    // quelle (même fonction que dashboardSnapshotJob.js) plutôt que dupliquée ici.
+    try {
+      metrics = await computeTenantMetrics(req.tenantId);
+    } catch {
       return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
     }
-    // Même raisonnement que la branche member ci-dessus : un manager n'est plus exempté d'une
-    // catégorie restreinte (voir capas.js), le compteur ne doit pas le contredire.
-    capas = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  } else {
+    let capas = [];
+    if (serviceIds.length > 0) {
+      const { data, error } = await supabase
+        .from('capas')
+        .select('status, category_id, category:categories(id, is_restricted)')
+        .eq('tenant_id', req.tenantId)
+        .in('service_id', serviceIds);
+      if (error) {
+        return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
+      }
+      // Même raisonnement que la branche member ci-dessus : un manager n'est plus exempté
+      // d'une catégorie restreinte (voir capas.js), le compteur ne doit pas le contredire.
+      capas = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+    }
+
+    // Les documents n'ont pas de service_id (voir schema.sql) : aucun filtrage possible,
+    // le compte reste celui du tenant entier quel que soit service_id.
+    const documentsToReview = await countDocumentsToReview(req.tenantId);
+
+    const trainingUserIds = await fetchServiceUserIds(req.tenantId, serviceIds);
+    const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
+    const kpiSummary = await computeKpiSummary(req.tenantId);
+    const managementReviewsDraft = await countManagementReviewsDraft(req.tenantId);
+    const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
+
+    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
+      fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchDocumentItems(req.tenantId),
+      fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
+      fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
+      fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+    ]);
+    const overdueTotal = countOverdueItems([
+      capaItems,
+      documentItems,
+      trainingItems,
+      taskItems,
+      auditItems,
+      complaintItems,
+      riskItems,
+      supplierItems,
+    ]);
+
+    metrics = {
+      capas: countCapasByStatus(capas),
+      documents: { to_review: documentsToReview },
+      trainings: { to_renew: trainingsToRenew },
+      kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
+      audits: countActiveAndOverdue(auditItems),
+      complaints: countActiveAndOverdue(complaintItems),
+      risks: countActiveAndOverdue(riskItems),
+      suppliers: countActiveAndOverdue(supplierItems),
+      management_reviews: { draft: managementReviewsDraft },
+      haccp: { active_plans: haccpActivePlans },
+      overdue: { total: overdueTotal },
+    };
   }
 
-  // Les documents n'ont pas de service_id (voir schema.sql) : aucun filtrage possible,
-  // le compte reste celui du tenant entier quel que soit service_id.
-  const documentsToReview = await countDocumentsToReview(req.tenantId);
+  // Tendances : uniquement sur la vue non filtrée (les instantanés sont toujours tenant
+  // entier, voir dashboard_metric_snapshots) — l'instantané le plus proche d'il y a 30 jours,
+  // sans exiger exactement 30 jours pile (order by + limit 1 prend le plus récent avant ce
+  // seuil). null tant qu'aucun instantané assez ancien n'existe (les 30 premiers jours après
+  // la mise en place du job planifié).
+  let trends = null;
+  if (serviceIds === null) {
+    const cutoff = isoDateInDays(-30);
+    const { data: snapshot } = await supabase
+      .from('dashboard_metric_snapshots')
+      .select('metrics')
+      .eq('tenant_id', req.tenantId)
+      .lte('snapshot_date', cutoff)
+      .order('snapshot_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (snapshot) trends = diffMetrics(metrics, snapshot.metrics);
+  }
 
-  const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
-  const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
-  const kpiSummary = await computeKpiSummary(req.tenantId);
-  const managementReviewsDraft = await countManagementReviewsDraft(req.tenantId);
-  const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
+  res.json({ ...metrics, trends });
+});
 
-  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
-    fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-    fetchDocumentItems(req.tenantId),
-    fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
-    fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
-    fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-    fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-    fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-    fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+// 'created' si mis à jour dans la minute suivant sa création (jamais modifié depuis, à
+// quelques secondes près), 'updated' sinon — pas un vrai verbe d'action par utilisateur (voir
+// le contexte du plan : aucun journal d'actions unifié n'existe entre modules), juste de quoi
+// distinguer visuellement une création d'une modification dans le flux.
+function inferAction(item) {
+  return new Date(item.updated_at) - new Date(item.created_at) < 60_000 ? 'created' : 'updated';
+}
+
+const RECENT_ACTIVITY_PER_MODULE = 8;
+const RECENT_ACTIVITY_TOTAL = 8;
+
+// GET /api/dashboard/recent-activity — les éléments les plus récemment créés/modifiés parmi
+// CAPA/audits/réclamations/risques/documents/plans HACCP (les modules avec un titre lisible et
+// un cycle de vie clair), tous rôles confondus dans la requête mais visibilité filtrée EXACTEMENT
+// comme la liste de chaque module (filterViewableByCategory / filterViewableDocuments, mêmes
+// fonctions que GET /api/capas, /api/documents, etc.) — jamais un raccourci qui montrerait plus
+// que ce que l'utilisateur verrait sur la page de la liste elle-même. Réservé à admin/manager,
+// comme le panneau "Filtrer par service" (un member n'a pas de vue d'ensemble de l'entreprise).
+router.get('/recent-activity', requireRole('admin', 'manager'), async (req, res) => {
+  const scopeUser = { userId: req.user.id, userRole: req.userRole };
+
+  const [rawCapas, rawAudits, rawComplaints, rawRisks, rawDocuments, rawHaccpPlans] = await Promise.all([
+    supabase
+      .from('capas')
+      .select('id, number, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
+    supabase
+      .from('audits')
+      .select('id, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
+    supabase
+      .from('complaints')
+      .select('id, customer_name, created_at, updated_at, category_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
+    supabase
+      .from('risks')
+      .select('id, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
+    supabase
+      .from('documents')
+      .select('id, number, title, created_at, updated_at, category_id, category:document_categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
+    supabase
+      .from('haccp_plans')
+      .select('id, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .order('updated_at', { ascending: false })
+      .limit(RECENT_ACTIVITY_PER_MODULE),
   ]);
-  const overdueTotal = countOverdueItems([
-    capaItems,
-    documentItems,
-    trainingItems,
-    taskItems,
-    auditItems,
-    complaintItems,
-    riskItems,
-    supplierItems,
-  ]);
 
-  res.json({
-    capas: countCapasByStatus(capas),
-    documents: { to_review: documentsToReview },
-    trainings: { to_renew: trainingsToRenew },
-    kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
-    audits: countActiveAndOverdue(auditItems),
-    complaints: countActiveAndOverdue(complaintItems),
-    risks: countActiveAndOverdue(riskItems),
-    suppliers: countActiveAndOverdue(supplierItems),
-    management_reviews: { draft: managementReviewsDraft },
-    haccp: { active_plans: haccpActivePlans },
-    overdue: { total: overdueTotal },
+  const [capas, audits, complaints, risks, haccpPlans] = await Promise.all(
+    [rawCapas, rawAudits, rawComplaints, rawRisks, rawHaccpPlans].map(({ data }) =>
+      filterViewableByCategory({ ...scopeUser, items: data || [] })
+    )
+  );
+  const documents = await filterViewableDocuments({
+    tenantId: req.tenantId,
+    ...scopeUser,
+    documents: rawDocuments.data || [],
   });
+
+  function toEntry(item, module, label, link) {
+    return { module, id: item.id, label, link, timestamp: item.updated_at, action: inferAction(item) };
+  }
+
+  const items = [
+    ...capas.map((item) => toEntry(item, 'capas', `${item.number ? `${item.number} — ` : ''}${item.title}`, `/capas/${item.id}`)),
+    ...audits.map((item) => toEntry(item, 'audits', item.title, `/audits/${item.id}`)),
+    ...complaints.map((item) => toEntry(item, 'complaints', `Réclamation — ${item.customer_name}`, `/complaints/${item.id}`)),
+    ...risks.map((item) => toEntry(item, 'risks', item.title, `/risks/${item.id}`)),
+    ...documents.map((item) => toEntry(item, 'documents', `${item.number} — ${item.title}`, `/documents/${item.id}`)),
+    ...haccpPlans.map((item) => toEntry(item, 'haccp', item.title, `/haccp/${item.id}`)),
+  ];
+
+  items.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  res.json(items.slice(0, RECENT_ACTIVITY_TOTAL));
 });
 
 export default router;

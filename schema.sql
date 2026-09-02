@@ -979,6 +979,22 @@ create table super_admin_audit_log (
   created_at  timestamptz not null default now()
 );
 
+-- Un instantané par tenant par jour des métriques du dashboard (voir GET /api/dashboard/stats,
+-- computeTenantMetrics dans routes/dashboard.js), écrit uniquement par dashboardSnapshotJob.js
+-- (tous les jours à 3h) — jamais par la route elle-même, pour éviter toute course entre
+-- plusieurs chargements simultanés du dashboard. metrics en jsonb (un blob, pas une colonne
+-- par métrique) : un nouveau widget n'a jamais besoin d'une migration pour être suivi dans le
+-- temps. Comparé à l'instantané le plus proche d'il y a 30 jours pour calculer les tendances
+-- affichées ("↑3 vs le mois dernier") — tenant entier uniquement, jamais par service.
+create table dashboard_metric_snapshots (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants (id) on delete cascade,
+  snapshot_date date not null,
+  metrics       jsonb not null,
+  created_at    timestamptz not null default now(),
+  unique (tenant_id, snapshot_date)
+);
+
 -- Visibilité du menu par rôle et par utilisateur — purement additif, absence de ligne = menu
 -- complet inchangé pour tout le monde (comportement actuel). role_hidden_items :
 -- {"member": ["suppliers"], "manager": []} = sections retirées PAR DÉFAUT pour ce rôle.
@@ -1214,6 +1230,8 @@ create index idx_category_permissions_subject on category_permissions (subject_t
 
 create index idx_super_admin_audit_log_created_at on super_admin_audit_log (created_at desc);
 create index idx_super_admin_audit_log_target on super_admin_audit_log (target_type, target_id);
+
+create index idx_dashboard_metric_snapshots_tenant_date on dashboard_metric_snapshots (tenant_id, snapshot_date desc);
 
 -- =============================================================================
 -- TRIGGERS
@@ -1488,6 +1506,7 @@ alter table groups enable row level security;
 alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
+alter table dashboard_metric_snapshots enable row level security;
 alter table record_shares enable row level security;
 alter table categories enable row level security;
 alter table generic_category_permissions enable row level security;
@@ -1743,6 +1762,11 @@ create policy super_admin_audit_log_select on super_admin_audit_log
 create policy super_admin_audit_log_insert on super_admin_audit_log
   for insert
   with check (auth_is_super_admin());
+
+create policy dashboard_metric_snapshots_isolation on dashboard_metric_snapshots
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
 
 create policy record_shares_isolation on record_shares
   for all

@@ -429,3 +429,102 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     expect(afterCompleted.body.management_reviews).toEqual({ draft: 0 });
   });
 });
+
+// Instantanés écrits uniquement par dashboardSnapshotJob.js (jamais par la route) — on en
+// seed un directement en base pour tester le calcul de delta sans attendre 30 jours réels.
+describe('GET /api/dashboard/stats — tendances (dashboard_metric_snapshots)', () => {
+  it('null sans instantané assez ancien ; delta correct dès qu’un instantané à J-30 ou plus existe', async () => {
+    tenant = await createTenant();
+    await makeCapa(tenant.admin.token, 'CAPA du jour');
+
+    const noSnapshot = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(noSnapshot.body.trends).toBeNull();
+
+    const thirtyOneDaysAgo = new Date();
+    thirtyOneDaysAgo.setDate(thirtyOneDaysAgo.getDate() - 31);
+    await admin.from('dashboard_metric_snapshots').insert({
+      tenant_id: tenant.tenantId,
+      snapshot_date: thirtyOneDaysAgo.toISOString().slice(0, 10),
+      metrics: { capas: { open: 1, in_progress: 0, overdue: 0, closed: 0 }, audits: { active: 2, overdue: 0 } },
+    });
+
+    const withSnapshot = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    // 1 CAPA créée dans ce test + le compte réel d'audits (0) comparés à l'instantané (1 et 2).
+    expect(withSnapshot.body.trends['capas.open']).toBe(0);
+    expect(withSnapshot.body.trends['audits.active']).toBe(-2);
+  });
+
+  it('toujours null dès qu’un filtre de service est actif (instantanés tenant entier uniquement)', async () => {
+    tenant = await createTenant();
+    const serviceA = await makeService(tenant.admin.token, 'Service A');
+    await makeCapa(tenant.admin.token, 'CAPA', { serviceId: serviceA });
+
+    const thirtyOneDaysAgo = new Date();
+    thirtyOneDaysAgo.setDate(thirtyOneDaysAgo.getDate() - 31);
+    await admin.from('dashboard_metric_snapshots').insert({
+      tenant_id: tenant.tenantId,
+      snapshot_date: thirtyOneDaysAgo.toISOString().slice(0, 10),
+      metrics: { capas: { open: 0, in_progress: 0, overdue: 0, closed: 0 } },
+    });
+
+    const res = await request(app)
+      .get('/api/dashboard/stats')
+      .query({ service_id: serviceA })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.trends).toBeNull();
+  });
+});
+
+describe('GET /api/dashboard/recent-activity', () => {
+  it('403 pour un member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const res = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('mélange plusieurs modules, trié du plus récent au plus ancien', async () => {
+    tenant = await createTenant();
+    const capaId = await makeCapa(tenant.admin.token, 'CAPA récente');
+    const audit = await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit récent', planned_date: '2026-12-01' });
+
+    // Rend l'audit strictement plus récent que la CAPA (même seconde sinon, ordre non garanti).
+    await admin.from('audits').update({ updated_at: new Date(Date.now() + 5000).toISOString() }).eq('id', audit.body.id);
+
+    const res = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    const modules = res.body.map((item) => item.module);
+    expect(modules).toContain('capas');
+    expect(modules).toContain('audits');
+    expect(res.body[0]).toMatchObject({ module: 'audits', id: audit.body.id, action: 'created' });
+    expect(res.body.some((item) => item.id === capaId)).toBe(true);
+  });
+
+  it("respecte la visibilité par catégorie restreinte, comme la liste CAPA elle-même", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const categoryId = await makeRestrictedCategory(tenant.admin.token);
+    await makeCapa(tenant.admin.token, 'CAPA restreinte', { categoryId });
+    await makeCapa(tenant.admin.token, 'CAPA ouverte');
+
+    const managerRes = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${manager.token}`);
+    expect(managerRes.body.some((item) => item.label.includes('restreinte'))).toBe(false);
+    expect(managerRes.body.some((item) => item.label.includes('ouverte'))).toBe(true);
+
+    const adminRes = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.some((item) => item.label.includes('restreinte'))).toBe(true);
+  });
+
+  it('tronque à 8 résultats au total', async () => {
+    tenant = await createTenant();
+    for (let i = 0; i < 9; i += 1) {
+      await makeCapa(tenant.admin.token, `CAPA ${i}`);
+    }
+
+    const res = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body).toHaveLength(8);
+  });
+});
