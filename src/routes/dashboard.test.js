@@ -161,7 +161,7 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     expect(invalid.status).toBe(400);
   });
 
-  it('compte les KPI hors objectif pour admin/manager, toujours à 0 pour member', async () => {
+  it('compte les KPI hors objectif pour admin/manager (avec aperçu mini-courbe), toujours à 0/vide pour member', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
 
@@ -172,13 +172,53 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     await request(app)
       .post(`/api/kpis/${kpi.body.id}/records`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ period_date: '2026-08-01', value: 12 });
+      .send({ period_date: '2026-08-01', value: 10 });
+    await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-08-02', value: 12 });
 
     const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(adminRes.body.kpis.off_target).toBe(1);
+    expect(adminRes.body.kpis.preview).toHaveLength(1);
+    expect(adminRes.body.kpis.preview[0]).toMatchObject({ id: kpi.body.id, name: 'Taux de rebut', average: 11 });
+    // Ordonné par période croissante, pas par date d'insertion.
+    expect(adminRes.body.kpis.preview[0].sparkline).toEqual([10, 12]);
 
     const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
     expect(memberRes.body.kpis.off_target).toBe(0);
+    expect(memberRes.body.kpis.preview).toEqual([]);
+  });
+
+  it('compte les plans HACCP actifs pour admin/manager (filtrable par service), toujours à 0 pour member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const serviceA = await makeService(tenant.admin.token, 'Production');
+
+    const planActive = await request(app)
+      .post('/api/haccp/plans')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Plan actif', service_id: serviceA });
+    await request(app)
+      .patch(`/api/haccp/plans/${planActive.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'active' });
+    await request(app)
+      .post('/api/haccp/plans')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Plan brouillon' }); // status par défaut 'draft', pas compté
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.haccp.active_plans).toBe(1);
+
+    const scoped = await request(app)
+      .get('/api/dashboard/stats')
+      .query({ service_id: serviceA })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(scoped.body.haccp.active_plans).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.haccp.active_plans).toBe(0);
   });
 
   it('total "en retard" agrège CAPA + documents + formations + tâches, jamais de documents pour member', async () => {

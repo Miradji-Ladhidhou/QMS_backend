@@ -95,23 +95,47 @@ async function countDocumentsToReview(tenantId) {
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js, dupliqué aussi dans
 // kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne de ses relevés ne respecte pas
 // le sens de l'objectif (target_direction). Pas de service_id sur les KPI (voir schema.sql) :
-// toujours tout le tenant, jamais scopé — comme documents.to_review.
-async function countOffTargetKpis(tenantId) {
+// toujours tout le tenant, jamais scopé — comme documents.to_review. `preview` renvoie jusqu'à
+// 3 KPI hors objectif avec leurs derniers points (mini-courbe côté dashboard) plutôt qu'un
+// simple chiffre — même dataset déjà chargé pour calculer la moyenne, aucune requête en plus.
+async function computeKpiSummary(tenantId) {
   const { data: kpis, error } = await supabase
     .from('kpis')
-    .select('id, target, target_direction, records:kpi_records(value)')
+    .select('id, name, unit, target, target_direction, records:kpi_records(period_date, value)')
     .eq('tenant_id', tenantId);
 
-  if (error || !kpis) return 0;
+  if (error || !kpis) return { offTarget: 0, preview: [] };
 
-  let count = 0;
+  const offTargetKpis = [];
   for (const kpi of kpis) {
     if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
     const average = kpi.records.reduce((sum, record) => sum + record.value, 0) / kpi.records.length;
     const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
-    if (!meetsTarget) count += 1;
+    if (!meetsTarget) {
+      const sortedValues = [...kpi.records].sort((a, b) => (a.period_date < b.period_date ? -1 : 1)).map((r) => r.value);
+      offTargetKpis.push({
+        id: kpi.id,
+        name: kpi.name,
+        unit: kpi.unit,
+        average: Number(average.toFixed(2)),
+        sparkline: sortedValues.slice(-8),
+      });
+    }
   }
-  return count;
+
+  return { offTarget: offTargetKpis.length, preview: offTargetKpis.slice(0, 3) };
+}
+
+// Actifs uniquement (voir haccp_plans.status) — jamais de notion de "en retard" pour un plan
+// HACCP (pas d'échéance individuelle comme une CAPA/un document), contrairement aux autres
+// widgets du dashboard. Scopé par service_id comme les autres outils dotés de ce champ.
+async function countActiveHaccpPlans(tenantId, serviceIds) {
+  let query = supabase.from('haccp_plans').select('status').eq('tenant_id', tenantId);
+  if (serviceIds) query = query.in('service_id', serviceIds);
+
+  const { data, error } = await query;
+  if (error || !data) return 0;
+  return data.filter((plan) => plan.status === 'active').length;
 }
 
 // Total "en retard" tous outils confondus (CAPA + documents + formations + tâches), en
@@ -146,8 +170,8 @@ async function countManagementReviewsDraft(tenantId) {
 }
 
 // GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings, kpis, audits,
-// complaints, risks, suppliers, management_reviews, overdue}, filtrage par service selon le
-// rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
+// complaints, risks, suppliers, management_reviews, haccp, overdue}, filtrage par service selon
+// le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
 // ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : filtré automatiquement sur ses services (table user_services, prompt B2) si
@@ -200,17 +224,18 @@ router.get('/stats', async (req, res) => {
       trainings: { to_renew: trainingsToRenew },
       // Pas de vue personnelle pour les KPI (pas de porteur individuel, comme documents) :
       // 0 forcé ici, le widget correspondant reste masqué pour member côté frontend.
-      kpis: { off_target: 0 },
+      kpis: { off_target: 0, preview: [] },
       // Audits/réclamations/risques : un member peut être personnellement auditeur/assigné/
       // responsable (voir fetchAuditItems/fetchComplaintItems/fetchRiskItems ci-dessus), donc
       // ces compteurs ont un sens même pour ce rôle — contrairement à documents/kpis.
       audits: countActiveAndOverdue(auditItems),
       complaints: countActiveAndOverdue(complaintItems),
       risks: countActiveAndOverdue(riskItems),
-      // Fournisseurs/revues de direction : pas de porteur individuel (comme documents/kpis) —
-      // 0 forcé, widgets masqués pour member côté frontend.
+      // Fournisseurs/revues de direction/HACCP : pas de porteur individuel (comme
+      // documents/kpis) — 0 forcé, widgets masqués pour member côté frontend.
       suppliers: { active: 0, overdue: 0 },
       management_reviews: { draft: 0 },
+      haccp: { active_plans: 0 },
       overdue: { total: overdueTotal },
     });
   }
@@ -244,8 +269,9 @@ router.get('/stats', async (req, res) => {
 
   const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
   const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
-  const kpisOffTarget = await countOffTargetKpis(req.tenantId);
+  const kpiSummary = await computeKpiSummary(req.tenantId);
   const managementReviewsDraft = await countManagementReviewsDraft(req.tenantId);
+  const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
 
   const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
     fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
@@ -272,12 +298,13 @@ router.get('/stats', async (req, res) => {
     capas: countCapasByStatus(capas),
     documents: { to_review: documentsToReview },
     trainings: { to_renew: trainingsToRenew },
-    kpis: { off_target: kpisOffTarget },
+    kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
     audits: countActiveAndOverdue(auditItems),
     complaints: countActiveAndOverdue(complaintItems),
     risks: countActiveAndOverdue(riskItems),
     suppliers: countActiveAndOverdue(supplierItems),
     management_reviews: { draft: managementReviewsDraft },
+    haccp: { active_plans: haccpActivePlans },
     overdue: { total: overdueTotal },
   });
 });
