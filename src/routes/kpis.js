@@ -15,7 +15,7 @@ const KPI_TARGET_DIRECTIONS = ['min', 'max'];
 // Le type de calcul précis (ratio, sum, average, min, max, count, count_grouped) vit dans
 // kpi_calculation_configs.calc_type — ici on distingue seulement saisie manuelle vs calculée.
 const KPI_CALCULATION_TYPES = ['manual', 'import'];
-export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped'];
+export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped', 'manual'];
 const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id', 'category_id'];
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
@@ -381,13 +381,15 @@ router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   res.status(204).send();
 });
 
-// POST /api/kpis/:id/records — saisie d'une valeur pour une période, sans double saisie
+// POST /api/kpis/:id/records — saisie d'une valeur pour une période, sans double saisie (par
+// série si config_id est fourni — voir kpi_calculation_configs.calc_type = 'manual').
 router.post(
   '/:id/records',
   [
     body('period_date').isISO8601().withMessage('Date de période invalide.'),
     body('value').isFloat().withMessage('Valeur invalide.'),
     body('comment').optional({ values: 'falsy' }).trim(),
+    body('config_id').optional({ values: 'falsy' }).isUUID().withMessage('Série invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -406,13 +408,27 @@ router.post(
       return res.status(404).json({ error: 'KPI introuvable.' });
     }
 
-    const { period_date: periodDate, value, comment } = req.body;
+    const { period_date: periodDate, value, comment, config_id: configId } = req.body;
+
+    if (configId) {
+      const { data: config, error: configError } = await supabase
+        .from('kpi_calculation_configs')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('kpi_id', kpi.id)
+        .eq('id', configId)
+        .maybeSingle();
+      if (configError || !config) {
+        return res.status(400).json({ error: 'Série introuvable pour ce KPI.' });
+      }
+    }
 
     const { data, error } = await supabase
       .from('kpi_records')
       .insert({
         tenant_id: req.tenantId,
         kpi_id: kpi.id,
+        config_id: configId || null,
         period_date: periodDate,
         value,
         comment: comment || null,

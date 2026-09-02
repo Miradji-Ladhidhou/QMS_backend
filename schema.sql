@@ -671,12 +671,17 @@ create table kpi_raw_imports (
 -- autre champ vaut une valeur donnée). period_column est vide quand la période n'est pas
 -- déductible du fichier et doit être précisée manuellement à chaque import plutôt que lue
 -- colonne par colonne. Doit exister avant kpi_records, qui y fait référence (config_id).
+-- calc_type = 'manual' : même principe de série nommée, mais sans recette de calcul (pas de
+-- source_column/filters/group_by_column/period_column, tous null) — sert uniquement à
+-- regrouper des valeurs saisies à la main sous plusieurs courbes distinctes d'un même KPI
+-- "manuel", au lieu d'un seul point par période (voir POST /kpis/:id/records, ManualSeries
+-- côté frontend).
 create table kpi_calculation_configs (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
   kpi_id            uuid not null references kpis (id) on delete cascade,
   label             text not null default 'Principal',
-  calc_type         text not null check (calc_type in ('ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped')),
+  calc_type         text not null check (calc_type in ('ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped', 'manual')),
   source_column     text,
   filters           jsonb not null default '[]'::jsonb,
   filter_logic      text not null default 'all' check (filter_logic in ('all', 'any')),

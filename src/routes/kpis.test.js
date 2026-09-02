@@ -134,3 +134,108 @@ describe('GET /api/kpis/report — filtrage par dossier, cohérent avec GET /api
     expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
   });
 });
+
+// calc_type = 'manual' (migration 26) : une série sans recette de calcul, servant à regrouper
+// des valeurs saisies à la main sous plusieurs courbes distinctes d'un même KPI "manuel" —
+// même mécanisme que les séries import (kpi_calculation_configs), mais alimentées par
+// POST /:id/records au lieu du pipeline d'import.
+describe('KPI manuel à plusieurs séries (calc_type = "manual")', () => {
+  it('POST /:id/series accepte calc_type "manual" avec juste un label', async () => {
+    tenant = await createTenant();
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Taux de conformité par ligne' });
+
+    const series = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/series`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ label: 'Ligne A', calc_type: 'manual' });
+    expect(series.status).toBe(201);
+    expect(series.body.calc_type).toBe('manual');
+    expect(series.body.source_column).toBeNull();
+  });
+
+  it('POST /:id/records avec config_id : plusieurs séries peuvent chacune avoir leur valeur sur la même période', async () => {
+    tenant = await createTenant();
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Taux de conformité par ligne' });
+
+    const seriesA = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/series`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ label: 'Ligne A', calc_type: 'manual' });
+    const seriesB = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/series`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ label: 'Ligne B', calc_type: 'manual' });
+
+    const recordA = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 95, config_id: seriesA.body.id });
+    expect(recordA.status).toBe(201);
+    expect(recordA.body.config_id).toBe(seriesA.body.id);
+
+    // Même période, série différente : ne doit pas entrer en conflit avec recordA malgré
+    // l'index unique (kpi_id, period_date) où config_id est null — ici config_id est non-null
+    // pour les deux, régis par la contrainte unique (config_id, period_date) à la place.
+    const recordB = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 88, config_id: seriesB.body.id });
+    expect(recordB.status).toBe(201);
+
+    // Mais la même série ne peut pas avoir deux valeurs pour la même période.
+    const conflict = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 99, config_id: seriesA.body.id });
+    expect(conflict.status).toBe(409);
+  });
+
+  it("400 si config_id ne correspond à aucune série de ce KPI (ex : série d'un autre KPI)", async () => {
+    tenant = await createTenant();
+    const kpiA = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI A' });
+    const kpiB = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI B' });
+    const seriesOfB = await request(app)
+      .post(`/api/kpis/${kpiB.body.id}/series`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ label: 'Série de B', calc_type: 'manual' });
+
+    const res = await request(app)
+      .post(`/api/kpis/${kpiA.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 10, config_id: seriesOfB.body.id });
+    expect(res.status).toBe(400);
+  });
+
+  it('sans config_id, le comportement historique (un seul point par période) est inchangé', async () => {
+    tenant = await createTenant();
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI simple' });
+
+    const first = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 10 });
+    expect(first.status).toBe(201);
+    expect(first.body.config_id).toBeNull();
+
+    const conflict = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 20 });
+    expect(conflict.status).toBe(409);
+  });
+});
