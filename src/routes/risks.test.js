@@ -59,6 +59,64 @@ describe('GET /api/risks — visible à tous les rôles, filtrable', () => {
     expect(byType.body.every((r) => r.type === 'opportunity')).toBe(true);
     expect(byType.body.length).toBe(1);
   });
+
+  it('filtre par service_id', async () => {
+    tenant = await createTenant();
+    const serviceRes = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Logistique' });
+    const serviceId = serviceRes.body.id;
+
+    const scoped = await makeRisk(tenant.admin.token, { title: 'Risque logistique', service_id: serviceId });
+    await makeRisk(tenant.admin.token, { title: 'Risque sans service' });
+
+    const res = await request(app).get(`/api/risks?service_id=${serviceId}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveLength(1);
+    expect(res.body[0].id).toBe(scoped.body.id);
+  });
+});
+
+describe('ai_generated — traçabilité des risques issus d’une suggestion IA acceptée', () => {
+  it('false par défaut, true si explicitement envoyé à la création', async () => {
+    tenant = await createTenant();
+
+    const manual = await makeRisk(tenant.admin.token);
+    expect(manual.body.ai_generated).toBe(false);
+
+    const aiAccepted = await makeRisk(tenant.admin.token, { title: 'Risque suggéré par l’IA', ai_generated: true });
+    expect(aiAccepted.body.ai_generated).toBe(true);
+  });
+});
+
+// POST /api/risks/service-suggestion appelle Groq en direct : comme pour
+// POST /api/ai/capa-suggestion et POST /api/haccp/steps/:stepId/hazard-suggestion, aucun test
+// automatisé ne couvre le chemin qui appelle réellement l'IA (vérifié manuellement). On couvre
+// ici uniquement permission et validation.
+describe('POST /api/risks/service-suggestion — permissions et validation', () => {
+  it('403 pour un member, 400 si le contexte est trop court', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const memberAttempt = await request(app)
+      .post('/api/risks/service-suggestion')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ service_name: 'Logistique', context: 'Réception et expédition de marchandises.' });
+    expect(memberAttempt.status).toBe(403);
+
+    const tooShort = await request(app)
+      .post('/api/risks/service-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ service_name: 'Logistique', context: 'court' });
+    expect(tooShort.status).toBe(400);
+
+    const missingService = await request(app)
+      .post('/api/risks/service-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ context: 'Réception et expédition de marchandises.' });
+    expect(missingService.status).toBe(400);
+  });
 });
 
 describe('PATCH /api/risks/:id — traitement et évaluation résiduelle', () => {

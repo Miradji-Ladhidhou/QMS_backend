@@ -406,6 +406,9 @@ create table risks (
   status              text not null default 'identified' check (status in ('identified', 'treating', 'treated', 'accepted', 'closed')),
   review_date         date,
   linked_capa_id      uuid references capas (id) on delete set null,
+  -- Traçabilité : ce risque vient-il d'une suggestion IA acceptée telle quelle (ou modifiée)
+  -- plutôt que d'une saisie manuelle — même principe que haccp_hazards.ai_generated.
+  ai_generated        boolean not null default false,
   created_by          uuid references users (id) on delete set null,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()

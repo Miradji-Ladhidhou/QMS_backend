@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { generateRiskSuggestion } from '../services/groq.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -78,6 +79,7 @@ router.post(
     body('impact').isInt({ min: 1, max: 5 }).withMessage('Gravité invalide (1 à 5).'),
     body('review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de revue invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('ai_generated').optional().isBoolean().withMessage('Valeur invalide.'),
   ],
   requireValidCategoryId('risk'),
   async (req, res) => {
@@ -97,6 +99,7 @@ router.post(
       impact,
       review_date: reviewDate,
       category_id: categoryId,
+      ai_generated: aiGenerated,
     } = req.body;
 
     const { data, error } = await supabase
@@ -113,6 +116,7 @@ router.post(
         impact,
         review_date: reviewDate || null,
         category_id: categoryId || null,
+        ai_generated: aiGenerated || false,
         created_by: req.user.id,
       })
       .select(RISK_SELECT)
@@ -123,6 +127,33 @@ router.post(
     }
 
     res.status(201).json(data);
+  }
+);
+
+// POST /api/risks/service-suggestion — suggestion IA de risques/opportunités à partir d'un
+// service et d'une description libre de son activité (voir AiRiskSuggestion.jsx). Admin/manager
+// uniquement, comme la création de risques : rien n'est persisté ici, le frontend affiche les
+// suggestions dans une liste à cocher, chacune acceptée devient un POST /risks distinct (avec
+// ai_generated: true) — même mécanique que POST /haccp/steps/:stepId/hazard-suggestion.
+router.post(
+  '/service-suggestion',
+  requireRole('admin', 'manager'),
+  [
+    body('service_name').trim().notEmpty().withMessage('Le nom du service est requis.'),
+    body('context').trim().isLength({ min: 10 }).withMessage('Décrivez l’activité du service (10 caractères minimum).'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    try {
+      const suggestion = await generateRiskSuggestion({ serviceName: req.body.service_name, context: req.body.context });
+      res.json(suggestion);
+    } catch (err) {
+      res.status(503).json({ error: `Impossible de générer une suggestion IA : ${err.message}` });
+    }
   }
 );
 

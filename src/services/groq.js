@@ -153,3 +153,40 @@ Description : ${stepDescription || 'non renseignée'}`;
 export async function generateHaccpHazardSuggestion(stepData) {
   return callGroq(HACCP_HAZARD_SYSTEM_PROMPT, buildHazardUserPrompt(stepData));
 }
+
+const RISK_SUGGESTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (title, category, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de type reste l'un des identifiants anglais fixes ci-dessous.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "risks": [
+    {
+      "type": "risk",
+      "title": "string",
+      "category": "string",
+      "likelihood": 3,
+      "impact": 3,
+      "suggested_controls": "string"
+    }
+  ]
+}
+Où type vaut exactement 'risk' ou 'opportunity', et likelihood/impact sont des entiers entre 1 et 5 (échelle standard 1 = très improbable/négligeable, 5 = quasi certain/critique).`;
+
+const RISK_SUGGESTION_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001:2015 §6.1 — approche par les risques) qui aide à identifier les risques et opportunités d'un service ou d'une activité pour le registre des risques.
+
+À partir du nom et de la description d'un service/d'une activité fournis par l'utilisateur, identifie les risques ET opportunités raisonnablement susceptibles de le concerner, avec pour chacun une évaluation de probabilité (likelihood) et de gravité/impact (impact) sur une échelle de 1 à 5, ainsi que des mesures de maîtrise usuelles.
+
+Ne propose que des risques/opportunités pertinents pour l'activité décrite — pas une liste générique. Limite-toi à 5 éléments maximum, les plus significatifs.
+
+${RISK_SUGGESTION_RESPONSE_CONTRACT}`;
+
+function buildRiskSuggestionUserPrompt({ serviceName, context }) {
+  return `Service : ${serviceName}
+Description de l'activité : ${context}`;
+}
+
+// { serviceName, context } — voir POST /risks/service-suggestion. Rien n'est persisté par cet
+// appel : le frontend affiche les suggestions dans une liste à cocher (AiRiskSuggestion.jsx),
+// chaque risque/opportunité accepté devient une ligne risks distincte via POST /risks.
+export async function generateRiskSuggestion(data) {
+  return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data));
+}
