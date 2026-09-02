@@ -144,6 +144,33 @@ describe('GET /api/super-admin/health', () => {
   });
 });
 
+describe('GET /api/super-admin/backup-status', () => {
+  it('403 pour un admin de tenant classique', async () => {
+    tenant = await createTenant();
+    const res = await request(app).get('/api/super-admin/backup-status').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('renvoie last_local_backup (lu sur disque) et last_drive_backup sans jamais planter', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    const res = await request(app).get('/api/super-admin/backup-status').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect('last_local_backup' in res.body).toBe(true);
+    expect('last_drive_backup' in res.body).toBe(true);
+    // Pas d'appel à pg_dump ici (voir POST /backup, non couvert par des tests automatisés pour
+    // la même raison que les autres services qui shell-out) : soit un backup local existe déjà
+    // sur ce disque (exécution précédente, manuelle ou planifiée) et l'objet est bien formé,
+    // soit il n'y en a aucun et la valeur est explicitement null plutôt qu'une erreur.
+    if (res.body.last_local_backup) {
+      expect(typeof res.body.last_local_backup.filename).toBe('string');
+      expect(typeof res.body.last_local_backup.created_at).toBe('string');
+      expect(typeof res.body.last_local_backup.size_bytes).toBe('number');
+    }
+  });
+});
+
 describe('POST /api/super-admin/tenants — création', () => {
   it('crée un tenant vide et journalise l’action', async () => {
     tenant = await createTenant();

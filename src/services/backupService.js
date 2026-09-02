@@ -243,6 +243,26 @@ function getBackupPathByFilename(filename) {
   return path.join(backupsDir, safeName);
 }
 
+// La sauvegarde la plus récente sur disque fait foi (pas un horodatage suivi séparément en
+// base) : reflète toujours l'état réel des fichiers, y compris si une purge ou une exécution
+// manuelle a eu lieu hors du job planifié — jamais désynchronisé d'un compteur qu'on aurait pu
+// oublier de mettre à jour.
+function getLastLocalBackup() {
+  ensureBackupDirectory();
+  const files = fs.readdirSync(backupsDir).filter((file) => file.endsWith('.sql'));
+  if (files.length === 0) return null;
+
+  let latest = null;
+  for (const file of files) {
+    const stats = fs.statSync(path.join(backupsDir, file));
+    if (!latest || stats.mtimeMs > latest.mtimeMs) {
+      latest = { filename: file, mtimeMs: stats.mtimeMs, sizeBytes: stats.size };
+    }
+  }
+
+  return { filename: latest.filename, created_at: new Date(latest.mtimeMs).toISOString(), size_bytes: latest.sizeBytes };
+}
+
 function cleanupOldBackups(retentionDays = RETENTION_DAYS) {
   ensureBackupDirectory();
   const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
@@ -264,4 +284,4 @@ function cleanupOldBackups(retentionDays = RETENTION_DAYS) {
   return { deleted, kept: files.length - deleted.length };
 }
 
-export { backupsDir, runDatabaseBackup, restoreFromFile, getBackupPathByFilename, cleanupOldBackups };
+export { backupsDir, runDatabaseBackup, restoreFromFile, getBackupPathByFilename, getLastLocalBackup, cleanupOldBackups };

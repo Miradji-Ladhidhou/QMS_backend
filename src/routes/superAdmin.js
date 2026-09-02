@@ -8,6 +8,7 @@ import {
   runDatabaseBackup,
   restoreFromFile,
   getBackupPathByFilename,
+  getLastLocalBackup,
 } from '../services/backupService.js';
 import { uploadBackupToDrive, listDriveBackups, downloadFromDrive } from '../services/googleDriveService.js';
 import { slugify } from './auth.js';
@@ -553,6 +554,31 @@ router.get('/health', async (req, res) => {
     process_uptime_seconds: Math.round(process.uptime()),
     checked_at: new Date().toISOString(),
   });
+});
+
+// GET /api/super-admin/backup-status — dernière sauvegarde locale (lue directement sur
+// disque, voir getLastLocalBackup) et dernière sauvegarde Google Drive, pour repérer un job
+// planifié silencieusement en échec sans avoir à éplucher les logs Render. La partie Drive est
+// tolérante à l'échec (identifiants absents/invalides, API indisponible) : ne doit jamais faire
+// échouer l'affichage du statut local, qui lui ne dépend d'aucun service externe.
+router.get('/backup-status', async (req, res) => {
+  const lastLocalBackup = getLastLocalBackup();
+
+  let lastDriveBackup = null;
+  try {
+    const [mostRecent] = await listDriveBackups(1);
+    if (mostRecent) {
+      lastDriveBackup = {
+        name: mostRecent.name,
+        created_at: mostRecent.createdTime,
+        size_bytes: mostRecent.size ? Number(mostRecent.size) : null,
+      };
+    }
+  } catch {
+    // Drive non configuré ou indisponible : le statut local reste utile sans lui.
+  }
+
+  res.json({ last_local_backup: lastLocalBackup, last_drive_backup: lastDriveBackup });
 });
 
 // POST /api/super-admin/backup — sauvegarde locale (schéma public uniquement, voir
