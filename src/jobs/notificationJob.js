@@ -13,6 +13,7 @@ import {
 const REVIEW_WINDOW_DAYS = 30;
 const CAPA_WINDOW_DAYS = 7;
 const TRAINING_WINDOW_DAYS = 60;
+const TASK_WINDOW_DAYS = 3;
 
 function addDaysIso(days) {
   const date = new Date();
@@ -92,6 +93,21 @@ export async function getTrainingAlerts(tenantId) {
   return [...latestByPair.values()].filter((record) => record.next_due_date <= windowEnd);
 }
 
+// Tâches manuelles à échéance sous 3 jours, avec un assigné (compte) — fenêtre plus courte que
+// CAPA car les tâches du planning sont par nature plus ponctuelles/à court terme.
+export async function getTaskAlerts(tenantId) {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id, title, due_date, assigned_to')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'todo')
+    .not('assigned_to', 'is', null)
+    .lte('due_date', addDaysIso(TASK_WINDOW_DAYS));
+
+  if (error) throw new Error(`Alertes tâches : ${error.message}`);
+  return data;
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -142,10 +158,11 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts] = await Promise.all([
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts] = await Promise.all([
     getDocumentAlerts(tenantId),
     getCapaAlerts(tenantId),
     getTrainingAlerts(tenantId),
+    getTaskAlerts(tenantId),
   ]);
 
   for (const doc of documentAlerts) {
@@ -210,6 +227,27 @@ async function processTenant(tenantId) {
       notificationTitle: 'Formation à renouveler',
       notificationMessage: record.training?.title || '',
       notificationLink: '/trainings',
+    });
+  }
+
+  for (const task of taskAlerts) {
+    await maybeSendDigestItem({
+      tenantId,
+      userId: task.assigned_to,
+      prefField: 'email_task_due',
+      notificationType: 'task_due',
+      referenceId: task.id,
+      templateName: 'taskDue',
+      subject: `Tâche à échéance : ${task.title}`,
+      variables: {
+        taskTitle: task.title,
+        dueDate: task.due_date,
+        taskUrl: `${frontendUrl}/planning`,
+      },
+      weeklyRunToday,
+      notificationTitle: 'Tâche à échéance',
+      notificationMessage: task.title,
+      notificationLink: '/planning',
     });
   }
 }
