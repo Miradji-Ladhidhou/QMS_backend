@@ -791,6 +791,7 @@ create table user_notification_preferences (
   email_capa_overdue        boolean not null default true,
   email_training_renewal    boolean not null default true,
   email_approval_requests   boolean not null default true,
+  email_task_due            boolean not null default true,
   digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now()
@@ -956,6 +957,10 @@ create table tasks (
   assigned_employee_id  uuid references employees (id) on delete set null,
   created_by            uuid references users (id) on delete set null,
   category_id           uuid references categories (id) on delete set null,
+  priority              text not null default 'normal' check (priority in ('low', 'normal', 'high', 'urgent')),
+  checklist             jsonb not null default '[]',
+  recurrence            text not null default 'none' check (recurrence in ('none', 'daily', 'weekly', 'monthly')),
+  recurrence_interval   integer not null default 1 check (recurrence_interval > 0),
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now(),
   constraint tasks_assignee_check check (not (assigned_to is not null and assigned_employee_id is not null))

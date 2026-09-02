@@ -106,3 +106,116 @@ describe('Tasks — creation and self-service management', () => {
     expect(ok.body.assigned_employee.full_name).toBe('Léa Terrain');
   });
 });
+
+describe('Tasks — priorité et checklist', () => {
+  it('accepte priority et checklist valides, rejette les valeurs invalides', async () => {
+    tenant = await createTenant();
+
+    const invalidPriority = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche', due_date: '2026-06-01', priority: 'extreme' });
+    expect(invalidPriority.status).toBe(400);
+
+    const invalidChecklist = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche', due_date: '2026-06-01', checklist: [{ text: 'Étape 1' }] });
+    expect(invalidChecklist.status).toBe(400);
+
+    const ok = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        title: 'Tâche',
+        due_date: '2026-06-01',
+        priority: 'urgent',
+        checklist: [{ text: 'Étape 1', done: false }, { text: 'Étape 2', done: true }],
+      });
+    expect(ok.status).toBe(201);
+    expect(ok.body.priority).toBe('urgent');
+    expect(ok.body.checklist).toHaveLength(2);
+  });
+
+  it('sans priority/checklist explicites, retombe sur les valeurs par défaut', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche', due_date: '2026-06-01' });
+    expect(res.body.priority).toBe('normal');
+    expect(res.body.checklist).toEqual([]);
+  });
+});
+
+describe('Tasks — récurrence', () => {
+  it('clôturer une tâche hebdomadaire recrée automatiquement la prochaine occurrence', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        title: 'Contrôle hygiène',
+        due_date: '2026-06-01',
+        recurrence: 'weekly',
+        recurrence_interval: 1,
+        checklist: [{ text: 'Vérifier les frigos', done: false }],
+      });
+    expect(created.status).toBe(201);
+
+    const closed = await request(app)
+      .patch(`/api/tasks/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'done' });
+    expect(closed.status).toBe(200);
+
+    const list = await request(app).get('/api/tasks').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const next = list.body.find((t) => t.id !== created.body.id && t.title === 'Contrôle hygiène');
+    expect(next).toBeDefined();
+    expect(next.due_date).toBe('2026-06-08');
+    expect(next.status).toBe('todo');
+    expect(next.recurrence).toBe('weekly');
+    expect(next.checklist).toEqual([]);
+  });
+
+  it('clôturer une tâche non récurrente ne crée aucune occurrence', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche ponctuelle', due_date: '2026-06-01' });
+
+    await request(app)
+      .patch(`/api/tasks/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'done' });
+
+    const list = await request(app).get('/api/tasks').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(list.body).toHaveLength(1);
+  });
+
+  it('re-cocher "done" une tâche récurrente déjà terminée ne recrée pas une occurrence supplémentaire', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Tâche mensuelle', due_date: '2026-06-01', recurrence: 'monthly' });
+
+    await request(app)
+      .patch(`/api/tasks/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'done' });
+
+    await request(app)
+      .patch(`/api/tasks/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'done' });
+
+    const list = await request(app).get('/api/tasks').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(list.body).toHaveLength(2);
+  });
+});

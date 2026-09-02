@@ -270,7 +270,9 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, use
 export async function fetchTaskItems(tenantId, { personalUserId, userId, userRole }) {
   const { data, error } = await supabase
     .from('tasks')
-    .select('id, title, due_date, assigned_to, created_by, category_id, category:categories(id, is_restricted)')
+    .select(
+      'id, title, due_date, assigned_to, created_by, category_id, priority, checklist, recurrence, category:categories(id, is_restricted)'
+    )
     .eq('tenant_id', tenantId)
     .eq('status', 'todo');
 
@@ -294,6 +296,9 @@ export async function fetchTaskItems(tenantId, { personalUserId, userId, userRol
       link: '/planning',
       created_by: task.created_by,
       assigned_to: task.assigned_to,
+      priority: task.priority,
+      checklist: task.checklist,
+      recurrence: task.recurrence,
     })
   );
 }

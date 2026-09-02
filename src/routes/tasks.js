@@ -6,8 +6,31 @@ import { filterViewableByCategory, requireValidCategoryId } from '../middleware/
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
+const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
+const RECURRENCES = ['none', 'daily', 'weekly', 'monthly'];
 
 router.use(requireAuth);
+
+function isValidChecklist(value) {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => entry && typeof entry.text === 'string' && typeof entry.done === 'boolean')
+  );
+}
+
+// Prochaine échéance calculée depuis l'échéance d'origine (pas "aujourd'hui") pour ne pas
+// dériver si une tâche récurrente est clôturée en retard — voir la note de garde-fou plus bas.
+// Arithmétique en UTC de bout en bout (Date.UTC + setUTC*) : purement pour éviter qu'un
+// serveur dans un fuseau horaire différent d'UTC ne décale la date d'un jour en repassant par
+// des méthodes locales (getDate/setDate) autour de minuit — bug réel constaté en test.
+function nextDueDate(dueDate, recurrence, interval) {
+  const [year, month, day] = dueDate.split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (recurrence === 'daily') date.setUTCDate(date.getUTCDate() + interval);
+  else if (recurrence === 'weekly') date.setUTCDate(date.getUTCDate() + interval * 7);
+  else if (recurrence === 'monthly') date.setUTCMonth(date.getUTCMonth() + interval);
+  return date.toISOString().slice(0, 10);
+}
 
 // Un admin/manager peut tout gérer. Sinon, seuls le créateur et l'assigné peuvent modifier
 // ou supprimer une tâche — pour qu'un member reste capable de cocher/corriger ses propres
@@ -51,6 +74,10 @@ router.post(
     body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
     body('assigned_employee_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne assignée invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('priority').optional().isIn(PRIORITIES).withMessage('Priorité invalide.'),
+    body('checklist').optional().custom(isValidChecklist).withMessage('Checklist invalide.'),
+    body('recurrence').optional().isIn(RECURRENCES).withMessage('Récurrence invalide.'),
+    body('recurrence_interval').optional().isInt({ min: 1 }).withMessage('Intervalle de récurrence invalide.'),
   ],
   requireValidCategoryId('task'),
   async (req, res) => {
@@ -66,6 +93,10 @@ router.post(
       assigned_to: assignedTo,
       assigned_employee_id: assignedEmployeeId,
       category_id: categoryId,
+      priority,
+      checklist,
+      recurrence,
+      recurrence_interval: recurrenceInterval,
     } = req.body;
 
     if (assignedTo && assignedEmployeeId) {
@@ -82,6 +113,10 @@ router.post(
         assigned_to: assignedTo || null,
         assigned_employee_id: assignedEmployeeId || null,
         category_id: categoryId || null,
+        priority: priority || 'normal',
+        checklist: checklist || [],
+        recurrence: recurrence || 'none',
+        recurrence_interval: recurrenceInterval || 1,
         created_by: req.user.id,
       })
       .select(
@@ -145,6 +180,10 @@ router.patch(
       .isUUID()
       .withMessage('Personne assignée invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('priority').optional().isIn(PRIORITIES).withMessage('Priorité invalide.'),
+    body('checklist').optional().custom(isValidChecklist).withMessage('Checklist invalide.'),
+    body('recurrence').optional().isIn(RECURRENCES).withMessage('Récurrence invalide.'),
+    body('recurrence_interval').optional().isInt({ min: 1 }).withMessage('Intervalle de récurrence invalide.'),
   ],
   requireValidCategoryId('task'),
   async (req, res) => {
@@ -155,7 +194,9 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('tasks')
-      .select('id, created_by, assigned_to')
+      .select(
+        'id, created_by, assigned_to, assigned_employee_id, category_id, title, description, due_date, status, priority, recurrence, recurrence_interval'
+      )
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -185,9 +226,35 @@ router.patch(
       if (update.assigned_employee_id) update.assigned_to = null;
     }
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
+    if ('priority' in req.body) update.priority = req.body.priority;
+    if ('checklist' in req.body) update.checklist = req.body.checklist;
+    if ('recurrence' in req.body) update.recurrence = req.body.recurrence;
+    if ('recurrence_interval' in req.body) update.recurrence_interval = req.body.recurrence_interval;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    // Clôture d'une tâche récurrente : on recrée la prochaine occurrence à partir de
+    // l'échéance D'ORIGINE (existing.due_date), jamais "aujourd'hui" — sinon une tâche
+    // hebdomadaire complétée en retard verrait sa cadence dériver au fil des semaines.
+    const isClosingRecurring = existing.status !== 'done' && update.status === 'done' && existing.recurrence !== 'none';
+    if (isClosingRecurring) {
+      await supabase.from('tasks').insert({
+        tenant_id: req.tenantId,
+        title: existing.title,
+        description: existing.description,
+        due_date: nextDueDate(existing.due_date, existing.recurrence, existing.recurrence_interval),
+        status: 'todo',
+        assigned_to: existing.assigned_to,
+        assigned_employee_id: existing.assigned_employee_id,
+        category_id: existing.category_id,
+        priority: existing.priority,
+        checklist: [],
+        recurrence: existing.recurrence,
+        recurrence_interval: existing.recurrence_interval,
+        created_by: req.user.id,
+      });
     }
 
     const { data, error } = await supabase
