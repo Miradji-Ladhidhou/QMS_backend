@@ -127,6 +127,9 @@ create table documents (
   -- null, id de fichier Google Drive si 'google_drive' — ne jamais interpréter file_path sans
   -- vérifier storage_provider d'abord.
   storage_provider text,
+  -- Opt-in par document (admin/manager) : voir document_acknowledgments plus bas pour la trace
+  -- réelle des accusés — false par défaut, n'affecte aucun document existant.
+  requires_acknowledgment boolean not null default false,
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now(),
   unique (tenant_id, number)
@@ -784,6 +787,21 @@ create table document_audit_log (
   created_at  timestamptz not null default now()
 );
 
+-- Accusé de lecture ISO 9001 : qui a lu quelle VERSION d'un document, quand. La contrainte
+-- unique fait tout le travail — bumper la version d'un document rend automatiquement tout le
+-- monde "pas encore lu" pour la nouvelle version, sans purge ni job, en gardant l'historique
+-- complet des anciens accusés. Réservé aux documents où documents.requires_acknowledgment est
+-- activé (opt-in admin/manager, voir routes/documents.js).
+create table document_acknowledgments (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  document_id     uuid not null references documents (id) on delete cascade,
+  version         text not null,
+  user_id         uuid not null references users (id) on delete cascade,
+  acknowledged_at timestamptz not null default now(),
+  unique (document_id, user_id, version)
+);
+
 create table user_notification_preferences (
   user_id                   uuid primary key references users (id) on delete cascade,
   tenant_id                 uuid not null references tenants (id) on delete cascade,
@@ -1215,6 +1233,9 @@ create index idx_document_audit_log_tenant_id on document_audit_log (tenant_id);
 create index idx_document_audit_log_document_id on document_audit_log (document_id);
 create index idx_document_audit_log_created_at on document_audit_log (created_at);
 
+create index idx_document_acknowledgments_tenant_id on document_acknowledgments (tenant_id);
+create index idx_document_acknowledgments_document_id on document_acknowledgments (document_id);
+
 create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
 
 create index idx_notification_log_tenant_id on notification_log (tenant_id);
@@ -1504,6 +1525,7 @@ alter table kpi_calculation_configs enable row level security;
 alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
+alter table document_acknowledgments enable row level security;
 alter table user_notification_preferences enable row level security;
 alter table notification_log enable row level security;
 alter table notifications enable row level security;
@@ -1714,6 +1736,11 @@ create policy document_audit_log_select on document_audit_log
 
 create policy document_audit_log_insert on document_audit_log
   for insert
+  with check (tenant_id = auth_tenant_id());
+
+create policy document_acknowledgments_isolation on document_acknowledgments
+  for all
+  using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
 
 create policy user_notification_preferences_isolation on user_notification_preferences

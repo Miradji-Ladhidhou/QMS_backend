@@ -655,12 +655,24 @@ router.get('/:id', requireCategoryPermission('view', resolveDocumentById), async
     items: refCapas || [],
   });
 
+  // Accusé de lecture de l'utilisateur courant POUR LA VERSION COURANTE uniquement — un bump de
+  // version rend cette valeur naturellement null pour tout le monde (voir la contrainte unique
+  // document_id/user_id/version), sans purge ni job.
+  const { data: myAcknowledgment } = await supabase
+    .from('document_acknowledgments')
+    .select('acknowledged_at, version')
+    .eq('document_id', document.id)
+    .eq('version', document.version)
+    .eq('user_id', req.user.id)
+    .maybeSingle();
+
   res.json({
     ...document,
     versions,
     workflow: workflow ? { ...workflow, approvals } : null,
     can_edit: canEdit,
     linked_capas: linkedCapas.map((capa) => ({ id: capa.id, number: capa.number, title: capa.title, status: capa.status })),
+    my_acknowledgment: myAcknowledgment || null,
   });
 });
 
@@ -1317,6 +1329,81 @@ router.get('/:id/audit-log', requireCategoryPermission('view', resolveDocumentBy
   res.json(data);
 });
 
+// POST /api/documents/:id/acknowledge — accusé de lecture ISO 9001, pour la version COURANTE.
+// Upsert idempotent : re-acquitter la même version ne crée pas de doublon (contrainte unique
+// document_id/user_id/version) — ré-acquitter après un bump de version crée naturellement une
+// nouvelle ligne, aucun code de "réinitialisation" nécessaire.
+router.post('/:id/acknowledge', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
+  const { data: document, error: documentError } = await supabase
+    .from('documents')
+    .select('id, version')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (documentError || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const { data: acknowledgment, error } = await supabase
+    .from('document_acknowledgments')
+    .upsert(
+      { tenant_id: req.tenantId, document_id: document.id, version: document.version, user_id: req.user.id },
+      { onConflict: 'document_id,user_id,version', ignoreDuplicates: false }
+    )
+    .select()
+    .single();
+
+  if (error || !acknowledgment) {
+    return res.status(500).json({ error: "Erreur lors de l'enregistrement de l'accusé de lecture." });
+  }
+
+  await logAudit({
+    tenantId: req.tenantId,
+    documentId: document.id,
+    userId: req.user.id,
+    action: 'acknowledged',
+    details: { version: document.version },
+  });
+
+  res.status(201).json(acknowledgment);
+});
+
+// GET /api/documents/:id/acknowledgments — qui a lu / qui n'a pas encore lu la version
+// courante, réservé admin/manager. La liste "pending" compare aux utilisateurs ACTIFS du
+// tenant (comme les alertes de formation) : un compte désactivé n'a plus besoin d'acquitter.
+router.get('/:id/acknowledgments', requireRole('admin', 'manager'), async (req, res) => {
+  const { data: document, error: documentError } = await supabase
+    .from('documents')
+    .select('id, version')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (documentError || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  const [{ data: acknowledgments, error: ackError }, { data: activeUsers, error: usersError }] = await Promise.all([
+    supabase
+      .from('document_acknowledgments')
+      .select('user_id, acknowledged_at, user:users(id, full_name)')
+      .eq('document_id', document.id)
+      .eq('version', document.version)
+      .order('acknowledged_at', { ascending: false }),
+    supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).eq('is_active', true),
+  ]);
+
+  if (ackError || usersError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les accusés de lecture.' });
+  }
+
+  const acknowledgedUserIds = new Set(acknowledgments.map((a) => a.user_id));
+  const pending = activeUsers.filter((user) => !acknowledgedUserIds.has(user.id));
+
+  res.json({ acknowledged: acknowledgments, pending });
+});
+
 // PATCH /api/documents/bulk-category — déplace plusieurs documents d'un coup vers une
 // catégorie. admin/manager uniquement, comme le déplacement en masse des 10 autres modules
 // (capas.js etc.) : pas de vérification de permission catégorie par document, un déplacement
@@ -1441,6 +1528,7 @@ router.patch(
       .isInt({ min: 1 })
       .withMessage('Fréquence de révision invalide.')
       .toInt(),
+    body('requires_acknowledgment').optional().isBoolean().withMessage('Valeur invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -1448,7 +1536,7 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const patchableFields = ['version', 'created_at', 'review_date', 'review_frequency_months'];
+    const patchableFields = ['version', 'created_at', 'review_date', 'review_frequency_months', 'requires_acknowledgment'];
     if (!patchableFields.some((field) => field in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
@@ -1460,6 +1548,7 @@ router.patch(
     if ('review_frequency_months' in req.body) {
       update.review_frequency_months = req.body.review_frequency_months || null;
     }
+    if ('requires_acknowledgment' in req.body) update.requires_acknowledgment = req.body.requires_acknowledgment;
 
     const { data, error } = await supabase
       .from('documents')

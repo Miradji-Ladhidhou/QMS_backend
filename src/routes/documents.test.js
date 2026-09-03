@@ -254,6 +254,126 @@ describe('GET /api/documents/:id — champ can_edit', () => {
   });
 });
 
+describe('POST /api/documents/:id/acknowledge — accusé de lecture', () => {
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${token}`)
+      .field('number', number)
+      .field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('crée un accusé de lecture, reflété dans my_acknowledgment', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-001');
+
+    const before = await request(app).get(`/api/documents/${doc.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(before.body.my_acknowledgment).toBeNull();
+
+    const ack = await request(app)
+      .post(`/api/documents/${doc.id}/acknowledge`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(ack.status).toBe(201);
+
+    const after = await request(app).get(`/api/documents/${doc.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(after.body.my_acknowledgment).not.toBeNull();
+    expect(after.body.my_acknowledgment.version).toBe(doc.version);
+  });
+
+  it('ré-acquitter la même version est idempotent (pas de doublon)', async () => {
+    tenant = await createTenant();
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-002');
+
+    await request(app).post(`/api/documents/${doc.id}/acknowledge`).set('Authorization', `Bearer ${tenant.admin.token}`).expect(201);
+    await request(app).post(`/api/documents/${doc.id}/acknowledge`).set('Authorization', `Bearer ${tenant.admin.token}`).expect(201);
+
+    const { data } = await admin.from('document_acknowledgments').select('id').eq('document_id', doc.id);
+    expect(data).toHaveLength(1);
+  });
+
+  it('bumper la version remet my_acknowledgment à null pour tout le monde', async () => {
+    tenant = await createTenant();
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-003');
+
+    await request(app).post(`/api/documents/${doc.id}/acknowledge`).set('Authorization', `Bearer ${tenant.admin.token}`).expect(201);
+
+    await request(app)
+      .post(`/api/documents/${doc.id}/versions/bump`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(201);
+
+    const res = await request(app).get(`/api/documents/${doc.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.my_acknowledgment).toBeNull();
+
+    // L'historique de l'ancienne version reste intact.
+    const { data } = await admin.from('document_acknowledgments').select('id').eq('document_id', doc.id);
+    expect(data).toHaveLength(1);
+  });
+
+  it('404 pour un member sans accès à une catégorie restreinte', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Restreinte ack', is_restricted: true })
+      .select()
+      .single();
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-004', { category_id: category.id });
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/acknowledge`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/documents/:id/acknowledgments', () => {
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${token}`)
+      .field('number', number)
+      .field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('403 pour un member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-005');
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.id}/acknowledgments`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it("liste acknowledged/pending pour un admin, un utilisateur désactivé n'apparaît pas dans pending", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+    const doc = await createDocument(tenant.admin.token, 'DOC-ACK-006');
+
+    await request(app).post(`/api/documents/${doc.id}/acknowledge`).set('Authorization', `Bearer ${memberA.token}`).expect(201);
+    await admin.from('users').update({ is_active: false }).eq('id', memberB.id);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.id}/acknowledgments`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.acknowledged.map((a) => a.user_id)).toContain(memberA.id);
+    expect(res.body.pending.map((u) => u.id)).not.toContain(memberB.id);
+    expect(res.body.pending.map((u) => u.id)).not.toContain(memberA.id);
+  });
+});
+
 describe('GET /api/documents/:id — champ linked_capas (traçabilité inverse)', () => {
   it('liste les CAPA qui référencent ce document via ref_document', async () => {
     tenant = await createTenant();
