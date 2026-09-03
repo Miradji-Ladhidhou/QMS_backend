@@ -745,3 +745,109 @@ describe('GET /api/procedures/:id/pdf', () => {
     expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
   });
 });
+
+describe('Pièce jointe de version (attachment)', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('400 explicite quand Google Drive n’est pas activé pour le tenant (pas de repli Supabase)', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-100');
+    const version = await createVersion(tenant.admin.token, procedure.id);
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure-officielle.pdf');
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Google Drive/);
+  });
+
+  it('refusée pour un autre rédacteur, et une fois la version soumise', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [author, other] = tenant.users;
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-101');
+    const version = await createVersion(author.token, procedure.id);
+
+    const forbidden = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .attach('file', Buffer.from('contenu'), 'fichier.pdf');
+    expect(forbidden.status).toBe(403);
+
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${author.token}`)
+      .expect(200);
+
+    const afterSubmit = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${author.token}`)
+      .attach('file', Buffer.from('contenu'), 'fichier.pdf');
+    expect(afterSubmit.status).toBe(409);
+  });
+
+  it('une pièce jointe est récupérable via GET /api/procedures/:id (détail), et retirable', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-102');
+    const version = await createVersion(tenant.admin.token, procedure.id);
+
+    // L'upload réel passe par Google Drive (voir le test précédent : refusé sans connexion
+    // configurée), indisponible dans cet environnement de test — on simule directement ce que
+    // la route persiste après un upload réussi, pour vérifier ce qui est demandé : que la
+    // pièce jointe déjà attachée ressort bien de l'API de détail, dans les deux sens.
+    const { error: seedError } = await admin
+      .from('procedure_versions')
+      .update({ attachment_drive_file_id: 'fake-drive-file-id', attachment_file_name: 'procedure-officielle.pdf' })
+      .eq('id', version.id);
+    expect(seedError).toBeNull();
+
+    const detail = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detail.status).toBe(200);
+    const versionInDetail = detail.body.versions.find((v) => v.id === version.id);
+    expect(versionInDetail.attachment_file_name).toBe('procedure-officielle.pdf');
+    expect(versionInDetail.attachment_drive_file_id).toBe('fake-drive-file-id');
+
+    const removed = await request(app)
+      .delete(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(removed.status).toBe(200);
+    expect(removed.body.attachment_file_name).toBeNull();
+
+    const detailAfter = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detailAfter.body.versions.find((v) => v.id === version.id).attachment_file_name).toBeNull();
+  });
+
+  it('GET .../attachment : 404 sans pièce jointe, url signée quand elle existe', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-103');
+    const version = await createVersion(tenant.admin.token, procedure.id);
+
+    const missing = await request(app)
+      .get(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(missing.status).toBe(404);
+
+    await admin
+      .from('procedure_versions')
+      .update({ attachment_drive_file_id: 'fake-drive-file-id', attachment_file_name: 'procedure-officielle.pdf' })
+      .eq('id', version.id);
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.url).toContain('/api/documents/drive-file?ticket=');
+  });
+});

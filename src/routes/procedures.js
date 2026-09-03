@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -6,11 +7,20 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildProcedurePdf } from '../services/procedurePdf.js';
+import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
+import { signDownloadTicket } from '../services/driveDownloadTicket.js';
+import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
 import {
   generateProcedureDraft,
   checkProcedureTemplateCompliance,
   compareProcedureVersions,
 } from '../services/groq.js';
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  defParamCharset: 'utf8',
+});
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
@@ -448,6 +458,111 @@ router.put(
     res.json(data);
   }
 );
+
+// POST /api/procedures/:id/versions/:versionId/attachment — pièce jointe EN COMPLÉMENT du
+// contenu structuré, jamais à sa place (voir schema.sql) : le document officiel que le client
+// possédait déjà, attaché tel quel à une version encore en brouillon. Drive-only, pas de repli
+// Supabase comme documents.js — un tenant qui n'a pas activé Drive n'a simplement pas cette
+// fonctionnalité (message actionnable ci-dessous), plutôt que de réimporter tout le mécanisme
+// dual-provider (dossiers de catégorie, ticket de prévisualisation...) pour une pièce jointe
+// occasionnelle. Même garde que PUT ci-dessus : auteur ou admin/manager, brouillon uniquement.
+router.post('/:id/versions/:versionId/attachment', upload.single('file'), async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  if (!canActOnVersion(req, version)) {
+    return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+  }
+  if (version.status !== 'draft') {
+    return res.status(409).json({ error: 'Seul un brouillon peut recevoir une pièce jointe.' });
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'Aucun fichier reçu.' });
+  }
+
+  let storage;
+  try {
+    storage = await resolveTenantStorageProvider(req.tenantId);
+  } catch (err) {
+    return res.status(409).json({ error: err.message });
+  }
+  if (storage.provider !== 'google_drive') {
+    return res.status(400).json({
+      error:
+        "Google Drive n'est pas activé pour votre entreprise — activez-le depuis Paramètres > Documents pour joindre un fichier.",
+    });
+  }
+
+  let driveFileId;
+  try {
+    driveFileId = await uploadFileToDrive(storage.accessToken, {
+      name: req.file.originalname,
+      mimeType: safeStorageContentType(req.file.mimetype),
+      buffer: req.file.buffer,
+      parentFolderId: storage.connection.root_folder_id,
+    });
+  } catch (uploadError) {
+    console.error("Échec de l'upload d'une pièce jointe de procédure vers Google Drive :", uploadError);
+    return res.status(500).json({ error: "Échec de l'upload vers Google Drive." });
+  }
+
+  const { data, error } = await supabase
+    .from('procedure_versions')
+    .update({ attachment_drive_file_id: driveFileId, attachment_file_name: req.file.originalname })
+    .eq('id', version.id)
+    .select()
+    .single();
+
+  if (error || !data) {
+    return res.status(500).json({ error: "Erreur lors de l'enregistrement de la pièce jointe." });
+  }
+
+  res.status(201).json(data);
+});
+
+// DELETE /api/procedures/:id/versions/:versionId/attachment — détache le fichier (ne le
+// supprime jamais du Drive du tenant, qui reste seul propriétaire de ce qu'il y stocke) — même
+// garde que l'ajout.
+router.delete('/:id/versions/:versionId/attachment', async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  if (!canActOnVersion(req, version)) {
+    return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+  }
+  if (version.status !== 'draft') {
+    return res.status(409).json({ error: 'Seul un brouillon peut être modifié.' });
+  }
+
+  const { data, error } = await supabase
+    .from('procedure_versions')
+    .update({ attachment_drive_file_id: null, attachment_file_name: null })
+    .eq('id', version.id)
+    .select()
+    .single();
+
+  if (error || !data) {
+    return res.status(500).json({ error: 'Erreur lors du retrait de la pièce jointe.' });
+  }
+
+  res.json(data);
+});
+
+// GET /api/procedures/:id/versions/:versionId/attachment — lien de téléchargement à durée de
+// vie courte, même proxy signé que documents.js (GET /api/documents/drive-file) : le ticket ne
+// porte que tenantId/fileId/fileName, il n'a jamais eu besoin de savoir qu'un document ou une
+// procédure l'a émis.
+router.get('/:id/versions/:versionId/attachment', async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  if (!version.attachment_drive_file_id) {
+    return res.status(404).json({ error: 'Aucune pièce jointe pour cette version.' });
+  }
+
+  const ticket = signDownloadTicket(req.tenantId, version.attachment_drive_file_id, version.attachment_file_name);
+  res.json({ url: `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(ticket)}` });
+});
 
 // POST /api/procedures/:id/versions/:versionId/check-compliance — vérifie le contenu de cette
 // version contre le gabarit du tenant. Rien n'est persisté (ni le résultat, ni un flag sur la

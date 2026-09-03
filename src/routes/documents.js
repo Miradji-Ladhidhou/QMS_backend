@@ -30,6 +30,8 @@ import {
 } from '../middleware/documentPermissions.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
+import { resolveTenantStorageProvider } from '../services/tenantStorage.js';
+import { getTicketSecret, signDownloadTicket } from '../services/driveDownloadTicket.js';
 
 const router = Router();
 // defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
@@ -83,34 +85,8 @@ function safeStorageContentType(mimetype) {
   return ACTIVE_CONTENT_TYPES.has(mimetype) ? 'application/octet-stream' : mimetype;
 }
 
-function getTicketSecret() {
-  const secret = process.env.ENCRYPTION_KEY;
-  if (!secret) {
-    const err = new Error('ENCRYPTION_KEY est manquant.');
-    err.statusCode = 500;
-    throw err;
-  }
-  return secret;
-}
-
-// Ticket signé, à durée de vie courte, pour /drive-file : cette route est atteinte par une
-// navigation navigateur classique (window.open depuis le frontend), qui ne porte pas notre
-// en-tête Authorization — elle ne peut donc pas passer par requireAuth comme le reste de ce
-// routeur. La permission de consultation est déjà vérifiée avant l'émission du ticket (par
-// requireCategoryPermission sur GET /:id/download et GET /:id/versions/:versionId/download) ;
-// le ticket transporte directement le fileId Drive déjà résolu (pas un id de document/version)
-// pour que ce même proxy serve indifféremment un document courant ou une ancienne version
-// archivée, sans avoir à re-consulter la bonne table pour savoir laquelle. Nom de fichier
-// encodé en base64url : évite qu'un ':' dans un nom de fichier réel ne casse le split ci-dessous.
-const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000;
-
-function signDownloadTicket(tenantId, driveFileId, fileName, disposition = 'attachment') {
-  const expiresAt = Date.now() + DOWNLOAD_TICKET_TTL_MS;
-  const fileNameB64 = Buffer.from(fileName || '', 'utf8').toString('base64url');
-  const payload = `${tenantId}:${driveFileId}:${fileNameB64}:${expiresAt}:${disposition}`;
-  const signature = createHmac('sha256', getTicketSecret()).update(payload).digest('hex');
-  return `${payload}.${signature}`;
-}
+// La permission de consultation est déjà vérifiée avant l'émission du ticket (par
+// requireCategoryPermission sur GET /:id/download et GET /:id/versions/:versionId/download).
 
 function verifyDownloadTicket(ticket) {
   const raw = String(ticket || '');
@@ -248,49 +224,6 @@ async function getTenantDriveAccessToken(tenantId) {
     console.error('Échec du rafraîchissement du token Google Drive :', refreshError.message);
     const err = new Error('La connexion Google Drive a expiré — reconnectez-vous depuis Paramètres > Documents.');
     err.statusCode = 409;
-    throw err;
-  }
-}
-
-// Résout où un nouvel upload doit atterrir pour ce tenant. Ne retombe JAMAIS silencieusement
-// sur Supabase si Google Drive est activé mais inutilisable (connexion révoquée, refresh en
-// échec) : un repli silencieux disperserait les documents entre deux stockages sans que
-// personne ne le remarque avant longtemps. err.driveConnectionError marque cette erreur pour
-// que l'appelant renvoie un message actionnable ("reconnectez-vous") plutôt qu'un 500 générique.
-async function resolveTenantStorageProvider(tenantId) {
-  const { data: settings } = await supabase
-    .from('tenant_storage_settings')
-    .select('storage_provider')
-    .eq('tenant_id', tenantId)
-    .maybeSingle();
-
-  if (!settings || settings.storage_provider !== 'google_drive') {
-    return { provider: 'supabase' };
-  }
-
-  const { data: connection, error } = await supabase
-    .from('google_drive_connections')
-    .select('*')
-    .eq('tenant_id', tenantId)
-    .maybeSingle();
-
-  if (error || !connection) {
-    const err = new Error(
-      "Google Drive est activé pour votre entreprise mais aucune connexion n'a été trouvée — reconnectez-vous depuis Paramètres > Documents."
-    );
-    err.driveConnectionError = true;
-    throw err;
-  }
-
-  try {
-    const accessToken = await refreshAccessTokenIfNeeded(connection);
-    return { provider: 'google_drive', connection, accessToken };
-  } catch (refreshError) {
-    console.error('Échec du rafraîchissement du token Google Drive (upload) :', refreshError.message);
-    const err = new Error(
-      'La connexion Google Drive a expiré ou a été révoquée — reconnectez-vous depuis Paramètres > Documents.'
-    );
-    err.driveConnectionError = true;
     throw err;
   }
 }

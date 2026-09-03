@@ -841,6 +841,14 @@ create table procedure_versions (
   -- Motif de rejet ("retour au rédacteur avec commentaire") — même nom que
   -- document_approvals.comment.
   comment       text,
+  -- Pièce jointe optionnelle (procédure officielle déjà mise en forme, PDF/Word) EN
+  -- COMPLÉMENT du contenu structuré, jamais à sa place : le contenu structuré garde tous ses
+  -- usages (génération IA, vérification de conformité, comparateur de versions), la pièce
+  -- jointe est juste le document source que le client possédait déjà. Même mécanisme que
+  -- documents.file_path (Google Drive du tenant, voir services/tenantStorage.js) mais
+  -- Drive-only ici, pas de repli Supabase : voir le résumé de session pour la justification.
+  attachment_drive_file_id  text,
+  attachment_file_name      text,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
