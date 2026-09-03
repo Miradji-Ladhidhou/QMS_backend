@@ -193,6 +193,52 @@ router.get('/:id', async (req, res) => {
   });
 });
 
+// DELETE /api/procedures/:id — suppression réelle, réservée aux procédures qui n'ont JAMAIS
+// quitté le brouillon : dès qu'une version a été soumise ne serait-ce qu'une fois (même
+// rejetée depuis), elle fait partie de la piste d'audit et ne doit plus jamais disparaître —
+// c'est exactement pour ce cas que le statut "obsolete" existe (voir /:id/obsolete). Réservé à
+// l'auteur de la procédure ou à un admin (pas manager : contrairement à valider/rejeter, ce
+// n'est pas une décision qualité sur le contenu, mais une correction d'erreur de saisie).
+router.delete('/:id', async (req, res) => {
+  const { data: procedure, error } = await supabase
+    .from('procedures')
+    .select('id, created_by')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (error || !procedure) {
+    return res.status(404).json({ error: 'Procédure introuvable.' });
+  }
+  if (req.userRole !== 'admin' && procedure.created_by !== req.user.id) {
+    return res.status(403).json({ error: "Seul l'auteur de la procédure ou un admin peut la supprimer." });
+  }
+
+  const { data: nonDraftVersions, error: versionsError } = await supabase
+    .from('procedure_versions')
+    .select('id')
+    .eq('procedure_id', procedure.id)
+    .neq('status', 'draft')
+    .limit(1);
+
+  if (versionsError) {
+    return res.status(500).json({ error: 'Impossible de vérifier les versions de cette procédure.' });
+  }
+  if (nonDraftVersions.length > 0) {
+    return res.status(400).json({
+      error:
+        'Cette procédure a déjà été soumise au moins une fois et fait partie de la piste d\'audit : elle ne peut plus être supprimée, seulement marquée obsolète.',
+    });
+  }
+
+  const { error: deleteError } = await supabase.from('procedures').delete().eq('id', procedure.id);
+  if (deleteError) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+  }
+
+  res.status(204).end();
+});
+
 // POST /api/procedures — création (statut brouillon), ouvert à tout rôle authentifié, même
 // esprit que POST /api/capas (n'importe qui peut ouvrir un enregistrement qualité). Aucune
 // version n'est créée ici : POST /:id/versions s'en charge séparément, une procédure peut donc

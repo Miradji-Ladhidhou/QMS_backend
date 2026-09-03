@@ -619,3 +619,68 @@ describe('Traçabilité inverse Procédures <-> CAPA', () => {
     }
   });
 });
+
+describe('DELETE /api/procedures/:id', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('refusée dès qu\'une version a été soumise au moins une fois, même rejetée depuis', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-080');
+    const version = await createVersion(tenant.admin.token, procedure.id);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/reject`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ comment: 'À revoir.' })
+      .expect(200);
+
+    const res = await request(app)
+      .delete(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(400);
+
+    const { data: stillThere } = await admin.from('procedures').select('id').eq('id', procedure.id).maybeSingle();
+    expect(stillThere).not.toBeNull();
+  });
+
+  it("acceptée quand toutes les versions sont encore en brouillon ; réservée à l'auteur ou à un admin (pas un manager)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'member' }] });
+    const [manager, other] = tenant.users;
+    const procedure = await createProcedure(other.token, 'PROC-081');
+    await createVersion(other.token, procedure.id);
+
+    const forbiddenManager = await request(app)
+      .delete(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${manager.token}`);
+    expect(forbiddenManager.status).toBe(403);
+
+    const res = await request(app)
+      .delete(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${other.token}`);
+    expect(res.status).toBe(204);
+
+    const { data: gone } = await admin.from('procedures').select('id').eq('id', procedure.id).maybeSingle();
+    expect(gone).toBeNull();
+  });
+
+  it('un admin peut supprimer la procédure brouillon de quelqu’un d’autre', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const procedure = await createProcedure(member.token, 'PROC-082');
+
+    const res = await request(app)
+      .delete(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(204);
+  });
+});
