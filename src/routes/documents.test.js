@@ -254,6 +254,56 @@ describe('GET /api/documents/:id — champ can_edit', () => {
   });
 });
 
+describe('GET /api/documents/:id — champ linked_capas (traçabilité inverse)', () => {
+  it('liste les CAPA qui référencent ce document via ref_document', async () => {
+    tenant = await createTenant();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-LINKCAPA-001')
+      .field('title', 'Procédure référencée');
+
+    const capa = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA liée', ref_document: doc.body.id });
+    expect(capa.status).toBe(201);
+
+    const res = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.linked_capas).toHaveLength(1);
+    expect(res.body.linked_capas[0]).toMatchObject({ id: capa.body.id, title: 'CAPA liée' });
+  });
+
+  it("un member sans accès à la catégorie restreinte de la CAPA ne la voit pas dans linked_capas", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'CAPA restreinte', resource_type: 'capa', is_restricted: true })
+      .select()
+      .single();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-LINKCAPA-002')
+      .field('title', 'Procédure référencée 2');
+
+    await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA restreinte liée', ref_document: doc.body.id, category_id: category.id })
+      .expect(201);
+
+    const res = await request(app).get(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.linked_capas).toEqual([]);
+  });
+});
+
 // Bug réel rapporté : un membre appartenait à un groupe autorisé sur une catégorie restreinte,
 // et l'admin voulait lui masquer spécifiquement cette catégorie malgré son groupe — l'ancienne
 // logique retombait sur le groupe dès que la règle directe n'était pas "true", laissant les

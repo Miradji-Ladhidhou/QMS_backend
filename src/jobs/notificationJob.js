@@ -14,6 +14,7 @@ const REVIEW_WINDOW_DAYS = 30;
 const CAPA_WINDOW_DAYS = 7;
 const TRAINING_WINDOW_DAYS = 60;
 const TASK_WINDOW_DAYS = 3;
+const APPROVAL_REMINDER_AFTER_DAYS = 3;
 
 function addDaysIso(days) {
   const date = new Date();
@@ -108,6 +109,38 @@ export async function getTaskAlerts(tenantId) {
   return data;
 }
 
+// Approbations toujours en attente plus de 3 jours après l'ouverture du workflow — se répète
+// ensuite une fois par jour (via la déduplication de notification_log, comme les autres
+// alertes) tant que l'approbateur n'a pas décidé, jusqu'à ce que le workflow disparaisse du lot
+// (approuvé/rejeté). Deux requêtes séparées plutôt qu'un filtre sur la relation embarquée
+// (document_workflows.status) : plus simple à lire, même style que getTrainingAlerts.
+export async function getStaleApprovalAlerts(tenantId) {
+  const cutoff = addDaysIso(-APPROVAL_REMINDER_AFTER_DAYS);
+  const { data: workflows, error } = await supabase
+    .from('document_workflows')
+    .select('id, document:documents(id, number, title)')
+    .eq('tenant_id', tenantId)
+    .eq('status', 'pending')
+    .lte('created_at', cutoff);
+
+  if (error) throw new Error(`Alertes approbations en attente : ${error.message}`);
+  if (!workflows || workflows.length === 0) return [];
+
+  const { data: pendingApprovals, error: approvalsError } = await supabase
+    .from('document_approvals')
+    .select('id, workflow_id, approver_id')
+    .in(
+      'workflow_id',
+      workflows.map((w) => w.id)
+    )
+    .eq('decision', 'pending');
+
+  if (approvalsError) throw new Error(`Alertes approbations en attente : ${approvalsError.message}`);
+
+  const workflowsById = new Map(workflows.map((w) => [w.id, w]));
+  return pendingApprovals.map((approval) => ({ ...approval, workflow: workflowsById.get(approval.workflow_id) }));
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -158,11 +191,12 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts] = await Promise.all([
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals] = await Promise.all([
     getDocumentAlerts(tenantId),
     getCapaAlerts(tenantId),
     getTrainingAlerts(tenantId),
     getTaskAlerts(tenantId),
+    getStaleApprovalAlerts(tenantId),
   ]);
 
   for (const doc of documentAlerts) {
@@ -248,6 +282,28 @@ async function processTenant(tenantId) {
       notificationTitle: 'Tâche à échéance',
       notificationMessage: task.title,
       notificationLink: '/planning',
+    });
+  }
+
+  for (const approval of staleApprovals) {
+    const document = approval.workflow.document;
+    await maybeSendDigestItem({
+      tenantId,
+      userId: approval.approver_id,
+      prefField: 'email_approval_requests',
+      notificationType: 'approval_reminder',
+      referenceId: approval.id,
+      templateName: 'approvalReminder',
+      subject: `Rappel : approbation en attente — ${document.number}`,
+      variables: {
+        documentNumber: document.number,
+        documentTitle: document.title,
+        documentUrl: `${frontendUrl}/documents/${document.id}`,
+      },
+      weeklyRunToday,
+      notificationTitle: 'Rappel : approbation en attente',
+      notificationMessage: `${document.number} — ${document.title}`,
+      notificationLink: `/documents/${document.id}`,
     });
   }
 }

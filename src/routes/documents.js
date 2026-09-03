@@ -618,7 +618,29 @@ router.get('/:id', requireCategoryPermission('view', resolveDocumentById), async
     permission: 'edit',
   });
 
-  res.json({ ...document, versions, workflow: workflow ? { ...workflow, approvals } : null, can_edit: canEdit });
+  // Traçabilité inverse : capas.ref_document pointe déjà vers ce document, mais rien n'affichait
+  // le lien dans l'autre sens jusqu'ici. Passé par filterViewableByCategory (système générique
+  // de catégories des CAPA, distinct de celui des documents) pour ne jamais révéler une CAPA
+  // d'une catégorie restreinte à quelqu'un qui n'y a pas accès.
+  const { data: refCapas } = await supabase
+    .from('capas')
+    .select('id, number, title, status, category_id, category:categories(id, is_restricted)')
+    .eq('tenant_id', req.tenantId)
+    .eq('ref_document', document.id);
+
+  const linkedCapas = await filterViewableByCategory({
+    userId: req.user.id,
+    userRole: req.userRole,
+    items: refCapas || [],
+  });
+
+  res.json({
+    ...document,
+    versions,
+    workflow: workflow ? { ...workflow, approvals } : null,
+    can_edit: canEdit,
+    linked_capas: linkedCapas.map((capa) => ({ id: capa.id, number: capa.number, title: capa.title, status: capa.status })),
+  });
 });
 
 // GET /api/documents/:id/certificate — certificat PDF de signature électronique
