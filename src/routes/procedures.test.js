@@ -684,3 +684,64 @@ describe('DELETE /api/procedures/:id', () => {
     expect(res.status).toBe(204);
   });
 });
+
+describe('GET /api/procedures/:id/pdf', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('400 tant qu’aucune version n’existe', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-090');
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(400);
+  });
+
+  it('génère un PDF pour la version courante, avec sections du gabarit, documents associés, et encadré obsolescence', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-091');
+    const version = await createVersion(tenant.admin.token, procedure.id, {
+      content: {
+        objet: 'Objet de test',
+        domaine_application: 'Domaine de test',
+        responsabilites: 'Responsabilités de test',
+        sections: [
+          { key: 'etapes', label: 'Étapes du processus', content: 'Détail des étapes.' },
+          { key: 'enregistrements', label: 'Enregistrements', content: 'Détail des enregistrements.' },
+        ],
+        documents_associes: ['Formulaire F-01', 'Formulaire F-02'],
+      },
+    });
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/obsolete`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ reason: 'Test PDF.' })
+      .expect(200);
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+  });
+});

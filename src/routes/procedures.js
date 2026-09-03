@@ -4,6 +4,8 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { buildProcedurePdf } from '../services/procedurePdf.js';
 import {
   generateProcedureDraft,
   checkProcedureTemplateCompliance,
@@ -79,9 +81,19 @@ router.get(
       return res.status(400).json({ error: 'Paramètres invalides.', details: errors.array() });
     }
 
+    // Auteur/validateur/date de validation de la version courante embarqués directement ici
+    // (plutôt que de laisser le frontend les redemander par procédure) : c'est ce que
+    // consomme l'export CSV/Excel de la liste (voir Procedures.jsx), qui doit refléter
+    // exactement ce qui est affiché à l'écran, filtres compris.
     let queryBuilder = supabase
       .from('procedures')
-      .select('*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status)')
+      .select(
+        `*, current_version:procedure_versions!procedures_current_version_id_fkey(
+          id, version, status, validated_at,
+          author:users!procedure_versions_author_id_fkey(id, full_name),
+          validator:users!procedure_versions_validator_id_fkey(id, full_name)
+        )`
+      )
       .eq('tenant_id', req.tenantId)
       .order('number', { ascending: true });
 
@@ -191,6 +203,48 @@ router.get('/:id', async (req, res) => {
     linked_capas: capaLinks.map((link) => link.capa),
     linked_audits: auditLinks.map((link) => link.audit),
   });
+});
+
+// GET /api/procedures/:id/pdf — rapport imprimable d'une procédure (numérotation des
+// sections, encadré "Important" pour l'obsolescence/le retard de révision déjà signalés à
+// l'écran, historique des versions en bas). Chemin à deux segments : ne rentre jamais en
+// conflit avec GET /:id ci-dessus, même principe que /:id/pdf dans qqoqccp.js. Imprime la
+// version COURANTE si elle existe, sinon la plus récente quel que soit son statut — jamais de
+// blocage tant qu'au moins une version a été rédigée.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: procedure, error } = await supabase
+    .from('procedures')
+    .select('*, obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !procedure) {
+    return res.status(404).json({ error: 'Procédure introuvable.' });
+  }
+
+  const { data: versions, error: versionsError } = await supabase
+    .from('procedure_versions')
+    .select('*, author:users!procedure_versions_author_id_fkey(id, full_name), validator:users!procedure_versions_validator_id_fkey(id, full_name)')
+    .eq('procedure_id', procedure.id)
+    .order('created_at', { ascending: false });
+
+  if (versionsError) {
+    return res.status(500).json({ error: "Impossible de récupérer l'historique des versions." });
+  }
+  if (!versions || versions.length === 0) {
+    return res.status(400).json({ error: "Cette procédure n'a encore aucune version à imprimer." });
+  }
+
+  const version = versions.find((v) => v.id === procedure.current_version_id) || versions[0];
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildProcedurePdf({ tenantName: tenant?.name, tenantLogo, procedure, version, versions });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${procedure.number}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // DELETE /api/procedures/:id — suppression réelle, réservée aux procédures qui n'ont JAMAIS
