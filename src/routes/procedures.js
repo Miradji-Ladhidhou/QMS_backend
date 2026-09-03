@@ -310,6 +310,45 @@ async function fetchVersionForAction(req, res) {
   return version;
 }
 
+// PUT /api/procedures/:id/versions/:versionId — modifie le contenu d'une version tant qu'elle
+// est encore "draft" uniquement : une fois soumise, submit/validate/reject prennent le relais
+// et le contenu ne bouge plus (voir NewVersionModal côté frontend pour le seul autre moyen de
+// changer du contenu, qui crée lui une toute nouvelle version). Même garde d'auteur que
+// submit (canActOnVersion) : celui qui a écrit garde la main sur son propre brouillon.
+router.put(
+  '/:id/versions/:versionId',
+  [body('content').isObject().withMessage('Contenu invalide.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const version = await fetchVersionForAction(req, res);
+    if (!version) return;
+
+    if (!canActOnVersion(req, version)) {
+      return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+    }
+    if (version.status !== 'draft') {
+      return res.status(409).json({ error: 'Seul un brouillon peut être modifié.' });
+    }
+
+    const { data, error } = await supabase
+      .from('procedure_versions')
+      .update({ content: req.body.content })
+      .eq('id', version.id)
+      .select('*, author:users!procedure_versions_author_id_fkey(id, full_name)')
+      .single();
+
+    if (error || !data) {
+      return res.status(500).json({ error: 'Erreur lors de la modification.' });
+    }
+
+    res.json(data);
+  }
+);
+
 // POST /api/procedures/:id/versions/:versionId/check-compliance — vérifie le contenu de cette
 // version contre le gabarit du tenant. Rien n'est persisté (ni le résultat, ni un flag sur la
 // version) : c'est une aide avant soumission, pas une décision enregistrée.

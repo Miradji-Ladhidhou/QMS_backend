@@ -307,6 +307,101 @@ describe('Workflow submit / validate / reject', () => {
   });
 });
 
+describe('PUT /api/procedures/:id/versions/:versionId', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('modifie le contenu tant que la version est "draft" ; refusé pour tout autre statut, et pour un autre rédacteur', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const [other] = tenant.users;
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-030');
+    const version = await createVersion(tenant.admin.token, procedure.id, { content: { objet: 'Brouillon initial' } });
+
+    const forbidden = await request(app)
+      .put(`/api/procedures/${procedure.id}/versions/${version.id}`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .send({ content: { objet: 'Tentative non autorisée' } });
+    expect(forbidden.status).toBe(403);
+
+    const edited = await request(app)
+      .put(`/api/procedures/${procedure.id}/versions/${version.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ content: { objet: 'Objet corrigé' } });
+    expect(edited.status).toBe(200);
+    expect(edited.body.content.objet).toBe('Objet corrigé');
+    expect(edited.body.version).toBe(version.version);
+
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+
+    const afterSubmit = await request(app)
+      .put(`/api/procedures/${procedure.id}/versions/${version.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ content: { objet: 'Trop tard' } });
+    expect(afterSubmit.status).toBe(409);
+  });
+});
+
+describe('Reprise du contenu après un rejet', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  // La reprise elle-même (previousContent = version rejetée, pas la version approuvée) est
+  // une décision de sélection côté ProcedureDetail.jsx — ce projet n'a pas de suite de tests
+  // frontend. Ce test vérifie le contrat de données dont cette logique dépend : GET /:id
+  // renvoie les versions plus récentes d'abord, donc "la dernière rejetée" est bien la
+  // première trouvée par un .find(status === 'rejected'), avec son contenu intact.
+  it('GET /:id renvoie la dernière version rejetée (et pas une plus ancienne) avec son contenu propre', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-031');
+
+    const v1 = await createVersion(tenant.admin.token, procedure.id, { content: { objet: 'Premier essai' } });
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${v1.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${v1.id}/reject`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ comment: 'Section responsabilités incomplète.' })
+      .expect(200);
+
+    const v2 = await createVersion(tenant.admin.token, procedure.id, { content: { objet: 'Deuxième essai, corrigé' } });
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${v2.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${v2.id}/reject`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ comment: 'Toujours incomplet.' })
+      .expect(200);
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+
+    const lastRejected = res.body.versions.find((v) => v.status === 'rejected');
+    expect(lastRejected.id).toBe(v2.id);
+    expect(lastRejected.content.objet).toBe('Deuxième essai, corrigé');
+  });
+});
+
 describe('POST /api/procedures/:id/acknowledge', () => {
   it('400 sans version approuvée, 201 une fois une version validée, idempotent', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
