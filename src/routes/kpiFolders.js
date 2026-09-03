@@ -2,11 +2,13 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 const MAX_ANCESTOR_DEPTH = 30;
 
 router.use(requireAuth);
+router.use(requireMenuVisible('kpis'));
 
 // Remonte la chaîne des parents jusqu'à la racine, pour le fil d'Ariane et pour détecter
 // les cycles avant un déplacement (voir PATCH ci-dessous). Une boucle de requêtes plutôt

@@ -14,6 +14,7 @@ import {
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 
@@ -23,6 +24,7 @@ const RENEWAL_WINDOW_DAYS = 60;
 const DOCUMENT_REVIEW_WINDOW_DAYS = 30;
 
 router.use(requireAuth);
+router.use(requireMenuVisible('dashboard'));
 
 function isoDateInDays(days) {
   const date = new Date();

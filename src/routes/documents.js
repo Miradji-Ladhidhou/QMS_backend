@@ -29,6 +29,7 @@ import {
   isQualifiedApprover,
 } from '../middleware/documentPermissions.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 // defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
@@ -178,6 +179,7 @@ router.get('/drive-file', async (req, res) => {
 });
 
 router.use(requireAuth);
+router.use(requireMenuVisible('documents'));
 
 function bumpVersion(version) {
   const match = /^(\d+)\.(\d+)$/.exec(version ?? '');

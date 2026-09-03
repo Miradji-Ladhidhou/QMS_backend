@@ -4,6 +4,7 @@ import { parse } from 'csv-parse/sync';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { KPI_CALC_TYPES, RECORDS_SELECT } from './kpis.js';
 import { groupRowsByPeriod, normalizeAnyDate, summarizeGroups, validateFilters } from '../services/kpiCalculation.js';
 import { parseExcelBuffer } from '../services/excelParsing.js';
@@ -13,6 +14,7 @@ const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.use(requireAuth);
+router.use(requireMenuVisible('kpis'));
 
 // Les exports Excel FR utilisent souvent le point-virgule, et un copier-coller depuis Excel
 // enregistré tel quel produit un fichier tabulé (onglets) — on détecte le séparateur le plus

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import {
   generateProcedureDraft,
   checkProcedureTemplateCompliance,
@@ -13,6 +14,7 @@ const MANAGER_ROLES = ['admin', 'manager'];
 const PROCEDURE_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('procedures'));
 
 // Même logique que bumpVersion (documents.js) : "1.0" -> "1.1", 1.0 par défaut pour la
 // toute première version d'une procédure.

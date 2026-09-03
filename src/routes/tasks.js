@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -10,6 +11,7 @@ const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
 const RECURRENCES = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
 
 router.use(requireAuth);
+router.use(requireMenuVisible('planning'));
 
 function isValidChecklist(value) {
   return (

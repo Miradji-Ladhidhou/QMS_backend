@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 
 router.use(requireAuth);
+router.use(requireMenuVisible('procedures'));
 
 // GET /api/procedure-templates — le gabarit du tenant courant. Contrairement à GET /api/tenant,
 // pas de ligne par défaut créée automatiquement en base : un tenant qui n'a encore rien

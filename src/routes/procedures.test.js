@@ -330,4 +330,22 @@ describe('GET /api/procedures — filtres', () => {
     expect(bySearch.status).toBe(200);
     expect(bySearch.body.map((p) => p.number)).toEqual(['PROC-040']);
   });
+
+  it("n'expose jamais les procédures d'un autre tenant, même à un admin", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      await createProcedure(tenant.admin.token, 'PROC-050');
+      await createProcedure(otherTenant.admin.token, 'PROC-051');
+
+      const res = await request(app)
+        .get('/api/procedures')
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.map((p) => p.number)).toEqual(['PROC-050']);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
 });

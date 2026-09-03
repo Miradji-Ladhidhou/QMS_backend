@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '../services/serviceScope.js';
 import {
   fetchCapaItems,
@@ -14,6 +15,7 @@ import {
 
 const router = Router();
 router.use(requireAuth);
+router.use(requireMenuVisible('planning'));
 
 // GET /api/planning — agrège CAPA/documents/formations/tâches/audits/réclamations/risques en
 // une liste chronologique unique, avec le même filtrage par rôle et par service que
