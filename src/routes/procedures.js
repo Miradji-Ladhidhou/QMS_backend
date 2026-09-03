@@ -20,6 +20,7 @@ import {
   generateProcedureDistributionSheet,
   suggestProcedureRevisionFromCapa,
 } from '../services/groq.js';
+import { createProcedureFullDraftJob, runProcedureFullDraftJob } from '../services/procedureFullDraftJob.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -30,6 +31,12 @@ const upload = multer({
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
 const PROCEDURE_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
+
+// Pas de système de quota générique dans l'app (voir middleware/rateLimit.js, un limiteur
+// anti-abus par IP, sans lien avec un coût IA par tenant) : garde-fou minimal et pragmatique
+// contre un usage intensif de cette fonctionnalité plus coûteuse en appels (~1 plan + 1 par
+// sous-section par génération), plutôt qu'un vrai sous-système de quota.
+const MAX_FULL_DRAFT_JOBS_PER_DAY = 15;
 
 router.use(requireAuth);
 router.use(requireMenuVisible('procedures'));
@@ -86,6 +93,71 @@ router.post(
     }
   }
 );
+
+// POST /api/procedures/generate-full-draft — même principe que /generate-draft (rien n'est
+// persisté par cette route elle-même, le frontend propose juste le résultat dans l'éditeur),
+// mais lance un pipeline multi-appels asynchrone (voir services/procedureFullDraftJob.js) au
+// lieu d'un unique appel Groq synchrone : la réponse renvoie immédiatement un job à suivre via
+// GET /generation-jobs/:jobId ci-dessous plutôt que d'attendre les ~10-15 appels IA en ligne.
+router.post(
+  '/generate-full-draft',
+  [body('subject').trim().isLength({ min: 3 }).withMessage('Le sujet est requis (3 caractères minimum).')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count } = await supabase
+      .from('procedure_generation_jobs')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', req.tenantId)
+      .gte('created_at', since);
+
+    if ((count || 0) >= MAX_FULL_DRAFT_JOBS_PER_DAY) {
+      return res
+        .status(429)
+        .json({ error: "Trop de générations complètes IA aujourd'hui pour votre entreprise. Réessayez demain." });
+    }
+
+    const template = await fetchTenantTemplate(req.tenantId);
+    let job;
+    try {
+      job = await createProcedureFullDraftJob({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        subject: req.body.subject,
+        template,
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+
+    runProcedureFullDraftJob(job.id).catch((err) => console.error('Échec du job de génération complète :', err));
+
+    res.status(202).json(job);
+  }
+);
+
+// GET /api/procedures/generation-jobs/:jobId — état d'avancement d'un job lancé par
+// /generate-full-draft ci-dessus, interrogé par le frontend via polling (pas de WebSocket/SSE
+// dans cette app — voir le plan). Ouvert à tout rôle authentifié du tenant, comme le reste du
+// module.
+router.get('/generation-jobs/:jobId', async (req, res) => {
+  const { data, error } = await supabase
+    .from('procedure_generation_jobs')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.jobId)
+    .maybeSingle();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Job de génération introuvable.' });
+  }
+
+  res.json(data);
+});
 
 // POST /api/procedures/generate-draft-from-qqoqccp — même principe que /generate-draft ci-
 // dessus (rien n'est persisté, préremplit juste le formulaire de création), mais informé par

@@ -83,6 +83,74 @@ function drawSubSection(doc, number, title, body) {
   doc.moveDown(0.7);
 }
 
+// Le modèle préfixe parfois lui-même action.text par une numérotation malgré la consigne du
+// prompt (voir services/procedureFullDraftJob.js#stripLeadingNumbering, même correctif
+// appliqué ici indépendamment car ce renderer lit subsection.actions directement, pas le texte
+// à plat déjà nettoyé de section.content).
+function stripLeadingNumbering(text) {
+  return (text || '').replace(/^\s*\d+[.)]\s*/, '');
+}
+
+// Sévérité -> couleurs déjà définies pour drawImportantBox ci-dessus (mêmes RED/AMBER que les
+// bannières d'obsolescence/retard) — un simple bandeau neutre pour "info" ('Important').
+const CALLOUT_STYLES = {
+  danger: { color: RED, background: RED_LIGHT, label: 'DANGER' },
+  warning: { color: AMBER, background: AMBER_LIGHT, label: 'ATTENTION' },
+  info: { color: NAVY, background: NAVY_LIGHT, label: 'IMPORTANT' },
+};
+
+// Rendu d'une section issue du pipeline de génération complète (voir
+// services/procedureFullDraftJob.js) : contrairement à drawSubSection ci-dessus (un seul bloc
+// de texte plat), chaque sous-section du plan est rendue individuellement avec son propre
+// encadré coloré si elle porte un callout — plutôt que de laisser le callout fondu dans le
+// texte plat de section.content.
+function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections) {
+  doc.fontSize(11).fillColor(NAVY).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.moveDown(0.4);
+
+  subsections.forEach((subsection, index) => {
+    doc
+      .fontSize(10.5)
+      .fillColor(NAVY)
+      .text(`${sectionNumber}.${index + 1} ${subsection.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.moveDown(0.2);
+
+    if (subsection.generation_status === 'failed') {
+      doc
+        .fontSize(10)
+        .fillColor(MUTED)
+        .text('À compléter manuellement — la génération automatique de cette sous-section a échoué.', PAGE_MARGIN, doc.y, {
+          width: CONTENT_WIDTH,
+        });
+      doc.moveDown(0.7);
+      return;
+    }
+
+    if (subsection.intro) {
+      doc.fontSize(10).fillColor(INK).text(subsection.intro, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.moveDown(0.3);
+    }
+
+    (subsection.actions || []).forEach((action, actionIndex) => {
+      doc
+        .fontSize(10)
+        .fillColor(INK)
+        .text(`${actionIndex + 1}. ${stripLeadingNumbering(action.text)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      (action.sub_bullets || []).forEach((bullet) => {
+        doc.fontSize(9.5).fillColor(INK).text(`•  ${bullet}`, PAGE_MARGIN + 14, doc.y, { width: CONTENT_WIDTH - 14 });
+      });
+    });
+    doc.moveDown(0.3);
+
+    if (subsection.callout) {
+      const style = CALLOUT_STYLES[subsection.callout.severity] || CALLOUT_STYLES.info;
+      drawImportantBox(doc, { ...style, text: subsection.callout.text });
+    }
+
+    doc.moveDown(0.4);
+  });
+}
+
 // procedure : ligne procedures (avec obsoleted_by_user résolu). version : la version dont le
 // contenu est imprimé — l'appelant choisit laquelle (voir routes/procedures.js#pdf : la
 // courante si elle existe, sinon la plus récente, jamais un blocage tant qu'AU MOINS une
@@ -142,7 +210,11 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       doc.fontSize(11).fillColor(NAVY).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.4);
       sections.forEach((section, index) => {
-        drawSubSection(doc, `4.${index + 1}`, section.label, section.content);
+        if (section.subsections?.length) {
+          drawGeneratedSection(doc, `4.${index + 1}`, section.label, section.subsections);
+        } else {
+          drawSubSection(doc, `4.${index + 1}`, section.label, section.content);
+        }
       });
     }
 

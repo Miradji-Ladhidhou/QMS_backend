@@ -886,6 +886,44 @@ create table procedure_templates (
   updated_at           timestamptz not null default now()
 );
 
+-- Un job de génération IA "document complet" par exécution (voir
+-- services/procedureFullDraftJob.js) : contrairement à generate-draft (transitoire, un seul
+-- appel Groq, jamais persisté), ce pipeline enchaîne ~10-15 appels séquentiels (1 plan + 1 par
+-- sous-section) et doit survivre à un redémarrage du process (hébergement Render, tiers non
+-- payant redémarrable) — un état en mémoire serait perdu au premier restart en cours de
+-- génération. procedure_id volontairement absent : comme generate-draft, ce pipeline tourne
+-- AVANT que la procédure existe (formulaire de création) aussi bien qu'après (nouvelle
+-- version) ; result contient le contenu assemblé, jamais persisté automatiquement dans
+-- procedure_versions — c'est au frontend de le proposer dans l'éditeur puis de l'enregistrer
+-- normalement via POST/PUT .../versions. Sert aussi de journal pour le garde-fou d'usage (voir
+-- routes/procedures.js) : pas de table de quota dédiée, on compte les lignes récentes ici.
+create table procedure_generation_jobs (
+  id                  uuid primary key default gen_random_uuid(),
+  tenant_id           uuid not null references tenants (id) on delete cascade,
+  created_by          uuid references users (id) on delete set null,
+  subject             text not null,
+  -- Copie de procedure_templates.section_structure/fixed_instructions au moment du
+  -- lancement — jamais relu depuis procedure_templates une fois le job démarré, pour ne pas
+  -- mélanger deux gabarits si l'admin le modifie pendant l'exécution.
+  template_snapshot   jsonb not null,
+  status              text not null default 'pending' check (status in ('pending', 'running', 'completed', 'failed')),
+  total_steps         integer,
+  completed_steps     integer not null default 0,
+  current_step_label  text,
+  -- {objet, domaine_application, responsabilites, sections, documents_associes, ai_generation}
+  -- — voir assembleProcedureFullDraft() ; rempli seulement quand status = 'completed'.
+  result              jsonb,
+  -- Sous-sections tombées en erreur (réseau ou JSON illisible) et remplacées par un texte
+  -- "à compléter manuellement" plutôt que de faire échouer tout le document.
+  -- [{section_key, subsection_title}].
+  failed_subsections  jsonb not null default '[]',
+  -- Rempli seulement sur un échec TOTAL (l'étape de plan elle-même a échoué) — jamais sur un
+  -- échec partiel d'une sous-section, qui reste dans failed_subsections ci-dessus.
+  error               text,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+
 -- Accusé de lecture par VERSION (chaque procedure_versions est déjà une ligne stable et
 -- immuable une fois publiée, contrairement à documents qui mute en place) — plus simple que
 -- document_acknowledgments, qui doit matcher un numéro de version texte faute de ligne dédiée
@@ -1363,6 +1401,10 @@ create index idx_procedure_versions_tenant_id on procedure_versions (tenant_id);
 create index idx_procedure_versions_procedure_id on procedure_versions (procedure_id);
 create index idx_procedure_versions_search_vector on procedure_versions using gin (search_vector);
 create index idx_procedure_templates_tenant_id on procedure_templates (tenant_id);
+
+create index idx_procedure_generation_jobs_tenant_id on procedure_generation_jobs (tenant_id);
+create index idx_procedure_generation_jobs_tenant_created_at on procedure_generation_jobs (tenant_id, created_at);
+
 create index idx_procedure_acknowledgments_tenant_id on procedure_acknowledgments (tenant_id);
 create index idx_procedure_acknowledgments_procedure_version_id on procedure_acknowledgments (procedure_version_id);
 create index idx_procedure_capa_links_tenant_id on procedure_capa_links (tenant_id);
@@ -1578,6 +1620,9 @@ create trigger trg_procedure_versions_updated_at before update on procedure_vers
 create trigger trg_procedure_templates_updated_at before update on procedure_templates
   for each row execute function set_updated_at();
 
+create trigger trg_procedure_generation_jobs_updated_at before update on procedure_generation_jobs
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -1723,6 +1768,7 @@ alter table document_acknowledgments enable row level security;
 alter table procedures enable row level security;
 alter table procedure_versions enable row level security;
 alter table procedure_templates enable row level security;
+alter table procedure_generation_jobs enable row level security;
 alter table procedure_acknowledgments enable row level security;
 alter table procedure_capa_links enable row level security;
 alter table procedure_audit_links enable row level security;
@@ -1954,6 +2000,11 @@ create policy procedure_versions_isolation on procedure_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy procedure_templates_isolation on procedure_templates
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy procedure_generation_jobs_isolation on procedure_generation_jobs
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

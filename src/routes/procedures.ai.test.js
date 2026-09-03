@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
 import * as groq from '../services/groq.js';
+import { createProcedureFullDraftJob, runProcedureFullDraftJob } from '../services/procedureFullDraftJob.js';
 
 // Première introduction du mock dans ce projet (voir le reste de la suite Procédures, qui
 // vérifie les chemins permission/validation et laisse l'appel IA réel "vérifié manuellement",
@@ -20,6 +21,8 @@ vi.mock('../services/groq.js', async (importOriginal) => {
     checkProcedureTemplateCompliance: vi.fn(),
     generateProcedureDistributionSheet: vi.fn(),
     suggestProcedureRevisionFromCapa: vi.fn(),
+    generateProcedureFullPlan: vi.fn(),
+    generateProcedureSubsectionContent: vi.fn(),
   };
 });
 
@@ -309,5 +312,193 @@ describe('POST /api/procedures/:id/suggest-revision-from-capa (IA mockée)', () 
     expect(capaData.title).toBe('Non-conformité récurrente');
     expect(capaData.root_cause).toBe('Étape manquante dans la procédure');
     expect(currentContent.objet).toBe('Objet actuel');
+  });
+});
+
+// Crée le job directement via le service (pas via POST /generate-full-draft) : cette route
+// lance elle-même runProcedureFullDraftJob en fire-and-forget dès l'appel, ce qui entrerait en
+// concurrence avec l'appel explicite fait par ces tests (deux exécutions du pipeline se
+// disputeraient les mêmes mockResolvedValueOnce). Le comportement fire-and-forget de la route
+// elle-même est vérifié séparément, sans mock, dans le describe ci-dessous.
+async function createJobDirectly(tenant, subject, sectionStructure) {
+  return createProcedureFullDraftJob({
+    tenantId: tenant.tenantId,
+    userId: tenant.admin.id,
+    subject,
+    template: { section_structure: sectionStructure, fixed_instructions: null },
+  });
+}
+
+describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
+  it('assemble un document complet, une entrée par section du gabarit dans l’ordre, avec la continuité du résumé glissant', async () => {
+    tenant = await createTenant();
+
+    groq.generateProcedureFullPlan.mockResolvedValueOnce({
+      objet: 'Objet complet',
+      domaine_application: 'Domaine complet',
+      responsabilites: 'Responsabilités complètes',
+      documents_associes: ['Fiche de suivi'],
+      plan: [{ key: 'processus', label: 'Processus', subsections: ['Réception', 'Contrôle final'] }],
+    });
+    groq.generateProcedureSubsectionContent
+      .mockResolvedValueOnce({
+        intro: 'Introduction de la réception.',
+        actions: [{ text: 'Vérifier le bon de commande.', sub_bullets: [] }],
+        summary_sentence: 'La réception a été décrite.',
+        callout: null,
+      })
+      .mockResolvedValueOnce({
+        intro: 'Introduction du contrôle final.',
+        actions: [{ text: 'Contrôler la conformité.', sub_bullets: ['Vérifier le poids'] }],
+        summary_sentence: 'Le contrôle final a été décrit.',
+        callout: { severity: 'danger', text: 'Ne jamais expédier un colis non contrôlé.' },
+      });
+
+    const job = await createJobDirectly(tenant, 'procédure de préparation de commande', [
+      { key: 'processus', label: 'Processus' },
+    ]);
+    expect(job.status).toBe('pending');
+
+    await runProcedureFullDraftJob(job.id);
+
+    const jobRes = await request(app)
+      .get(`/api/procedures/generation-jobs/${job.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(jobRes.status).toBe(200);
+    expect(jobRes.body.status).toBe('completed');
+    expect(jobRes.body.completed_steps).toBe(2);
+    expect(jobRes.body.total_steps).toBe(2);
+
+    const { result } = jobRes.body;
+    expect(result.objet).toBe('Objet complet');
+    expect(result.sections).toHaveLength(1);
+    expect(result.sections[0].key).toBe('processus');
+    expect(result.sections[0].subsections).toHaveLength(2);
+    expect(result.sections[0].content).toContain('Réception');
+    expect(result.sections[0].content).toContain('Contrôle final');
+    expect(result.sections[0].content).toContain('Danger : Ne jamais expédier un colis non contrôlé.');
+
+    // Continuité : le 2e appel de sous-section reçoit le résumé du 1er.
+    const secondCallArgs = groq.generateProcedureSubsectionContent.mock.calls[1][0];
+    expect(secondCallArgs.rollingSummary).toContain('La réception a été décrite.');
+    expect(secondCallArgs.wantsCallout).toBe(true); // "Contrôle final" contient le mot-clé "contrôle"
+  });
+
+  it('ne fait pas échouer tout le document si une sous-section échoue — la marque à compléter manuellement et continue', async () => {
+    tenant = await createTenant();
+
+    groq.generateProcedureFullPlan.mockResolvedValueOnce({
+      objet: 'Objet',
+      domaine_application: 'Domaine',
+      responsabilites: 'Responsabilités',
+      documents_associes: [],
+      plan: [{ key: 'processus', label: 'Processus', subsections: ['Étape 1', 'Étape 2'] }],
+    });
+    groq.generateProcedureSubsectionContent
+      .mockRejectedValueOnce(new Error('Réponse Groq mal formée.'))
+      .mockResolvedValueOnce({
+        intro: 'Introduction étape 2.',
+        actions: [{ text: 'Action de l’étape 2.', sub_bullets: [] }],
+        summary_sentence: 'Étape 2 décrite.',
+        callout: null,
+      });
+
+    const job = await createJobDirectly(tenant, 'procédure de test', [{ key: 'processus', label: 'Processus' }]);
+
+    await runProcedureFullDraftJob(job.id);
+
+    const jobRes = await request(app)
+      .get(`/api/procedures/generation-jobs/${job.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(jobRes.body.status).toBe('completed');
+    expect(groq.generateProcedureSubsectionContent).toHaveBeenCalledTimes(2);
+    expect(jobRes.body.failed_subsections).toEqual([{ section_key: 'processus', subsection_title: 'Étape 1' }]);
+    expect(jobRes.body.result.sections[0].content).toContain('À compléter manuellement');
+    expect(jobRes.body.result.sections[0].content).toContain('Étape 2 décrite'.split(' ')[0]);
+  });
+
+  it('échec total si l’étape de plan échoue — status failed, aucun appel de sous-section', async () => {
+    tenant = await createTenant();
+    groq.generateProcedureFullPlan.mockRejectedValueOnce(new Error('Quota Groq dépassé : réessayez plus tard.'));
+
+    const job = await createJobDirectly(tenant, 'procédure de test', [{ key: 'processus', label: 'Processus' }]);
+
+    await runProcedureFullDraftJob(job.id);
+
+    const jobRes = await request(app)
+      .get(`/api/procedures/generation-jobs/${job.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(jobRes.body.status).toBe('failed');
+    expect(jobRes.body.error).toContain('Quota Groq');
+    expect(groq.generateProcedureSubsectionContent).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/procedures/generate-full-draft (validation, garde-fou, isolation)', () => {
+  it('400 sur un sujet vide ou trop court', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .post('/api/procedures/generate-full-draft')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject: 'ab' });
+    expect(res.status).toBe(400);
+    expect(groq.generateProcedureFullPlan).not.toHaveBeenCalled();
+  });
+
+  it('429 au-delà de 15 générations complètes dans les dernières 24h, sans compter une génération plus ancienne', async () => {
+    tenant = await createTenant();
+
+    const recentRows = Array.from({ length: 15 }, () => ({
+      tenant_id: tenant.tenantId,
+      subject: 'sujet',
+      template_snapshot: { section_structure: [] },
+      status: 'completed',
+    }));
+    await admin.from('procedure_generation_jobs').insert(recentRows);
+    await admin.from('procedure_generation_jobs').insert({
+      tenant_id: tenant.tenantId,
+      subject: 'ancien',
+      template_snapshot: { section_structure: [] },
+      status: 'completed',
+      created_at: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
+    });
+
+    const res = await request(app)
+      .post('/api/procedures/generate-full-draft')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject: 'un sujet valide' });
+    expect(res.status).toBe(429);
+  });
+
+  it('isole les jobs par tenant (404 depuis un autre tenant) et 404 sur un id inconnu', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      groq.generateProcedureFullPlan.mockResolvedValueOnce({
+        objet: 'Objet',
+        domaine_application: 'Domaine',
+        responsabilites: 'Responsabilités',
+        documents_associes: [],
+        plan: [],
+      });
+
+      const postRes = await request(app)
+        .post('/api/procedures/generate-full-draft')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ subject: 'un sujet valide' });
+      expect(postRes.status).toBe(202);
+
+      const foreign = await request(app)
+        .get(`/api/procedures/generation-jobs/${postRes.body.id}`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(foreign.status).toBe(404);
+
+      const unknown = await request(app)
+        .get('/api/procedures/generation-jobs/00000000-0000-0000-0000-000000000000')
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(unknown.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
   });
 });
