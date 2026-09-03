@@ -39,6 +39,8 @@ import planningRoutes from './routes/planning.js';
 import superAdminRoutes from './routes/superAdmin.js';
 import reportsRoutes from './routes/reports.js';
 import driveIntegrationRoutes from './routes/driveIntegration.js';
+import proceduresRoutes from './routes/procedures.js';
+import procedureTemplatesRoutes from './routes/procedureTemplates.js';
 
 // Échoue au démarrage plutôt qu'en silence — même principe que services/supabase.js pour
 // SUPABASE_URL/SUPABASE_SERVICE_KEY. Sans ça, un FRONTEND_URL absent en production ferait
@@ -103,6 +105,8 @@ app.use('/api/planning', planningRoutes);
 app.use('/api/super-admin', superAdminRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/drive', driveIntegrationRoutes);
+app.use('/api/procedures', proceduresRoutes);
+app.use('/api/procedure-templates', procedureTemplatesRoutes);
 
 // Filet de sécurité final : toute erreur qui atteint ce point (throw synchrone, rejet async
 // grâce à express-async-errors ci-dessus, ou next(err) explicite) est loguée côté serveur
