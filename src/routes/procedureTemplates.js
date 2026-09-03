@@ -111,6 +111,7 @@ router.post(
           section_structure: preset.sections,
           fixed_instructions: preset.fixedInstructions,
           render_style: preset.renderStyle,
+          active_preset_id: preset.id,
         },
         { onConflict: 'tenant_id' }
       )

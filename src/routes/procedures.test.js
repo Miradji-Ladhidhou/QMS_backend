@@ -928,6 +928,75 @@ describe('GET /api/procedures/:id/pdf', () => {
   });
 });
 
+describe('POST /api/procedures/:id/versions/:versionId/export-word', () => {
+  async function createVersion(token, procedureId, extra = {}) {
+    const res = await request(app)
+      .post(`/api/procedures/${procedureId}/versions`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(extra);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('404 sur une version inconnue', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-110');
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/00000000-0000-0000-0000-000000000000/export-word`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('génère un .docx pour un brouillon (aucune restriction de statut, contrairement à distribution-sheet), avec le style du preset appliqué', async () => {
+    tenant = await createTenant();
+    await request(app)
+      .post('/api/procedure-templates/apply-preset')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ preset_id: 'moderne-tertiaire' })
+      .expect(200);
+
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-111');
+    const version = await createVersion(tenant.admin.token, procedure.id, {
+      content: {
+        objet: 'Objet de test',
+        domaine_application: 'Domaine de test',
+        responsabilites: 'Responsabilités de test',
+        sections: [{ key: 'deroule_processus', label: 'Déroulé du processus', content: 'Détail du déroulé.' }],
+        documents_associes: ['Formulaire F-01'],
+      },
+    });
+    expect(version.status).toBe('draft');
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/export-word`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    expect(res.headers['content-disposition']).toContain(`${procedure.number}.docx`);
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 2).toString()).toBe('PK'); // signature ZIP (.docx est un conteneur ZIP)
+  });
+
+  it('isole par tenant (404 depuis un autre tenant)', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const procedure = await createProcedure(tenant.admin.token, 'PROC-112');
+      const version = await createVersion(tenant.admin.token, procedure.id);
+
+      const res = await request(app)
+        .post(`/api/procedures/${procedure.id}/versions/${version.id}/export-word`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(res.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
 describe('Pièce jointe de version (attachment)', () => {
   async function createVersion(token, procedureId, extra = {}) {
     const res = await request(app)

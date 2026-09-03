@@ -30,12 +30,15 @@ function formatActions(actions) {
     .join('\n');
 }
 
-function formatSubsectionText(subsectionTitle, { intro, actions, callout }) {
+function formatSubsectionText(subsectionTitle, { intro, actions, callout, photo_placeholders: photoPlaceholders }) {
   const parts = [subsectionTitle, '', intro || '', '', formatActions(actions)];
   if (callout) {
     const label = CALLOUT_LABELS[callout.severity] || CALLOUT_LABELS.info;
     parts.push('', `${label} : ${callout.text}`);
   }
+  (photoPlaceholders || []).forEach((caption) => {
+    parts.push('', `[ Emplacement réservé à une photo : ${caption} ]`);
+  });
   return parts.filter((part) => part !== undefined).join('\n').trim();
 }
 
@@ -132,6 +135,7 @@ export async function runProcedureFullDraftJob(jobId) {
             intro: subsection.intro,
             actions: subsection.actions || [],
             callout: subsection.callout || null,
+            photo_placeholders: subsection.photo_placeholders || [],
             generation_status: 'ok',
           });
 
@@ -146,6 +150,7 @@ export async function runProcedureFullDraftJob(jobId) {
             intro: null,
             actions: [],
             callout: null,
+            photo_placeholders: [],
             generation_status: 'failed',
           });
         }

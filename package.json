@@ -18,6 +18,7 @@
     "cors": "^2.8.5",
     "csv-parse": "^7.0.2",
     "dejavu-fonts-ttf": "^2.37.3",
+    "docx": "^9.7.1",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.19.2",

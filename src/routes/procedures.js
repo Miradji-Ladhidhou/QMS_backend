@@ -7,6 +7,7 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildProcedurePdf } from '../services/procedurePdf.js';
+import { buildProcedureWordDocument } from '../services/procedureWord.js';
 import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
 import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
@@ -824,6 +825,61 @@ router.post(
     res.json(data);
   }
 );
+
+// POST /api/procedures/:id/versions/:versionId/export-word — transforme le contenu structuré
+// de la version en document Word (.docx) téléchargeable, mis en forme selon le dernier preset
+// appliqué au gabarit du tenant (voir procedure_templates.active_preset_id,
+// services/procedureWord.js — repli sur un style neutre si aucun preset n'a jamais été
+// appliqué). Rendu déterministe, aucun appel IA ici : contrairement à generate-draft/
+// generate-full-draft qui PRODUISENT le contenu, cette route ne fait que le METTRE EN FORME —
+// disponible sur n'importe quelle version quel que soit son statut, même permissivité que
+// GET /:id/pdf (le but explicite est d'obtenir un brouillon "prêt à relire", pas seulement un
+// document déjà approuvé).
+router.post('/:id/versions/:versionId/export-word', async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  const { data: procedure, error } = await supabase
+    .from('procedures')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+  if (error || !procedure) {
+    return res.status(404).json({ error: 'Procédure introuvable.' });
+  }
+
+  const { data: versions } = await supabase
+    .from('procedure_versions')
+    .select('*, author:users!procedure_versions_author_id_fkey(id, full_name), validator:users!procedure_versions_validator_id_fkey(id, full_name)')
+    .eq('procedure_id', procedure.id)
+    .order('created_at', { ascending: false });
+
+  // fetchVersionForAction ne résout pas author/validator : on réutilise la ligne équivalente
+  // de `versions` (déjà résolue ci-dessus) plutôt que refaire une requête pour la même version.
+  const versionWithNames = versions?.find((v) => v.id === version.id) || version;
+
+  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+  const template = await fetchTenantTemplate(req.tenantId);
+
+  let docxBuffer;
+  try {
+    docxBuffer = await buildProcedureWordDocument({
+      presetId: template.active_preset_id,
+      tenantName: tenant?.name,
+      procedure,
+      version: versionWithNames,
+      versions,
+    });
+  } catch (err) {
+    console.error('Échec de la génération du document Word :', err);
+    return res.status(500).json({ error: 'Impossible de générer le document Word.' });
+  }
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="${procedure.number}.docx"`);
+  res.send(docxBuffer);
+});
 
 // POST /api/procedures/:id/suggest-revision-from-capa — à partir d'un CAPA déjà lié à cette
 // procédure (voir procedure_capa_links / POST .../link-capa), propose les sections à réviser.

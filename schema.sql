@@ -879,9 +879,18 @@ create table procedure_templates (
   -- (voir services/groq.js) — copiée depuis un preset (POST /apply-preset) ou saisie
   -- librement, jamais interprétée structurellement, juste passée telle quelle au modèle.
   fixed_instructions   text,
-  -- Police/couleurs — copié depuis un preset pour un usage futur : l'export PDF garde
-  -- aujourd'hui son rendu fixe (voir services/procedurePdf.js) quel que soit ce réglage.
+  -- Police/couleurs — copié depuis un preset. Utilisé par l'export PDF (accentColor/
+  -- boxBackground/boxBorder uniquement, voir services/procedurePdf.js) et par l'export Word
+  -- (voir active_preset_id ci-dessous et services/procedureWord.js).
   render_style         jsonb,
+  -- Identifiant du dernier preset appliqué (voir data/procedureTemplatePresets.js), JAMAIS
+  -- effacé par une modification manuelle ultérieure de section_structure/fixed_instructions
+  -- (le PUT normal ne touche pas render_style, donc le style visuel du dernier preset reste
+  -- valide) — remis à null seulement si un autre preset est appliqué à sa place. Sert
+  -- uniquement à choisir le renderer Word approprié (services/procedureWord.js) : PAS une
+  -- référence figée vers le preset, qui reste une simple copie librement modifiable ensuite
+  -- (voir POST /apply-preset).
+  active_preset_id     text,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()
 );
