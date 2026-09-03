@@ -25,7 +25,9 @@ import {
   resolveCategoryFromBody,
   hasCategoryPermission,
   requireValidDocumentCategoryId,
+  isQualifiedApprover,
 } from '../middleware/documentPermissions.js';
+import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 // defParamCharset: busboy decode les en-têtes multipart en latin1 par défaut, ce qui
@@ -991,6 +993,34 @@ router.post(
       }
 
       approverIds = roleUsers.map((user) => user.id);
+    } else {
+      // Liste explicite : contrairement à la déduction par rôle ci-dessus (déjà un choix
+      // d'admin délibéré sur la catégorie), rien ne garantissait jusqu'ici que les personnes
+      // choisies ici étaient réellement habilitées à approuver — voir isQualifiedApprover.
+      const { data: matchedUsers, error: usersError } = await supabase
+        .from('users')
+        .select('id, role')
+        .eq('tenant_id', req.tenantId)
+        .in('id', approverIds);
+
+      if (usersError || !matchedUsers || matchedUsers.length !== new Set(approverIds).size) {
+        return res.status(400).json({ error: 'Un ou plusieurs approbateurs sont invalides.' });
+      }
+
+      for (const approver of matchedUsers) {
+        const qualifies = await isQualifiedApprover({
+          tenantId: req.tenantId,
+          userId: approver.id,
+          userRole: approver.role,
+          categoryId: document.category_id,
+        });
+        if (!qualifies) {
+          return res.status(400).json({
+            error:
+              "Un approbateur choisi n'est pas habilité à approuver ce document (rôle manager/admin requis, ou permission d'approbation explicite sur sa catégorie).",
+          });
+        }
+      }
     }
 
     const { data: workflow, error: workflowError } = await supabase

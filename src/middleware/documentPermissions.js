@@ -70,6 +70,32 @@ export async function hasCategoryPermission({ tenantId, userId, userRole, catego
   return groupPerms?.some((row) => row[column]) ?? false;
 }
 
+const APPROVER_BASELINE_ROLES = ['admin', 'manager'];
+
+// Un approbateur "qualifié" : admin/manager d'office, ou disposant explicitement de can_approve
+// sur la catégorie du document SI elle est restreinte. Contrairement à hasCategoryPermission
+// ci-dessus (où une catégorie non restreinte ouvre l'accès à tout le monde, comportement voulu
+// pour view/edit/delete), une catégorie NON restreinte n'accorde PAS automatiquement le droit
+// d'approuver : approuver est un point de contrôle qualité formel, pas une simple lecture
+// ouverte par défaut. Sans cette distinction, n'importe quel member pouvait désigner n'importe
+// quel autre member comme approbateur sur un document sans catégorie ou à catégorie non
+// restreinte (bug réel corrigé ici — voir POST /:id/submit-for-approval).
+export async function isQualifiedApprover({ tenantId, userId, userRole, categoryId }) {
+  if (APPROVER_BASELINE_ROLES.includes(userRole)) return true;
+  if (!categoryId) return false;
+
+  const { data: category, error } = await supabase
+    .from('document_categories')
+    .select('is_restricted')
+    .eq('tenant_id', tenantId)
+    .eq('id', categoryId)
+    .single();
+
+  if (error || !category?.is_restricted) return false;
+
+  return hasCategoryPermission({ tenantId, userId, userRole, categoryId, permission: 'approve' });
+}
+
 // Filtre une liste de documents (déjà chargée, avec sa catégorie jointe incluant
 // is_restricted) pour ne garder que ceux visibles par l'utilisateur — en une seule
 // requête groupée plutôt qu'une vérification par document (évite le N+1).

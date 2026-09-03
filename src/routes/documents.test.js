@@ -680,3 +680,97 @@ describe('GET /api/documents — champ latest_version_comment', () => {
     );
   });
 });
+
+// Corrige un trou de contrôle d'accès réel : hasCategoryPermission renvoie true pour QUICONQUE
+// dès qu'une catégorie n'est pas restreinte (comportement voulu pour view/edit, pas pour
+// approve) — un member pouvait donc désigner n'importe quel autre member comme approbateur sur
+// un document sans catégorie ou à catégorie non restreinte. Voir isQualifiedApprover.
+describe('POST /api/documents/:id/submit-for-approval — habilitation des approbateurs', () => {
+  async function createCategory(tenantId, name, extra = {}) {
+    const { data } = await admin.from('document_categories').insert({ tenant_id: tenantId, name, ...extra }).select().single();
+    return data.id;
+  }
+
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${token}`)
+      .field('number', number)
+      .field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it("un member ne peut pas désigner un autre member comme approbateur (document sans catégorie)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+    const doc = await createDocument(memberA.token, 'DOC-APPR-001');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${memberA.token}`)
+      .send({ approver_ids: [memberB.id] });
+    expect(res.status).toBe(400);
+  });
+
+  it('un member peut désigner un manager comme approbateur', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
+    const [member, manager] = tenant.users;
+    const doc = await createDocument(member.token, 'DOC-APPR-002');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ approver_ids: [manager.id] });
+    expect(res.status).toBe(201);
+  });
+
+  it("un id d'approbateur inexistant est rejeté", async () => {
+    tenant = await createTenant();
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-003');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ approver_ids: ['00000000-0000-0000-0000-000000000000'] });
+    expect(res.status).toBe(400);
+  });
+
+  it("la déduction par required_approver_role='member' reste acceptée (choix d'admin délibéré sur la catégorie)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const categoryId = await createCategory(tenant.tenantId, 'Cat member-approver', { required_approver_role: 'member' });
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-004', { category_id: categoryId });
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    expect(res.status).toBe(201);
+    expect(res.body.workflow.required_approvers).toEqual([member.id]);
+  });
+
+  it("sur catégorie restreinte, un member avec can_approve explicite est un approbateur valide", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const approver = tenant.users[0];
+    const categoryId = await createCategory(tenant.tenantId, 'Restreinte approve', { is_restricted: true });
+
+    await request(app)
+      .post(`/api/categories/${categoryId}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: approver.id, can_view: true, can_approve: true })
+      .expect(201);
+
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-005', { category_id: categoryId });
+
+    // Soumis par l'admin (bypass de hasCategoryPermission, non concerné par ce test) : seul le
+    // choix de l'approbateur ci-dessous est sous test.
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ approver_ids: [approver.id] });
+    expect(res.status).toBe(201);
+  });
+});
