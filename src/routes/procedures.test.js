@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
 
@@ -19,6 +19,20 @@ async function createProcedure(token, number, extra = {}) {
     .send({ number, title: `Procédure ${number}`, ...extra });
   expect(res.status).toBe(201);
   return res.body;
+}
+
+// L'envoi de notification à la soumission (routes/procedures.js#submit) n'est volontairement
+// pas attendu par la réponse HTTP (même principe que documents.js#submit-for-approval : ne
+// pas faire attendre l'auteur pour l'envoi d'emails) — on interroge donc la table le temps
+// qu'elle apparaisse plutôt que de supposer qu'elle existe juste après la requête.
+async function waitForNotification(userId, type, { timeoutMs = 3000, intervalMs = 50 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const { data } = await admin.from('notifications').select('*').eq('user_id', userId).eq('type', type).maybeSingle();
+    if (data) return data;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return null;
 }
 
 describe('POST /api/procedures', () => {
@@ -158,6 +172,51 @@ describe('Workflow submit / validate / reject', () => {
       .get(`/api/procedures/${procedure.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(procedureAfter.body.status).toBe('in_review');
+  });
+
+  it("notifie l'admin (et pas le soumetteur) à la soumission, et fait apparaître la version dans pending-validations", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const author = tenant.users[0];
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-022');
+    const version = await createVersion(author.token, procedure.id);
+
+    const submitted = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${author.token}`);
+    expect(submitted.status).toBe(200);
+
+    const notification = await waitForNotification(tenant.admin.id, 'procedure_validation_request');
+    expect(notification).not.toBeNull();
+    expect(notification.message).toContain('PROC-022');
+
+    const authorNotification = await admin
+      .from('notifications')
+      .select('*')
+      .eq('user_id', author.id)
+      .eq('type', 'procedure_validation_request')
+      .maybeSingle();
+    expect(authorNotification.data).toBeNull();
+
+    const pending = await request(app)
+      .get('/api/procedures/pending-validations')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(pending.status).toBe(200);
+    expect(pending.body.map((v) => v.id)).toContain(version.id);
+
+    const memberBlocked = await request(app)
+      .get('/api/procedures/pending-validations')
+      .set('Authorization', `Bearer ${author.token}`);
+    expect(memberBlocked.status).toBe(403);
+
+    const validated = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(validated.status).toBe(200);
+
+    const pendingAfter = await request(app)
+      .get('/api/procedures/pending-validations')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(pendingAfter.body.map((v) => v.id)).not.toContain(version.id);
   });
 
   it('un member ne peut pas valider (réservé admin/manager, même principe que la CAPA)', async () => {
@@ -347,5 +406,45 @@ describe('GET /api/procedures — filtres', () => {
     } finally {
       await otherTenant.cleanup();
     }
+  });
+});
+
+describe('POST /api/procedures/:id/obsolete', () => {
+  it('un member ne peut pas, un admin peut (même niveau que la validation), et la procédure disparaît de la liste par défaut', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-060');
+
+    const forbidden = await request(app)
+      .post(`/api/procedures/${procedure.id}/obsolete`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ reason: 'Remplacée par PROC-999' });
+    expect(forbidden.status).toBe(403);
+
+    const obsoleted = await request(app)
+      .post(`/api/procedures/${procedure.id}/obsolete`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ reason: 'Remplacée par PROC-999' });
+    expect(obsoleted.status).toBe(200);
+    expect(obsoleted.body.status).toBe('obsolete');
+    expect(obsoleted.body.obsolete_reason).toBe('Remplacée par PROC-999');
+    expect(obsoleted.body.obsoleted_by).toBe(tenant.admin.id);
+    expect(obsoleted.body.obsoleted_at).not.toBeNull();
+
+    const alreadyObsolete = await request(app)
+      .post(`/api/procedures/${procedure.id}/obsolete`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(alreadyObsolete.status).toBe(409);
+
+    const defaultList = await request(app)
+      .get('/api/procedures')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(defaultList.body.map((p) => p.number)).not.toContain('PROC-060');
+
+    const obsoleteFilter = await request(app)
+      .get('/api/procedures')
+      .query({ status: 'obsolete' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(obsoleteFilter.body.map((p) => p.number)).toContain('PROC-060');
   });
 });

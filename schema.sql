@@ -814,6 +814,9 @@ create table procedures (
   status            text not null default 'draft' check (status in ('draft', 'in_review', 'approved', 'obsolete')),
   next_review_date  date,
   created_by        uuid references users (id) on delete set null,
+  obsolete_reason   text,
+  obsoleted_at      timestamptz,
+  obsoleted_by      uuid references users (id) on delete set null,
   created_at        timestamptz not null default now(),
   updated_at        timestamptz not null default now(),
   unique (tenant_id, number)

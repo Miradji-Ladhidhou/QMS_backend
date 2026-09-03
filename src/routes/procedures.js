@@ -3,6 +3,7 @@ import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
+import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import {
   generateProcedureDraft,
   checkProcedureTemplateCompliance,
@@ -84,7 +85,14 @@ router.get(
       .eq('tenant_id', req.tenantId)
       .order('number', { ascending: true });
 
-    if (req.query.status) queryBuilder = queryBuilder.eq('status', req.query.status);
+    // Sans filtre de statut explicite, les procédures obsolètes restent hors de la liste
+    // principale — jamais supprimées (piste d'audit), seulement écartées par défaut. Le
+    // filtre status=obsolete (déjà supporté ci-dessous) reste le seul moyen de les retrouver.
+    if (req.query.status) {
+      queryBuilder = queryBuilder.eq('status', req.query.status);
+    } else {
+      queryBuilder = queryBuilder.neq('status', 'obsolete');
+    }
     if (req.query.process) queryBuilder = queryBuilder.ilike('process', `%${req.query.process}%`);
     if (req.query.search) queryBuilder = queryBuilder.or(`title.ilike.%${req.query.search}%,number.ilike.%${req.query.search}%`);
 
@@ -97,11 +105,33 @@ router.get(
   }
 );
 
+// GET /api/procedures/pending-validations — versions en attente de validation, dans TOUT le
+// tenant : contrairement aux documents (approbateurs nommés à l'avance, voir
+// document_approvals), n'importe quel admin/manager peut valider une procédure (voir
+// /validate ci-dessous), donc pas de filtre "assigné à moi" ici — alimente la section
+// Procédures de "Mes approbations" côté frontend.
+router.get('/pending-validations', requireRole(...MANAGER_ROLES), async (req, res) => {
+  const { data, error } = await supabase
+    .from('procedure_versions')
+    .select('id, version, submitted_at, procedure:procedures!procedure_versions_procedure_id_fkey(id, number, title)')
+    .eq('tenant_id', req.tenantId)
+    .eq('status', 'pending')
+    .order('submitted_at', { ascending: true });
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer les validations en attente.' });
+  }
+
+  res.json(data);
+});
+
 // GET /api/procedures/:id — détail + historique complet des versions (plus récentes d'abord).
 router.get('/:id', async (req, res) => {
   const { data: procedure, error } = await supabase
     .from('procedures')
-    .select('*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status)')
+    .select(
+      '*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status), obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name)'
+    )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -320,7 +350,51 @@ router.post('/:id/versions/:versionId/submit', async (req, res) => {
     return res.status(500).json({ error: 'Erreur lors de la soumission.' });
   }
 
-  await supabase.from('procedures').update({ status: 'in_review' }).eq('id', req.params.id);
+  const { data: procedure } = await supabase
+    .from('procedures')
+    .update({ status: 'in_review' })
+    .eq('id', req.params.id)
+    .select('id, number, title')
+    .single();
+
+  // Envoi immédiat à tout admin/manager du tenant (pas d'approbateur nommé à l'avance pour ce
+  // module, voir /validate) — ne doit pas attendre le batch quotidien, même principe que
+  // documents.js#submit-for-approval. Le soumetteur lui-même est exclu s'il est admin/manager :
+  // se notifier de sa propre soumission n'apporte rien.
+  if (procedure) {
+    (async () => {
+      try {
+        const [requesterName, { data: managers }] = await Promise.all([
+          getUserFullName(req.user.id),
+          supabase.from('users').select('id').eq('tenant_id', req.tenantId).in('role', MANAGER_ROLES),
+        ]);
+
+        for (const manager of managers || []) {
+          if (manager.id === req.user.id) continue;
+          await sendImmediateNotification({
+            tenantId: req.tenantId,
+            userId: manager.id,
+            prefField: 'email_approval_requests',
+            notificationType: 'procedure_validation_request',
+            referenceId: version.id,
+            templateName: 'procedureValidationRequest',
+            subject: `Validation requise : ${procedure.number}`,
+            variables: {
+              requesterName,
+              procedureNumber: procedure.number,
+              procedureTitle: procedure.title,
+              procedureUrl: `${process.env.FRONTEND_URL}/procedures/${procedure.id}`,
+            },
+            notificationTitle: 'Validation de procédure requise',
+            notificationMessage: `${procedure.number} — ${procedure.title}`,
+            notificationLink: `/procedures/${procedure.id}`,
+          });
+        }
+      } catch (err) {
+        console.error('Échec de la notification de demande de validation de procédure :', err.message);
+      }
+    })();
+  }
 
   res.json(data);
 });
@@ -428,5 +502,49 @@ router.post('/:id/acknowledge', async (req, res) => {
 
   res.status(201).json(acknowledgment);
 });
+
+// POST /api/procedures/:id/obsolete — retire une procédure de la circulation SANS jamais la
+// supprimer (piste d'audit) : le statut "obsolete" existe dans la contrainte SQL depuis la
+// création du module mais n'était jusqu'ici atteignable par aucune route. Même niveau de
+// permission que la validation d'une version (admin/manager) : une décision qualité, pas une
+// action de rédaction — voir /validate ci-dessus.
+router.post(
+  '/:id/obsolete',
+  requireRole(...MANAGER_ROLES),
+  [body('reason').optional({ values: 'falsy' }).trim()],
+  async (req, res) => {
+    const { data: procedure, error: fetchError } = await supabase
+      .from('procedures')
+      .select('id, status')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !procedure) {
+      return res.status(404).json({ error: 'Procédure introuvable.' });
+    }
+    if (procedure.status === 'obsolete') {
+      return res.status(409).json({ error: 'Cette procédure est déjà obsolète.' });
+    }
+
+    const { data, error } = await supabase
+      .from('procedures')
+      .update({
+        status: 'obsolete',
+        obsolete_reason: req.body.reason || null,
+        obsoleted_at: new Date().toISOString(),
+        obsoleted_by: req.user.id,
+      })
+      .eq('id', procedure.id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(500).json({ error: "Erreur lors du passage à l'obsolescence." });
+    }
+
+    res.json(data);
+  }
+);
 
 export default router;
