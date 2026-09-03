@@ -118,7 +118,21 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: "Impossible de récupérer l'historique des versions." });
   }
 
-  res.json({ ...procedure, versions });
+  // Accusé de lecture de l'utilisateur courant POUR LA VERSION COURANTE uniquement — même
+  // principe que my_acknowledgment sur GET /api/documents/:id : une nouvelle validation change
+  // current_version_id, ce qui rend naturellement cette valeur null pour tout le monde.
+  let myAcknowledgment = null;
+  if (procedure.current_version_id) {
+    const { data } = await supabase
+      .from('procedure_acknowledgments')
+      .select('acknowledged_at')
+      .eq('procedure_version_id', procedure.current_version_id)
+      .eq('user_id', req.user.id)
+      .maybeSingle();
+    myAcknowledgment = data || null;
+  }
+
+  res.json({ ...procedure, versions, my_acknowledgment: myAcknowledgment });
 });
 
 // POST /api/procedures — création (statut brouillon), ouvert à tout rôle authentifié, même
