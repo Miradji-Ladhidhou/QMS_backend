@@ -419,7 +419,15 @@ router.get('/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildProcedurePdf({ tenantName: tenant?.name, tenantLogo, procedure, version, versions });
+  const template = await fetchTenantTemplate(req.tenantId);
+  const pdfBuffer = await buildProcedurePdf({
+    tenantName: tenant?.name,
+    tenantLogo,
+    procedure,
+    version,
+    versions,
+    renderStyle: template.render_style,
+  });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${procedure.number}.pdf"`);

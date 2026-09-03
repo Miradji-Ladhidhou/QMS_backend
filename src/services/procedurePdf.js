@@ -29,8 +29,8 @@ function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
 }
 
-function drawPageHeader(doc, tenantName, tenantLogo, procedure) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
+function drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor) {
+  doc.rect(0, 0, PAGE_WIDTH, 86).fill(accentColor);
   doc.fillColor('#ffffff').fontSize(16).text(`${procedure.number} — ${procedure.title}`, PAGE_MARGIN, 22, { width: CONTENT_WIDTH - 60 });
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
@@ -61,8 +61,8 @@ function drawImportantBox(doc, { color, background, label, text }) {
   doc.y = boxTop + height + 10;
 }
 
-function drawNumberedSection(doc, number, title, body) {
-  doc.fontSize(11).fillColor(NAVY).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+function drawNumberedSection(doc, number, title, body, accentColor) {
+  doc.fontSize(11).fillColor(accentColor).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.moveDown(0.2);
   if (body) {
     doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
@@ -72,8 +72,8 @@ function drawNumberedSection(doc, number, title, body) {
   doc.moveDown(0.7);
 }
 
-function drawSubSection(doc, number, title, body) {
-  doc.fontSize(10.5).fillColor(NAVY).text(`${number} ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+function drawSubSection(doc, number, title, body, accentColor) {
+  doc.fontSize(10.5).fillColor(accentColor).text(`${number} ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.moveDown(0.2);
   if (body) {
     doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
@@ -91,27 +91,33 @@ function stripLeadingNumbering(text) {
   return (text || '').replace(/^\s*\d+[.)]\s*/, '');
 }
 
-// Sévérité -> couleurs déjà définies pour drawImportantBox ci-dessus (mêmes RED/AMBER que les
-// bannières d'obsolescence/retard) — un simple bandeau neutre pour "info" ('Important').
-const CALLOUT_STYLES = {
-  danger: { color: RED, background: RED_LIGHT, label: 'DANGER' },
-  warning: { color: AMBER, background: AMBER_LIGHT, label: 'ATTENTION' },
-  info: { color: NAVY, background: NAVY_LIGHT, label: 'IMPORTANT' },
-};
+// Sévérité -> couleurs. danger/warning restent FIXES (rouge/ambre) quel que soit le gabarit du
+// tenant : ce sont des couleurs d'alerte sécurité/conformité, pas un choix de style — les
+// presets eux-mêmes ne définissent d'ailleurs qu'UNE seule paire boxBackground/boxBorder, pas
+// une par sévérité (voir data/procedureTemplatePresets.js). Seule la sévérité "info" (le
+// simple "Important :"/"Note :"/"À retenir" neutre) reflète le style du tenant.
+function calloutStyles(infoBoxStyle) {
+  return {
+    danger: { color: RED, background: RED_LIGHT, label: 'DANGER' },
+    warning: { color: AMBER, background: AMBER_LIGHT, label: 'ATTENTION' },
+    info: { color: infoBoxStyle.border, background: infoBoxStyle.background, label: 'IMPORTANT' },
+  };
+}
 
 // Rendu d'une section issue du pipeline de génération complète (voir
 // services/procedureFullDraftJob.js) : contrairement à drawSubSection ci-dessus (un seul bloc
 // de texte plat), chaque sous-section du plan est rendue individuellement avec son propre
 // encadré coloré si elle porte un callout — plutôt que de laisser le callout fondu dans le
 // texte plat de section.content.
-function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections) {
-  doc.fontSize(11).fillColor(NAVY).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, accentColor, infoBoxStyle) {
+  const styles = calloutStyles(infoBoxStyle);
+  doc.fontSize(11).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.moveDown(0.4);
 
   subsections.forEach((subsection, index) => {
     doc
       .fontSize(10.5)
-      .fillColor(NAVY)
+      .fillColor(accentColor)
       .text(`${sectionNumber}.${index + 1} ${subsection.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.moveDown(0.2);
 
@@ -143,7 +149,7 @@ function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections) {
     doc.moveDown(0.3);
 
     if (subsection.callout) {
-      const style = CALLOUT_STYLES[subsection.callout.severity] || CALLOUT_STYLES.info;
+      const style = styles[subsection.callout.severity] || styles.info;
       drawImportantBox(doc, { ...style, text: subsection.callout.text });
     }
 
@@ -155,8 +161,18 @@ function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections) {
 // contenu est imprimé — l'appelant choisit laquelle (voir routes/procedures.js#pdf : la
 // courante si elle existe, sinon la plus récente, jamais un blocage tant qu'AU MOINS une
 // version existe). versions : historique complet (author/validator résolus), pour le tableau
-// en bas de document.
-export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions }) {
+// en bas de document. renderStyle : procedure_templates.render_style du tenant ({accentColor,
+// boxBackground, boxBorder, fontFamily} — voir data/procedureTemplatePresets.js), ou null/
+// undefined si non configuré. Seuls accentColor/boxBackground/boxBorder sont appliqués ici :
+// fontFamily reste hors périmètre, tous les exports PDF de l'app partagent la même police
+// Unicode-safe (voir pdfFonts.js) et il n'existe aucun mécanisme de police par tenant.
+// Calculé en variables LOCALES (jamais en constante de module) : plusieurs requêtes de tenants
+// différents peuvent s'exécuter en concurrence dans le même process Node, une couleur globale
+// mutable ferait fuiter le thème d'un tenant vers le PDF d'un autre.
+export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions, renderStyle }) {
+  const accentColor = renderStyle?.accentColor || NAVY;
+  const infoBoxStyle = { background: renderStyle?.boxBackground || NAVY_LIGHT, border: renderStyle?.boxBorder || NAVY };
+
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -164,9 +180,9 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, procedure));
+    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor));
 
-    drawPageHeader(doc, tenantName, tenantLogo, procedure);
+    drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor);
 
     doc
       .fontSize(9)
@@ -201,19 +217,19 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     }
 
     doc.moveDown(0.5);
-    drawNumberedSection(doc, 1, 'Objet', version.content?.objet);
-    drawNumberedSection(doc, 2, "Domaine d'application", version.content?.domaine_application);
-    drawNumberedSection(doc, 3, 'Responsabilités', version.content?.responsabilites);
+    drawNumberedSection(doc, 1, 'Objet', version.content?.objet, accentColor);
+    drawNumberedSection(doc, 2, "Domaine d'application", version.content?.domaine_application, accentColor);
+    drawNumberedSection(doc, 3, 'Responsabilités', version.content?.responsabilites, accentColor);
 
     const sections = version.content?.sections || [];
     if (sections.length > 0) {
-      doc.fontSize(11).fillColor(NAVY).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.fontSize(11).fillColor(accentColor).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.4);
       sections.forEach((section, index) => {
         if (section.subsections?.length) {
-          drawGeneratedSection(doc, `4.${index + 1}`, section.label, section.subsections);
+          drawGeneratedSection(doc, `4.${index + 1}`, section.label, section.subsections, accentColor, infoBoxStyle);
         } else {
-          drawSubSection(doc, `4.${index + 1}`, section.label, section.content);
+          drawSubSection(doc, `4.${index + 1}`, section.label, section.content, accentColor);
         }
       });
     }
@@ -222,7 +238,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     if (documentsAssocies.length > 0) {
       doc
         .fontSize(11)
-        .fillColor(NAVY)
+        .fillColor(accentColor)
         .text(`${sections.length > 0 ? 5 : 4}. Documents associés`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.2);
       documentsAssocies.forEach((name) => {
@@ -237,7 +253,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     doc.moveDown(0.3);
     doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(GRID).lineWidth(0.5).stroke();
     doc.moveDown(0.6);
-    doc.fontSize(11).fillColor(NAVY).text('Historique des versions', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.fontSize(11).fillColor(accentColor).text('Historique des versions', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.moveDown(0.4);
 
     (versions || []).forEach((v) => {
