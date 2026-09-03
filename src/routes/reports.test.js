@@ -83,3 +83,50 @@ describe('POST /api/reports/table-pdf', () => {
     expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
   });
 });
+
+describe('POST /api/reports/table-xlsx', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app)
+      .post('/api/reports/table-xlsx')
+      .send({ title: 'Rapport', columns: [{ key: 'a', label: 'A' }], rows: [] });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si titre ou colonnes manquants', async () => {
+    tenant = await createTenant();
+
+    const noTitle = await request(app)
+      .post('/api/reports/table-xlsx')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ columns: [{ key: 'a', label: 'A' }], rows: [] });
+    expect(noTitle.status).toBe(400);
+  });
+
+  it('200 avec un classeur Excel valide (signature ZIP, .xlsx est un conteneur ZIP)', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/reports/table-xlsx')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob')
+      .send({
+        title: 'Registre des risques',
+        subtitle: '2 risques',
+        generatedBy: 'Marie Dupont',
+        columns: [
+          { key: 'title', label: 'Titre' },
+          { key: 'status', label: 'Statut' },
+        ],
+        rows: [
+          { title: 'Panne serveur', status: 'Identifié' },
+          { title: 'Fournisseur unique', status: '' },
+        ],
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const buffer = Buffer.from(res.body);
+    // Signature de fichier ZIP (PK\x03\x04) : un .xlsx est un conteneur ZIP.
+    expect(buffer.subarray(0, 2).toString()).toBe('PK');
+  });
+});
