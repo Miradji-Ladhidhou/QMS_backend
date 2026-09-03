@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
+import { PROCEDURE_TEMPLATE_PRESETS, findProcedureTemplatePreset } from '../data/procedureTemplatePresets.js';
 
 const router = Router();
 
@@ -44,7 +45,10 @@ router.get('/', async (req, res) => {
 router.put(
   '/',
   requireRole('admin'),
-  [body('section_structure').isArray().withMessage('Structure de sections invalide.')],
+  [
+    body('section_structure').isArray().withMessage('Structure de sections invalide.'),
+    body('fixed_instructions').optional({ values: 'falsy' }).trim(),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -54,7 +58,11 @@ router.put(
     const { data, error } = await supabase
       .from('procedure_templates')
       .upsert(
-        { tenant_id: req.tenantId, section_structure: req.body.section_structure },
+        {
+          tenant_id: req.tenantId,
+          section_structure: req.body.section_structure,
+          fixed_instructions: req.body.fixed_instructions || null,
+        },
         { onConflict: 'tenant_id' }
       )
       .select()
@@ -62,6 +70,55 @@ router.put(
 
     if (error || !data) {
       return res.status(500).json({ error: "Erreur lors de l'enregistrement du gabarit." });
+    }
+
+    res.json(data);
+  }
+);
+
+// GET /api/procedure-templates/presets — catalogue des 4 points de départ prêts à l'emploi
+// (voir data/procedureTemplatePresets.js). Donnée de référence statique, pas de table dédiée :
+// même logique que les autres catalogues fixes de l'app.
+router.get('/presets', (req, res) => {
+  res.json(PROCEDURE_TEMPLATE_PRESETS);
+});
+
+// POST /api/procedure-templates/apply-preset — copie un preset dans le gabarit du tenant
+// courant : à partir de là c'est une copie normale, librement modifiable/écrasable ensuite par
+// PUT ci-dessus, jamais une référence figée vers le preset d'origine. N'affecte que les
+// PROCHAINES générations (voir services/groq.js) — les procédures déjà créées gardent leur
+// contenu déjà rédigé, jamais réécrit rétroactivement. Réservé admin, même garde que PUT.
+router.post(
+  '/apply-preset',
+  requireRole('admin'),
+  [body('preset_id').trim().notEmpty().withMessage('Preset requis.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const preset = findProcedureTemplatePreset(req.body.preset_id);
+    if (!preset) {
+      return res.status(404).json({ error: 'Preset introuvable.' });
+    }
+
+    const { data, error } = await supabase
+      .from('procedure_templates')
+      .upsert(
+        {
+          tenant_id: req.tenantId,
+          section_structure: preset.sections,
+          fixed_instructions: preset.fixedInstructions,
+          render_style: preset.renderStyle,
+        },
+        { onConflict: 'tenant_id' }
+      )
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(500).json({ error: "Erreur lors de l'application du preset." });
     }
 
     res.json(data);

@@ -232,7 +232,8 @@ function buildProcedureDraftUserPrompt(formData, template) {
 Processus concerné : ${formData?.process || 'non renseigné'}
 
 Gabarit de sections à respecter :
-${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}`;
+${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}
+${template?.fixed_instructions ? `\nConsignes de style propres à cette entreprise, à respecter : ${template.fixed_instructions}` : ''}`;
 }
 
 // formData : { title, process } — mêmes noms que procedures.title/process. template : la ligne
@@ -272,7 +273,8 @@ ${rootCauses?.length ? `\nCauses racines déjà identifiées : ${rootCauses.join
 ${preventiveActions?.length ? `\nActions préventives déjà envisagées : ${preventiveActions.join(', ')}` : ''}
 
 Gabarit de sections à respecter :
-${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}`;
+${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}
+${template?.fixed_instructions ? `\nConsignes de style propres à cette entreprise, à respecter : ${template.fixed_instructions}` : ''}`;
 }
 
 // analysis : ligne qqoqccp_analyses (qui/quoi/ou_/quand_/comment_/combien/pourquoi +

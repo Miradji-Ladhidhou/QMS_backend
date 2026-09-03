@@ -872,11 +872,18 @@ alter table procedures add column current_version_id uuid references procedure_v
 -- Un gabarit par tenant (GET/PUT /api/procedure-gabarits sont des routes singulières, sans
 -- :id — confirmé par la conception des routes, Prompt 2), imposé par une contrainte unique.
 create table procedure_templates (
-  id                 uuid primary key default gen_random_uuid(),
-  tenant_id          uuid not null references tenants (id) on delete cascade unique,
-  section_structure  jsonb not null default '[]',
-  created_at         timestamptz not null default now(),
-  updated_at         timestamptz not null default now()
+  id                   uuid primary key default gen_random_uuid(),
+  tenant_id            uuid not null references tenants (id) on delete cascade unique,
+  section_structure    jsonb not null default '[]',
+  -- Consigne de style libre, ajoutée au prompt IA de génération/vérification de conformité
+  -- (voir services/groq.js) — copiée depuis un preset (POST /apply-preset) ou saisie
+  -- librement, jamais interprétée structurellement, juste passée telle quelle au modèle.
+  fixed_instructions   text,
+  -- Police/couleurs — copié depuis un preset pour un usage futur : l'export PDF garde
+  -- aujourd'hui son rendu fixe (voir services/procedurePdf.js) quel que soit ce réglage.
+  render_style         jsonb,
+  created_at           timestamptz not null default now(),
+  updated_at           timestamptz not null default now()
 );
 
 -- Accusé de lecture par VERSION (chaque procedure_versions est déjà une ligne stable et
