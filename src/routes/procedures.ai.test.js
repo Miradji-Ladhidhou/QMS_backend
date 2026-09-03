@@ -16,6 +16,7 @@ vi.mock('../services/groq.js', async (importOriginal) => {
   return {
     ...actual,
     generateProcedureDraft: vi.fn(),
+    generateProcedureDraftFromQqoqccp: vi.fn(),
     checkProcedureTemplateCompliance: vi.fn(),
     generateProcedureDistributionSheet: vi.fn(),
     suggestProcedureRevisionFromCapa: vi.fn(),
@@ -95,6 +96,63 @@ describe('POST /api/procedures/generate-draft (IA mockée)', () => {
 
     expect(res.status).toBe(503);
     expect(res.body.error).toContain('brouillon IA');
+  });
+});
+
+describe('POST /api/procedures/generate-draft-from-qqoqccp (IA mockée)', () => {
+  it('appelle le service avec l’analyse QQOQCCP et le gabarit, reprend le titre de l’analyse, refuse une analyse d’un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      await request(app)
+        .put('/api/procedure-templates')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ section_structure: [{ key: 'etapes', label: 'Étapes' }] })
+        .expect(200);
+
+      const analysisRes = await request(app)
+        .post('/api/qqoqccp')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({
+          title: 'Erreurs répétées de saisie',
+          quoi: 'Des étiquettes mal renseignées',
+          pourquoi: "Aucune procédure ne décrit l'étape de vérification",
+        });
+      expect(analysisRes.status).toBe(201);
+      const analysis = analysisRes.body;
+
+      const mockDraft = {
+        objet: 'Objet généré depuis le diagnostic',
+        domaine_application: 'Domaine généré',
+        responsabilites: 'Responsabilités générées',
+        sections: [{ key: 'etapes', label: 'Étapes', content: 'Contenu généré' }],
+        documents_associes: [],
+      };
+      groq.generateProcedureDraftFromQqoqccp.mockResolvedValueOnce(mockDraft);
+
+      const res = await request(app)
+        .post('/api/procedures/generate-draft-from-qqoqccp')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ qqoqccp_id: analysis.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.title).toBe('Erreurs répétées de saisie');
+      expect(res.body.sections).toEqual(mockDraft.sections);
+
+      expect(groq.generateProcedureDraftFromQqoqccp).toHaveBeenCalledTimes(1);
+      const [analysisArg, template] = groq.generateProcedureDraftFromQqoqccp.mock.calls[0];
+      expect(analysisArg.quoi).toBe('Des étiquettes mal renseignées');
+      expect(analysisArg.pourquoi).toBe("Aucune procédure ne décrit l'étape de vérification");
+      expect(template.section_structure).toEqual([{ key: 'etapes', label: 'Étapes' }]);
+
+      const foreignAttempt = await request(app)
+        .post('/api/procedures/generate-draft-from-qqoqccp')
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ qqoqccp_id: analysis.id });
+      expect(foreignAttempt.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
   });
 });
 

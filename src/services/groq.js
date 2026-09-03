@@ -241,6 +241,47 @@ export async function generateProcedureDraft(formData, template) {
   return callGroq(PROCEDURE_DRAFT_SYSTEM_PROMPT, buildProcedureDraftUserPrompt(formData, template));
 }
 
+// Même contrat de sortie que generateProcedureDraft (objet/domaine_application/
+// responsabilites/sections/documents_associes) — seule la source d'inspiration change : un
+// diagnostic QQOQCCP qui a révélé un manque à formaliser, plutôt qu'un simple titre/processus
+// tapés à la main. Réutilise donc le même formulaire de création et le même éditeur de
+// sections côté frontend (Procedures.jsx), pas une UI dédiée.
+const PROCEDURE_DRAFT_FROM_QQOQCCP_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à rédiger le brouillon d'une NOUVELLE procédure documentée, à partir d'une analyse QQOQCCP qui a révélé un manque ou un problème récurrent nécessitant de formaliser un processus.
+
+Utilise le diagnostic (qui/quoi/où/quand/comment/combien/pourquoi) et, s'ils sont disponibles, la synthèse et les causes racines déjà identifiées par l'IA sur cette analyse, pour rédiger une procédure qui répond concrètement au problème constaté — jamais un texte générique, toujours ancré dans les faits de cette analyse.
+
+${PROCEDURE_DRAFT_RESPONSE_CONTRACT}`;
+
+function buildProcedureDraftFromQqoqccpUserPrompt(analysis, template) {
+  const sections = (template?.section_structure || [])
+    .map((section, index) => `${index + 1}. ${section.label} (key: ${section.key})`)
+    .join('\n');
+  const rootCauses = analysis?.ai_suggested_actions?.root_causes;
+  const preventiveActions = analysis?.ai_suggested_actions?.preventive_actions;
+
+  return `Analyse QQOQCCP à l'origine de cette procédure : ${analysis?.title || 'non renseignée'}
+Qui : ${analysis?.qui || 'non renseigné'}
+Quoi : ${analysis?.quoi || 'non renseigné'}
+Où : ${analysis?.ou_ || 'non renseigné'}
+Quand : ${analysis?.quand_ || 'non renseigné'}
+Comment : ${analysis?.comment_ || 'non renseigné'}
+Combien : ${analysis?.combien || 'non renseigné'}
+Pourquoi : ${analysis?.pourquoi || 'non renseigné'}
+${analysis?.ai_synthesis ? `\nSynthèse IA de cette analyse : ${analysis.ai_synthesis}` : ''}
+${rootCauses?.length ? `\nCauses racines déjà identifiées : ${rootCauses.join(', ')}` : ''}
+${preventiveActions?.length ? `\nActions préventives déjà envisagées : ${preventiveActions.join(', ')}` : ''}
+
+Gabarit de sections à respecter :
+${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}`;
+}
+
+// analysis : ligne qqoqccp_analyses (qui/quoi/ou_/quand_/comment_/combien/pourquoi +
+// ai_synthesis/ai_suggested_actions si l'IA a déjà été utilisée sur cette analyse). template :
+// la ligne procedure_templates du tenant.
+export async function generateProcedureDraftFromQqoqccp(analysis, template) {
+  return callGroq(PROCEDURE_DRAFT_FROM_QQOQCCP_SYSTEM_PROMPT, buildProcedureDraftFromQqoqccpUserPrompt(analysis, template));
+}
+
 const PROCEDURE_COMPLIANCE_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :

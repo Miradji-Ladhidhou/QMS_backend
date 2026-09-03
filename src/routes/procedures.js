@@ -10,8 +10,11 @@ import { buildProcedurePdf } from '../services/procedurePdf.js';
 import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
 import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
+import { isSharedWithUser } from '../services/recordSharing.js';
+import { hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
 import {
   generateProcedureDraft,
+  generateProcedureDraftFromQqoqccp,
   checkProcedureTemplateCompliance,
   compareProcedureVersions,
   generateProcedureDistributionSheet,
@@ -71,6 +74,66 @@ router.post(
     try {
       const draft = await generateProcedureDraft({ title: req.body.title, process: req.body.process }, template);
       res.json(draft);
+    } catch (err) {
+      res.status(503).json({ error: `Impossible de générer un brouillon IA : ${err.message}` });
+    }
+  }
+);
+
+// POST /api/procedures/generate-draft-from-qqoqccp — même principe que /generate-draft ci-
+// dessus (rien n'est persisté, préremplit juste le formulaire de création), mais informé par
+// une analyse QQOQCCP existante plutôt qu'un titre/processus tapés à la main : la procédure
+// est créée PARCE QUE ce diagnostic a révélé un manque à formaliser (voir
+// QqoqccpDetail.jsx#handleCreateProcedure). Même vérification de permission que
+// GET /api/qqoqccp/:id (catégorie restreinte ou partage individuel), dupliquée ici plutôt que
+// mutualisée : ce n'est qu'une lecture, pas une action sur l'analyse elle-même.
+router.post(
+  '/generate-draft-from-qqoqccp',
+  [body('qqoqccp_id').isUUID().withMessage('Analyse QQOQCCP invalide.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: analysis, error } = await supabase
+      .from('qqoqccp_analyses')
+      .select('*')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.body.qqoqccp_id)
+      .maybeSingle();
+
+    if (error || !analysis) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+
+    if (req.userRole !== 'admin') {
+      const shared = await isSharedWithUser({
+        tenantId: req.tenantId,
+        resourceType: 'qqoqccp',
+        resourceId: analysis.id,
+        userId: req.user.id,
+        userRole: req.userRole,
+      });
+      if (!shared) {
+        const categoryAllowed = await hasGenericCategoryPermission({
+          tenantId: req.tenantId,
+          userId: req.user.id,
+          userRole: req.userRole,
+          categoryId: analysis.category_id,
+          permission: 'view',
+        });
+        if (!categoryAllowed) {
+          return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+        }
+      }
+    }
+
+    const template = await fetchTenantTemplate(req.tenantId);
+
+    try {
+      const draft = await generateProcedureDraftFromQqoqccp(analysis, template);
+      res.json({ ...draft, title: analysis.title });
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer un brouillon IA : ${err.message}` });
     }
