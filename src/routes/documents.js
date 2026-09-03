@@ -66,6 +66,17 @@ const ACTIVE_CONTENT_TYPES = new Set([
   'application/x-javascript',
 ]);
 
+// Types affichables en ligne dans /:id/preview-url — décidé par l'extension du nom de fichier,
+// jamais un mimetype déclaré par le client. Pour Supabase, ACTIVE_CONTENT_TYPES neutralise déjà
+// les types actifs à l'upload donc l'URL publique habituelle suffit ; pour Google Drive, voir
+// le champ "disposition" du ticket signé ci-dessous.
+const PREVIEWABLE_EXTENSIONS = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+function getFileExtension(fileName) {
+  const match = /\.([a-z0-9]+)$/i.exec(fileName || '');
+  return match ? match[1].toLowerCase() : '';
+}
+
 function safeStorageContentType(mimetype) {
   return ACTIVE_CONTENT_TYPES.has(mimetype) ? 'application/octet-stream' : mimetype;
 }
@@ -91,10 +102,10 @@ function getTicketSecret() {
 // encodé en base64url : évite qu'un ':' dans un nom de fichier réel ne casse le split ci-dessous.
 const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000;
 
-function signDownloadTicket(tenantId, driveFileId, fileName) {
+function signDownloadTicket(tenantId, driveFileId, fileName, disposition = 'attachment') {
   const expiresAt = Date.now() + DOWNLOAD_TICKET_TTL_MS;
   const fileNameB64 = Buffer.from(fileName || '', 'utf8').toString('base64url');
-  const payload = `${tenantId}:${driveFileId}:${fileNameB64}:${expiresAt}`;
+  const payload = `${tenantId}:${driveFileId}:${fileNameB64}:${expiresAt}:${disposition}`;
   const signature = createHmac('sha256', getTicketSecret()).update(payload).digest('hex');
   return `${payload}.${signature}`;
 }
@@ -114,11 +125,18 @@ function verifyDownloadTicket(ticket) {
     return null;
   }
 
-  const [tenantId, driveFileId, fileNameB64, expiresAtStr] = payload.split(':');
+  // disposition absent (ticket signé avant l'ajout de ce champ, TTL 5 min donc jamais bien
+  // vieux) => 'attachment' par défaut, comportement historique inchangé.
+  const [tenantId, driveFileId, fileNameB64, expiresAtStr, disposition] = payload.split(':');
   const expiresAt = Number(expiresAtStr);
   if (!tenantId || !driveFileId || !expiresAt || Date.now() > expiresAt) return null;
 
-  return { tenantId, driveFileId, fileName: fileNameB64 ? Buffer.from(fileNameB64, 'base64url').toString('utf8') : null };
+  return {
+    tenantId,
+    driveFileId,
+    fileName: fileNameB64 ? Buffer.from(fileNameB64, 'base64url').toString('utf8') : null,
+    disposition: disposition === 'inline' ? 'inline' : 'attachment',
+  };
 }
 
 // GET /api/documents/drive-file — proxy de streaming pour les fichiers (documents courants ET
@@ -142,7 +160,10 @@ router.get('/drive-file', async (req, res) => {
 
   try {
     const driveStream = await getDriveFileStream(accessToken, verified.driveFileId);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(verified.fileName || 'document')}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `${verified.disposition}; filename="${encodeURIComponent(verified.fileName || 'document')}"`
+    );
     driveStream.on('error', (streamErr) => {
       console.error('Erreur de streaming depuis Google Drive :', streamErr);
       if (!res.headersSent) res.status(500).end();
@@ -1153,6 +1174,41 @@ router.get('/:id/download', requireCategoryPermission('view', resolveDocumentByI
   });
 
   res.json({ url });
+});
+
+// GET /api/documents/:id/preview-url — aperçu en ligne (PDF/image) de la version COURANTE
+// uniquement, jamais des versions archivées. previewable=false pour tout autre type : le
+// frontend retombe alors sur le simple bouton Télécharger, rien d'autre à faire côté client.
+router.get('/:id/preview-url', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
+  const { data: document, error } = await supabase
+    .from('documents')
+    .select('id, file_path, file_name, storage_provider')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !document) {
+    return res.status(404).json({ error: 'Document introuvable.' });
+  }
+
+  if (!document.file_path || !PREVIEWABLE_EXTENSIONS.has(getFileExtension(document.file_name))) {
+    return res.json({ previewable: false });
+  }
+
+  const url =
+    document.storage_provider === 'google_drive'
+      ? `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(signDownloadTicket(req.tenantId, document.file_path, document.file_name, 'inline'))}`
+      : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(document.file_path).data.publicUrl;
+
+  await logAudit({
+    tenantId: req.tenantId,
+    documentId: document.id,
+    userId: req.user.id,
+    action: 'previewed',
+    details: { file_name: document.file_name },
+  });
+
+  res.json({ previewable: true, url });
 });
 
 // GET /api/documents/:id/drive-view-link — Prompt F2 : ouvre le document directement dans

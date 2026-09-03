@@ -304,6 +304,87 @@ describe('GET /api/documents/:id — champ linked_capas (traçabilité inverse)'
   });
 });
 
+describe('GET /api/documents/:id/preview-url', () => {
+  it('previewable:true avec une URL pour un PDF', async () => {
+    tenant = await createTenant();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-PREVIEW-001')
+      .field('title', 'Procédure PDF')
+      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure.pdf');
+    expect(doc.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/preview-url`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.previewable).toBe(true);
+    expect(res.body.url).toBeTruthy();
+  });
+
+  it('previewable:false pour un type non prévisualisable (Word)', async () => {
+    tenant = await createTenant();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-PREVIEW-002')
+      .field('title', 'Procédure Word')
+      .attach('file', Buffer.from('contenu factice'), 'procedure.docx');
+    expect(doc.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/preview-url`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ previewable: false });
+  });
+
+  it('previewable:false sans fichier associé', async () => {
+    tenant = await createTenant();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-PREVIEW-003')
+      .field('title', 'Sans fichier');
+    expect(doc.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/preview-url`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.previewable).toBe(false);
+  });
+
+  it("404 pour un member sans accès à une catégorie restreinte", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Restreinte aperçu', is_restricted: true })
+      .select()
+      .single();
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-PREVIEW-004')
+      .field('title', 'Procédure restreinte')
+      .field('category_id', category.id)
+      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure.pdf');
+    expect(doc.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/preview-url`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
 // Bug réel rapporté : un membre appartenait à un groupe autorisé sur une catégorie restreinte,
 // et l'admin voulait lui masquer spécifiquement cette catégorie malgré son groupe — l'ancienne
 // logique retombait sur le groupe dès que la règle directe n'était pas "true", laissant les
