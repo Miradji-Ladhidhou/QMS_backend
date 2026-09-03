@@ -1025,3 +1025,51 @@ describe('POST /api/documents/:id/submit-for-approval — habilitation des appro
     expect(res.status).toBe(201);
   });
 });
+
+describe('GET /api/documents/:id/certificate', () => {
+  it('génère un certificat PDF valide pour un document approuvé', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CERT-001')
+      .field('title', 'Procédure certifiée');
+    expect(doc.status).toBe(201);
+
+    const submitted = await request(app)
+      .post(`/api/documents/${doc.body.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ approver_ids: [manager.id] });
+    expect(submitted.status).toBe(201);
+
+    const decided = await request(app)
+      .post(`/api/workflows/${submitted.body.workflow.id}/decide`)
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ decision: 'approved' });
+    expect(decided.status).toBe(200);
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/certificate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+    expect(res.status).toBe(200);
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it("404 sans workflow approuvé", async () => {
+    tenant = await createTenant();
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CERT-002')
+      .field('title', 'Document non approuvé');
+
+    const res = await request(app)
+      .get(`/api/documents/${doc.body.id}/certificate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+});

@@ -7,6 +7,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/auditLog.js';
 import { buildCertificatePdf } from '../services/certificatePdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { extractText } from '../services/textExtraction.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
@@ -714,7 +715,16 @@ router.get('/:id/certificate', requireCategoryPermission('view', resolveDocument
     return res.status(500).json({ error: 'Impossible de récupérer les approbations.' });
   }
 
-  const pdfBuffer = await buildCertificatePdf({ document, workflow, approvals });
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+
+  const pdfBuffer = await buildCertificatePdf({
+    tenantName: tenant?.name,
+    tenantLogo,
+    document,
+    workflow,
+    approvals,
+  });
 
   await logAudit({
     tenantId: req.tenantId,
