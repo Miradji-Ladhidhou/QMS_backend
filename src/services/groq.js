@@ -190,3 +190,198 @@ Description de l'activité : ${context}`;
 export async function generateRiskSuggestion(data) {
   return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data));
 }
+
+// =============================================================================
+// Module Procédures — prompts-implementation-module-procedures.md (Prompt 3) référençait un
+// fichier de templates system/user "fournis séparément" qui n'a jamais existé (placeholder
+// resté vide) : ces 5 prompts sont donc rédigés ici, dans le même style que les blocs
+// ci-dessus, plutôt que repris d'un fichier externe. Comme le reste du module Procédures
+// (routes, colonnes), noms de fonctions en anglais — cohérent avec generateQqoqccpSuggestion/
+// generateRiskSuggestion/generateHaccpHazardSuggestion ci-dessus.
+//
+// Aucune de ces fonctions ne persiste ni ne journalise quoi que ce soit elle-même (même
+// principe que generateRiskSuggestion/generateHaccpHazardSuggestion) : c'est à la route
+// appelante de poser ai_generated: true sur la ligne procedure_versions au moment où une
+// suggestion est effectivement enregistrée — pas encore câblé dans routes/procedures.js à ce
+// stade (Prompt 3 ne portait que sur ce fichier de service).
+// =============================================================================
+
+const PROCEDURE_DRAFT_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français, quelle que soit la langue du contexte fourni en entrée.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "objet": "string",
+  "domaine_application": "string",
+  "responsabilites": "string",
+  "sections": [{"key": "string", "label": "string", "content": "string"}],
+  "documents_associes": ["string", "string"]
+}
+Le tableau "sections" doit contenir EXACTEMENT une entrée par section du gabarit fourni, dans le même ordre, avec le même "key"/"label" que dans le gabarit — seul "content" est à rédiger.`;
+
+const PROCEDURE_DRAFT_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à rédiger le brouillon d'une procédure documentée à partir d'un titre, d'un processus concerné, et du gabarit de sections imposé par l'entreprise.
+
+Rédige un contenu plausible et structuré pour CHAQUE section du gabarit, cohérent avec le titre et le processus fournis — jamais de texte générique du type "à compléter", toujours une proposition concrète que le rédacteur pourra ensuite corriger.
+
+${PROCEDURE_DRAFT_RESPONSE_CONTRACT}`;
+
+function buildProcedureDraftUserPrompt(formData, template) {
+  const sections = (template?.section_structure || [])
+    .map((section, index) => `${index + 1}. ${section.label} (key: ${section.key})`)
+    .join('\n');
+  return `Titre de la procédure : ${formData?.title || 'non renseigné'}
+Processus concerné : ${formData?.process || 'non renseigné'}
+
+Gabarit de sections à respecter :
+${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}`;
+}
+
+// formData : { title, process } — mêmes noms que procedures.title/process. template : la ligne
+// procedure_templates du tenant ({ section_structure }), ou null si aucun gabarit configuré.
+export async function generateProcedureDraft(formData, template) {
+  return callGroq(PROCEDURE_DRAFT_SYSTEM_PROMPT, buildProcedureDraftUserPrompt(formData, template));
+}
+
+const PROCEDURE_COMPLIANCE_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "compliant": true,
+  "anomalies": [{"section_key": "string", "issue": "string", "severity": "minor"}]
+}
+Où severity vaut exactement 'minor', 'major' ou 'blocking', et section_key est TOUJOURS la valeur "key" de la section concernée telle que fournie dans le gabarit (ex. "objectif"), jamais son libellé affiché (ex. "Objectif"). "compliant" vaut false dès qu'au moins une anomalie "major" ou "blocking" est détectée. Un tableau "anomalies" vide signifie une conformité totale.`;
+
+const PROCEDURE_COMPLIANCE_SYSTEM_PROMPT = `Tu es un auditeur qualité (ISO 9001) qui vérifie qu'une procédure respecte le gabarit de sections imposé par l'entreprise avant sa soumission pour validation.
+
+Compare le contenu de la procédure au gabarit attendu : une section manquante, vide, ou dont le contenu ne correspond manifestement pas à son intitulé est une anomalie. Ne signale JAMAIS une anomalie de style ou de préférence rédactionnelle — uniquement des manques structurels réels.
+
+${PROCEDURE_COMPLIANCE_RESPONSE_CONTRACT}`;
+
+function buildProcedureComplianceUserPrompt(procedureContent, template) {
+  const expectedSections = (template?.section_structure || []).map((s) => `- ${s.label} (key: ${s.key})`).join('\n');
+  const actualSections = (procedureContent?.sections || [])
+    .map((s) => `- ${s.label} (key: ${s.key}) : ${s.content ? s.content.slice(0, 300) : '(vide)'}`)
+    .join('\n');
+  return `Sections attendues par le gabarit :
+${expectedSections || 'Aucun gabarit configuré.'}
+
+Contenu actuel de la procédure :
+${actualSections || 'Aucune section rédigée.'}`;
+}
+
+// procedureContent : le jsonb procedure_versions.content de la version à vérifier. template :
+// la ligne procedure_templates du tenant.
+export async function checkProcedureTemplateCompliance(procedureContent, template) {
+  return callGroq(PROCEDURE_COMPLIANCE_SYSTEM_PROMPT, buildProcedureComplianceUserPrompt(procedureContent, template));
+}
+
+const PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "summary": "string",
+  "key_points": ["string", "string"],
+  "audience_notes": "string"
+}
+"summary" : un résumé de 3 à 5 phrases de la procédure, compréhensible sans lire le document complet. "key_points" : les points essentiels à retenir, sous forme de puces courtes et actionnables (5 à 8 maximum). "audience_notes" : ce qui concerne SPÉCIFIQUEMENT le public cible fourni, pas un résumé générique.`;
+
+const PROCEDURE_DISTRIBUTION_SHEET_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui prépare une fiche de diffusion — un résumé condensé d'une procédure destiné à un public précis qui doit la connaître sans nécessairement la lire en entier.
+
+À partir du contenu complet de la procédure et du public cible fourni, produis une fiche claire, concrète, et centrée sur ce que CE public doit savoir/faire — pas une simple table des matières.
+
+${PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT}`;
+
+function formatProcedureContentForPrompt(content) {
+  if (!content) return '(aucun contenu)';
+  // "key" toujours affiché à côté du libellé : c'est cette valeur, jamais le libellé, que les
+  // réponses JSON doivent renvoyer dans section_key (voir les RESPONSE_CONTRACT ci-dessus).
+  const sections = (content.sections || []).map((s) => `## ${s.label} (key: ${s.key})\n${s.content || ''}`).join('\n\n');
+  return `Objet : ${content.objet || 'non renseigné'}
+Domaine d'application : ${content.domaine_application || 'non renseigné'}
+Responsabilités : ${content.responsabilites || 'non renseigné'}
+
+${sections}`;
+}
+
+function buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience) {
+  return `Public cible : ${targetAudience || 'non renseigné'}
+
+Contenu complet de la procédure :
+${formatProcedureContentForPrompt(procedureContent)}`;
+}
+
+// procedureContent : le jsonb content de la version approuvée. targetAudience : texte libre
+// (ex. "nouveaux opérateurs de la ligne 2").
+export async function generateProcedureDistributionSheet(procedureContent, targetAudience) {
+  return callGroq(
+    PROCEDURE_DISTRIBUTION_SHEET_SYSTEM_PROMPT,
+    buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience)
+  );
+}
+
+const PROCEDURE_VERSION_COMPARISON_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "summary": "string",
+  "changes": [{"section_key": "string", "change_type": "modified", "description": "string"}]
+}
+Où change_type vaut exactement 'added', 'removed' ou 'modified', et section_key est TOUJOURS la valeur "key" de la section (ex. "objectif"), jamais son libellé affiché (ex. "Objectif"). "summary" : une synthèse de 2 à 4 phrases de l'ampleur et de la nature des changements. "changes" : une entrée par section réellement modifiée entre les deux versions — jamais une section dont le contenu est resté identique.`;
+
+const PROCEDURE_VERSION_COMPARISON_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui compare deux versions d'une procédure pour préparer sa revue par le validateur.
+
+Identifie précisément ce qui a changé entre la version précédente et la nouvelle version, section par section — ajouts, suppressions, modifications de fond. Ignore les changements purement typographiques (orthographe, ponctuation) qui ne modifient pas le sens.
+
+${PROCEDURE_VERSION_COMPARISON_RESPONSE_CONTRACT}`;
+
+function buildProcedureVersionComparisonUserPrompt(previousContent, newContent) {
+  return `Version précédente :
+${previousContent ? formatProcedureContentForPrompt(previousContent) : "(aucune version précédente — c'est la toute première)"}
+
+Nouvelle version :
+${formatProcedureContentForPrompt(newContent)}`;
+}
+
+// previousContent : content de la version précédente (peut être null pour une toute première
+// version). newContent : content de la nouvelle version.
+export async function compareProcedureVersions(previousContent, newContent) {
+  return callGroq(
+    PROCEDURE_VERSION_COMPARISON_SYSTEM_PROMPT,
+    buildProcedureVersionComparisonUserPrompt(previousContent, newContent)
+  );
+}
+
+const PROCEDURE_REVISION_FROM_CAPA_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "rationale": "string",
+  "suggested_changes": [{"section_key": "string", "current_excerpt": "string", "suggested_content": "string"}]
+}
+section_key est TOUJOURS la valeur "key" de la section (ex. "objectif"), jamais son libellé affiché (ex. "Objectif"). "rationale" : pourquoi cette CAPA justifie (ou non) une révision de la procédure (2 à 3 phrases). "suggested_changes" : une entrée par section à modifier — "current_excerpt" cite brièvement ce qui pose problème dans le texte actuel (chaîne vide si la section est absente), "suggested_content" est le nouveau texte proposé pour cette section. Ne propose de changement QUE si la CAPA le justifie réellement — un tableau vide est une réponse valide si la procédure n'a pas besoin d'évoluer.`;
+
+const PROCEDURE_REVISION_FROM_CAPA_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui détermine si une action corrective/préventive (CAPA) déjà traitée révèle un manque dans une procédure existante, et propose la révision correspondante.
+
+À partir du contenu de la CAPA (cause racine, action corrective, action préventive) et du contenu actuel de la procédure, identifie les sections qui devraient être mises à jour pour empêcher que ce problème ne se reproduise — jamais une réécriture complète, seulement les sections réellement concernées.
+
+${PROCEDURE_REVISION_FROM_CAPA_RESPONSE_CONTRACT}`;
+
+function buildProcedureRevisionFromCapaUserPrompt(capaData, currentProcedure) {
+  return `CAPA :
+Titre : ${capaData?.title || 'non renseigné'}
+Cause racine : ${capaData?.root_cause || 'non renseignée'}
+Action corrective : ${capaData?.corrective_action || 'non renseignée'}
+Action préventive : ${capaData?.preventive_action || 'non renseignée'}
+
+Contenu actuel de la procédure :
+${formatProcedureContentForPrompt(currentProcedure)}`;
+}
+
+// capaData : { title, root_cause, corrective_action, preventive_action } — mêmes noms que
+// capas (voir schema.sql), pour passer directement une ligne de la table. currentProcedure :
+// le jsonb content de la version courante de la procédure.
+export async function suggestProcedureRevisionFromCapa(capaData, currentProcedure) {
+  return callGroq(
+    PROCEDURE_REVISION_FROM_CAPA_SYSTEM_PROMPT,
+    buildProcedureRevisionFromCapaUserPrompt(capaData, currentProcedure)
+  );
+}
