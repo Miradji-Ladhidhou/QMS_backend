@@ -22,6 +22,7 @@ router.post(
   [
     body('title').trim().isLength({ min: 1, max: 200 }).withMessage('Titre requis.'),
     body('subtitle').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
+    body('generatedBy').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('columns').isArray({ min: 1, max: 20 }).withMessage('Colonnes invalides.'),
     body('columns.*.key').trim().isLength({ min: 1 }),
     body('columns.*.label').trim().isLength({ min: 1 }),
@@ -33,12 +34,20 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { title, subtitle, columns, rows } = req.body;
+    const { title, subtitle, generatedBy, columns, rows } = req.body;
 
     try {
       const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
       const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-      const pdfBuffer = await buildListReportPdf({ tenantName: tenant?.name, tenantLogo, title, subtitle, columns, rows });
+      const pdfBuffer = await buildListReportPdf({
+        tenantName: tenant?.name,
+        tenantLogo,
+        title,
+        subtitle,
+        generatedBy,
+        columns,
+        rows,
+      });
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'attachment; filename="rapport.pdf"');

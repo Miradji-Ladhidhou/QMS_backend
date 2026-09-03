@@ -62,4 +62,24 @@ describe('POST /api/reports/table-pdf', () => {
     const buffer = Buffer.from(res.body);
     expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
   });
+
+  it('200 avec generatedBy fourni (traçabilité — voir listReportPdf.js)', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/reports/table-pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob')
+      .send({
+        title: 'Registre des risques',
+        subtitle: '1 risque',
+        generatedBy: 'Marie Dupont',
+        columns: [{ key: 'title', label: 'Titre' }],
+        rows: [{ title: 'Panne serveur' }],
+      });
+
+    expect(res.status).toBe(200);
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+  });
 });

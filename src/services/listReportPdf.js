@@ -23,12 +23,15 @@ function formatDateTime(dateStr) {
 // tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
 // dans qqoqccpPdf.js/kpiReportPdf.js (un format que pdfkit ne sait pas décoder ne doit jamais
 // faire échouer toute la génération du rapport).
-function drawPageHeader(doc, tenantName, title) {
+function drawPageHeader(doc, tenantName, title, generatedBy) {
   doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
   doc.fillColor('#ffffff').fontSize(18).text(title, PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 60 });
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
+  const generatedLine = generatedBy
+    ? `Généré par ${generatedBy} le ${formatDateTime(new Date().toISOString())}`
+    : `Généré le ${formatDateTime(new Date().toISOString())}`;
+  doc.text(generatedLine, PAGE_MARGIN, 65);
   doc.fillColor(INK);
   doc.y = 104;
 }
@@ -59,7 +62,7 @@ function resolveColumnWidths(columns) {
 // Générateur de PDF générique pour toutes les pages "liste" de l'application (tableau de
 // colonnes/lignes déjà formatées côté appelant) — un seul module réutilisé par toutes les
 // routes d'export plutôt qu'un service dédié par outil, voir routes/reports.js.
-export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, columns, rows }) {
+export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, generatedBy, columns, rows }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -68,11 +71,11 @@ export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, co
     doc.on('error', reject);
     useUnicodeFont(doc);
     doc.on('pageAdded', () => {
-      drawPageHeader(doc, tenantName, title);
+      drawPageHeader(doc, tenantName, title, generatedBy);
       drawLogo(doc, tenantLogo);
     });
 
-    drawPageHeader(doc, tenantName, title);
+    drawPageHeader(doc, tenantName, title, generatedBy);
     drawLogo(doc, tenantLogo);
 
     if (subtitle) {
