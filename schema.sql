@@ -977,7 +977,7 @@ create table tasks (
   category_id           uuid references categories (id) on delete set null,
   priority              text not null default 'normal' check (priority in ('low', 'normal', 'high', 'urgent')),
   checklist             jsonb not null default '[]',
-  recurrence            text not null default 'none' check (recurrence in ('none', 'daily', 'weekly', 'monthly')),
+  recurrence            text not null default 'none' check (recurrence in ('none', 'daily', 'weekly', 'monthly', 'yearly')),
   recurrence_interval   integer not null default 1 check (recurrence_interval > 0),
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now(),

@@ -180,6 +180,28 @@ describe('Tasks — récurrence', () => {
     expect(next.checklist).toEqual([]);
   });
 
+  it('clôturer une tâche annuelle recrée la prochaine occurrence un an plus tard', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Revue de direction', due_date: '2026-06-01', recurrence: 'yearly', recurrence_interval: 1 });
+    expect(created.status).toBe(201);
+
+    await request(app)
+      .patch(`/api/tasks/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'done' })
+      .expect(200);
+
+    const list = await request(app).get('/api/tasks').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const next = list.body.find((t) => t.id !== created.body.id && t.title === 'Revue de direction');
+    expect(next).toBeDefined();
+    expect(next.due_date).toBe('2027-06-01');
+    expect(next.recurrence).toBe('yearly');
+  });
+
   it('clôturer une tâche non récurrente ne crée aucune occurrence', async () => {
     tenant = await createTenant();
 

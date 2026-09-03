@@ -7,7 +7,7 @@ import { filterViewableByCategory, requireValidCategoryId } from '../middleware/
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
 const PRIORITIES = ['low', 'normal', 'high', 'urgent'];
-const RECURRENCES = ['none', 'daily', 'weekly', 'monthly'];
+const RECURRENCES = ['none', 'daily', 'weekly', 'monthly', 'yearly'];
 
 router.use(requireAuth);
 
@@ -29,6 +29,7 @@ function nextDueDate(dueDate, recurrence, interval) {
   if (recurrence === 'daily') date.setUTCDate(date.getUTCDate() + interval);
   else if (recurrence === 'weekly') date.setUTCDate(date.getUTCDate() + interval * 7);
   else if (recurrence === 'monthly') date.setUTCMonth(date.getUTCMonth() + interval);
+  else if (recurrence === 'yearly') date.setUTCFullYear(date.getUTCFullYear() + interval);
   return date.toISOString().slice(0, 10);
 }
 
