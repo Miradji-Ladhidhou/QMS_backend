@@ -164,7 +164,33 @@ router.get('/:id', async (req, res) => {
     myAcknowledgment = data || null;
   }
 
-  res.json({ ...procedure, versions, my_acknowledgment: myAcknowledgment });
+  // Traçabilité inverse (voir procedure_capa_links/procedure_audit_links dans schema.sql) —
+  // même esprit que linked_capas sur GET /api/documents/:id, mais many-to-many attachable/
+  // détachable après coup plutôt qu'un unique ref_document fixé à la création.
+  const [{ data: capaLinks, error: capaLinksError }, { data: auditLinks, error: auditLinksError }] = await Promise.all([
+    supabase
+      .from('procedure_capa_links')
+      .select('capa:capas(id, number, title, status)')
+      .eq('tenant_id', req.tenantId)
+      .eq('procedure_id', procedure.id),
+    supabase
+      .from('procedure_audit_links')
+      .select('audit:audits(id, title, planned_date, status)')
+      .eq('tenant_id', req.tenantId)
+      .eq('procedure_id', procedure.id),
+  ]);
+
+  if (capaLinksError || auditLinksError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les éléments liés.' });
+  }
+
+  res.json({
+    ...procedure,
+    versions,
+    my_acknowledgment: myAcknowledgment,
+    linked_capas: capaLinks.map((link) => link.capa),
+    linked_audits: auditLinks.map((link) => link.audit),
+  });
 });
 
 // POST /api/procedures — création (statut brouillon), ouvert à tout rôle authentifié, même
@@ -546,5 +572,112 @@ router.post(
     res.json(data);
   }
 );
+
+// POST /api/procedures/:id/link-capa — rattache un CAPA existant à cette procédure (traçabilité
+// qualité : une procédure révisée suite à une non-conformité). Ouvert à tout rôle authentifié,
+// même esprit que le reste du module — ni le CAPA ni la procédure ne changent de contenu,
+// simple lien de traçabilité. Appelable aussi bien depuis ProcedureDetail.jsx que depuis
+// CapaDetail.jsx (le sens le plus fréquent en pratique, voir le body { capa_id }).
+router.post('/:id/link-capa', [body('capa_id').isUUID().withMessage('CAPA invalide.')], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+  }
+
+  const [{ data: procedure }, { data: capa }] = await Promise.all([
+    supabase.from('procedures').select('id').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle(),
+    supabase.from('capas').select('id, number, title, status').eq('tenant_id', req.tenantId).eq('id', req.body.capa_id).maybeSingle(),
+  ]);
+
+  if (!procedure) return res.status(404).json({ error: 'Procédure introuvable.' });
+  if (!capa) return res.status(404).json({ error: 'CAPA introuvable.' });
+
+  const { error } = await supabase.from('procedure_capa_links').insert({
+    tenant_id: req.tenantId,
+    procedure_id: procedure.id,
+    capa_id: capa.id,
+    created_by: req.user.id,
+  });
+
+  if (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'Ce CAPA est déjà lié à cette procédure.' });
+    }
+    return res.status(500).json({ error: 'Erreur lors de la création du lien.' });
+  }
+
+  res.status(201).json(capa);
+});
+
+// DELETE /api/procedures/:id/link-capa/:capaId — retire le lien, jamais le CAPA ni la
+// procédure eux-mêmes.
+router.delete('/:id/link-capa/:capaId', async (req, res) => {
+  const { error, count } = await supabase
+    .from('procedure_capa_links')
+    .delete({ count: 'exact' })
+    .eq('tenant_id', req.tenantId)
+    .eq('procedure_id', req.params.id)
+    .eq('capa_id', req.params.capaId);
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression du lien.' });
+  }
+  if (!count) {
+    return res.status(404).json({ error: 'Lien introuvable.' });
+  }
+
+  res.status(204).end();
+});
+
+// POST /api/procedures/:id/link-audit et DELETE .../link-audit/:auditId — même principe que
+// link-capa ci-dessus, pour le module Audits.
+router.post('/:id/link-audit', [body('audit_id').isUUID().withMessage('Audit invalide.')], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+  }
+
+  const [{ data: procedure }, { data: audit }] = await Promise.all([
+    supabase.from('procedures').select('id').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle(),
+    supabase.from('audits').select('id, title, planned_date, status').eq('tenant_id', req.tenantId).eq('id', req.body.audit_id).maybeSingle(),
+  ]);
+
+  if (!procedure) return res.status(404).json({ error: 'Procédure introuvable.' });
+  if (!audit) return res.status(404).json({ error: 'Audit introuvable.' });
+
+  const { error } = await supabase.from('procedure_audit_links').insert({
+    tenant_id: req.tenantId,
+    procedure_id: procedure.id,
+    audit_id: audit.id,
+    created_by: req.user.id,
+  });
+
+  if (error) {
+    if (error.code === '23505') {
+      return res.status(409).json({ error: 'Cet audit est déjà lié à cette procédure.' });
+    }
+    return res.status(500).json({ error: 'Erreur lors de la création du lien.' });
+  }
+
+  res.status(201).json(audit);
+});
+
+router.delete('/:id/link-audit/:auditId', async (req, res) => {
+  const { error, count } = await supabase
+    .from('procedure_audit_links')
+    .delete({ count: 'exact' })
+    .eq('tenant_id', req.tenantId)
+    .eq('procedure_id', req.params.id)
+    .eq('audit_id', req.params.auditId);
+
+  if (error) {
+    return res.status(500).json({ error: 'Erreur lors de la suppression du lien.' });
+  }
+  if (!count) {
+    return res.status(404).json({ error: 'Lien introuvable.' });
+  }
+
+  res.status(204).end();
+});
 
 export default router;

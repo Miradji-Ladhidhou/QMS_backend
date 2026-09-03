@@ -200,11 +200,29 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les commentaires.' });
   }
 
+  // Traçabilité inverse : procedure_capa_links pointe de la procédure vers ce CAPA (créé et
+  // géré depuis routes/procedures.js#link-capa), même principe que linked_capas sur GET
+  // /api/documents/:id mais dans l'autre sens.
+  const { data: procedureLinks, error: procedureLinksError } = await supabase
+    .from('procedure_capa_links')
+    .select('procedure:procedures(id, number, title, status)')
+    .eq('tenant_id', req.tenantId)
+    .eq('capa_id', capa.id);
+
+  if (procedureLinksError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les procédures liées.' });
+  }
+
   // is_private_to_me : évite au frontend de comparer capa.category.owner_user_id à
   // l'utilisateur courant lui-même (source d'un vrai bug de course, currentUser et cette
   // requête chargeant en parallèle et pas forcément dans le même ordre) — voir
   // hasGenericCategoryPermission pour le même raisonnement côté can_edit sur les documents.
-  res.json({ ...capa, comments, is_private_to_me: capa.category?.owner_user_id === req.user.id });
+  res.json({
+    ...capa,
+    comments,
+    linked_procedures: procedureLinks.map((link) => link.procedure),
+    is_private_to_me: capa.category?.owner_user_id === req.user.id,
+  });
 });
 
 // POST /api/capas — création, numérotation automatique CAPA-{année}-{seq}

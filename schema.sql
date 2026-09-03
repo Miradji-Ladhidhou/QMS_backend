@@ -872,6 +872,30 @@ create table procedure_acknowledgments (
   unique (procedure_version_id, user_id)
 );
 
+-- Traçabilité inverse Procédures <-> CAPA/audits : contrairement à capas.ref_document (un seul
+-- FK, fixé à la création de la CAPA), un même CAPA ou audit peut concerner plusieurs
+-- procédures et vice-versa — table de liaison many-to-many plutôt qu'une colonne, attachable/
+-- détachable après coup depuis n'importe lequel des deux côtés.
+create table procedure_capa_links (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants (id) on delete cascade,
+  procedure_id  uuid not null references procedures (id) on delete cascade,
+  capa_id       uuid not null references capas (id) on delete cascade,
+  created_by    uuid references users (id) on delete set null,
+  created_at    timestamptz not null default now(),
+  unique (procedure_id, capa_id)
+);
+
+create table procedure_audit_links (
+  id            uuid primary key default gen_random_uuid(),
+  tenant_id     uuid not null references tenants (id) on delete cascade,
+  procedure_id  uuid not null references procedures (id) on delete cascade,
+  audit_id      uuid not null references audits (id) on delete cascade,
+  created_by    uuid references users (id) on delete set null,
+  created_at    timestamptz not null default now(),
+  unique (procedure_id, audit_id)
+);
+
 create table user_notification_preferences (
   user_id                   uuid primary key references users (id) on delete cascade,
   tenant_id                 uuid not null references tenants (id) on delete cascade,
@@ -1313,6 +1337,12 @@ create index idx_procedure_versions_procedure_id on procedure_versions (procedur
 create index idx_procedure_templates_tenant_id on procedure_templates (tenant_id);
 create index idx_procedure_acknowledgments_tenant_id on procedure_acknowledgments (tenant_id);
 create index idx_procedure_acknowledgments_procedure_version_id on procedure_acknowledgments (procedure_version_id);
+create index idx_procedure_capa_links_tenant_id on procedure_capa_links (tenant_id);
+create index idx_procedure_capa_links_procedure_id on procedure_capa_links (procedure_id);
+create index idx_procedure_capa_links_capa_id on procedure_capa_links (capa_id);
+create index idx_procedure_audit_links_tenant_id on procedure_audit_links (tenant_id);
+create index idx_procedure_audit_links_procedure_id on procedure_audit_links (procedure_id);
+create index idx_procedure_audit_links_audit_id on procedure_audit_links (audit_id);
 
 create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
 
@@ -1617,6 +1647,8 @@ alter table procedures enable row level security;
 alter table procedure_versions enable row level security;
 alter table procedure_templates enable row level security;
 alter table procedure_acknowledgments enable row level security;
+alter table procedure_capa_links enable row level security;
+alter table procedure_audit_links enable row level security;
 alter table user_notification_preferences enable row level security;
 alter table notification_log enable row level security;
 alter table notifications enable row level security;
@@ -1850,6 +1882,16 @@ create policy procedure_templates_isolation on procedure_templates
   with check (tenant_id = auth_tenant_id());
 
 create policy procedure_acknowledgments_isolation on procedure_acknowledgments
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy procedure_capa_links_isolation on procedure_capa_links
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy procedure_audit_links_isolation on procedure_audit_links
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

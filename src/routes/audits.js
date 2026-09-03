@@ -79,7 +79,25 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les constats de cet audit.' });
   }
 
-  res.json({ ...audit, findings, is_private_to_me: audit.category?.owner_user_id === req.user.id });
+  // Traçabilité inverse : procedure_audit_links pointe de la procédure vers cet audit (créé et
+  // géré depuis routes/procedures.js#link-audit), même principe que linked_procedures sur GET
+  // /api/capas/:id.
+  const { data: procedureLinks, error: procedureLinksError } = await supabase
+    .from('procedure_audit_links')
+    .select('procedure:procedures(id, number, title, status)')
+    .eq('tenant_id', req.tenantId)
+    .eq('audit_id', audit.id);
+
+  if (procedureLinksError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les procédures liées.' });
+  }
+
+  res.json({
+    ...audit,
+    findings,
+    linked_procedures: procedureLinks.map((link) => link.procedure),
+    is_private_to_me: audit.category?.owner_user_id === req.user.id,
+  });
 });
 
 const AUDIT_VALIDATORS = [

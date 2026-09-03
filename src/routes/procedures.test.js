@@ -448,3 +448,79 @@ describe('POST /api/procedures/:id/obsolete', () => {
     expect(obsoleteFilter.body.map((p) => p.number)).toContain('PROC-060');
   });
 });
+
+describe('Traçabilité inverse Procédures <-> CAPA', () => {
+  it('un lien créé apparaît des deux côtés (GET procédure ET GET CAPA), et disparaît des deux côtés une fois retiré', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-070');
+    const capaRes = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Non-conformité ayant entraîné une révision' });
+    expect(capaRes.status).toBe(201);
+    const capa = capaRes.body;
+
+    const linked = await request(app)
+      .post(`/api/procedures/${procedure.id}/link-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ capa_id: capa.id });
+    expect(linked.status).toBe(201);
+
+    const duplicate = await request(app)
+      .post(`/api/procedures/${procedure.id}/link-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ capa_id: capa.id });
+    expect(duplicate.status).toBe(409);
+
+    const procedureAfterLink = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(procedureAfterLink.body.linked_capas.map((c) => c.id)).toEqual([capa.id]);
+
+    const capaAfterLink = await request(app)
+      .get(`/api/capas/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(capaAfterLink.body.linked_procedures.map((p) => p.id)).toEqual([procedure.id]);
+
+    const unlinked = await request(app)
+      .delete(`/api/procedures/${procedure.id}/link-capa/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(unlinked.status).toBe(204);
+
+    const procedureAfterUnlink = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(procedureAfterUnlink.body.linked_capas).toEqual([]);
+
+    const capaAfterUnlink = await request(app)
+      .get(`/api/capas/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(capaAfterUnlink.body.linked_procedures).toEqual([]);
+
+    const unlinkAgain = await request(app)
+      .delete(`/api/procedures/${procedure.id}/link-capa/${capa.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(unlinkAgain.status).toBe(404);
+  });
+
+  it("un CAPA ou une procédure d'un autre tenant ne peut pas être lié", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const procedure = await createProcedure(tenant.admin.token, 'PROC-071');
+      const otherCapaRes = await request(app)
+        .post('/api/capas')
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ title: 'CAPA d’un autre tenant' });
+      expect(otherCapaRes.status).toBe(201);
+
+      const res = await request(app)
+        .post(`/api/procedures/${procedure.id}/link-capa`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ capa_id: otherCapaRes.body.id });
+      expect(res.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
