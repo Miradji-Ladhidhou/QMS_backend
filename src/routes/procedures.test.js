@@ -588,6 +588,41 @@ describe('GET /api/procedures — filtres', () => {
     expect(res.body.map((p) => p.number)).toEqual([withMatch.number]);
     expect(res.body.map((p) => p.number)).not.toContain(withoutMatch.number);
   });
+
+  // Colonnes exactement consommées par l'export CSV/Excel de la liste côté frontend
+  // (Procedures.jsx#buildExportColumns) : ce test protège le contrat de données dont cet
+  // export dépend, pas le rendu du fichier lui-même (CSV généré côté client, Excel générique
+  // et déjà couvert par reports.test.js).
+  it('GET / renvoie tous les champs consommés par les colonnes d’export (version courante, date de validation, auteur, validateur)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-046', { process: 'Qualité' });
+    const version = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    expect(version.status).toBe(201);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/validate`)
+      .set('Authorization', `Bearer ${validator.token}`)
+      .expect(200);
+
+    const res = await request(app).get('/api/procedures').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+
+    const row = res.body.find((p) => p.number === 'PROC-046');
+    expect(row.title).toBe(procedure.title);
+    expect(row.status).toBe('approved');
+    expect(row.next_review_date).toBeNull();
+    expect(row.current_version.version).toBe('1.0');
+    expect(row.current_version.validated_at).toBeTruthy();
+    expect(row.current_version.author.id).toBe(tenant.admin.id);
+    expect(row.current_version.validator.id).toBe(validator.id);
+  });
 });
 
 describe('POST /api/procedures/:id/obsolete', () => {
@@ -700,6 +735,67 @@ describe('Traçabilité inverse Procédures <-> CAPA', () => {
         .set('Authorization', `Bearer ${tenant.admin.token}`)
         .send({ capa_id: otherCapaRes.body.id });
       expect(res.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
+describe("Isolation multi-tenant sur l'ensemble des routes du module (pas seulement la liste)", () => {
+  it("un id d'un autre tenant est traité comme introuvable sur détail, création de version, édition, workflow, obsolescence, suppression et export PDF", async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const foreignProcedure = await createProcedure(otherTenant.admin.token, 'PROC-I01');
+      const foreignVersionRes = await request(app)
+        .post(`/api/procedures/${foreignProcedure.id}/versions`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({});
+      expect(foreignVersionRes.status).toBe(201);
+      const foreignVersion = foreignVersionRes.body;
+
+      const detail = await request(app)
+        .get(`/api/procedures/${foreignProcedure.id}`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(detail.status).toBe(404);
+
+      const newVersion = await request(app)
+        .post(`/api/procedures/${foreignProcedure.id}/versions`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({});
+      expect(newVersion.status).toBe(404);
+
+      const edit = await request(app)
+        .put(`/api/procedures/${foreignProcedure.id}/versions/${foreignVersion.id}`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ content: { objet: 'Tentative' } });
+      expect(edit.status).toBe(404);
+
+      const submit = await request(app)
+        .post(`/api/procedures/${foreignProcedure.id}/versions/${foreignVersion.id}/submit`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(submit.status).toBe(404);
+
+      const obsolete = await request(app)
+        .post(`/api/procedures/${foreignProcedure.id}/obsolete`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(obsolete.status).toBe(404);
+
+      const pdf = await request(app)
+        .get(`/api/procedures/${foreignProcedure.id}/pdf`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(pdf.status).toBe(404);
+
+      const del = await request(app)
+        .delete(`/api/procedures/${foreignProcedure.id}`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(del.status).toBe(404);
+
+      // Rien de tout ça n'a pu modifier la procédure de l'autre tenant, malgré des tentatives
+      // avec un token admin valide (juste pas du bon tenant).
+      const stillThere = await admin.from('procedures').select('id, status').eq('id', foreignProcedure.id).maybeSingle();
+      expect(stillThere.data).not.toBeNull();
+      expect(stillThere.data.status).toBe('draft');
     } finally {
       await otherTenant.cleanup();
     }

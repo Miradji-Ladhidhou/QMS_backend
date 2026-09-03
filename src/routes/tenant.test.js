@@ -194,6 +194,48 @@ describe('Visibilité de menu = accès API réellement bloqué (requireMenuVisib
     expect(res.status).toBe(403);
   });
 
+  it('le blocage couvre toutes les routes du module Procédures (liste, détail, création, versions, gabarit)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const procedure = await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ number: 'PROC-MENU-1', title: 'Procédure de test' });
+    expect(procedure.status).toBe(201);
+
+    await request(app)
+      .patch('/api/tenant/menu-settings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role_hidden_items: { member: ['procedures'] }, user_overrides: {} })
+      .expect(200);
+
+    const list = await request(app).get('/api/procedures').set('Authorization', `Bearer ${member.token}`);
+    expect(list.status).toBe(403);
+
+    const detail = await request(app)
+      .get(`/api/procedures/${procedure.body.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(detail.status).toBe(403);
+
+    const create = await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ number: 'PROC-MENU-2', title: 'Autre procédure' });
+    expect(create.status).toBe(403);
+
+    const versions = await request(app)
+      .post(`/api/procedures/${procedure.body.id}/versions`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({});
+    expect(versions.status).toBe(403);
+
+    const templates = await request(app)
+      .get('/api/procedure-templates')
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(templates.status).toBe(403);
+  });
+
   it('un module non masqué (par défaut) reste normalement accessible (capas, kpis)', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];

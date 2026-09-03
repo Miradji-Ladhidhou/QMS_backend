@@ -14,6 +14,8 @@ import {
   generateProcedureDraft,
   checkProcedureTemplateCompliance,
   compareProcedureVersions,
+  generateProcedureDistributionSheet,
+  suggestProcedureRevisionFromCapa,
 } from '../services/groq.js';
 
 const upload = multer({
@@ -619,6 +621,99 @@ router.post('/:id/versions/:versionId/compare', async (req, res) => {
     res.json(result);
   } catch (err) {
     res.status(503).json({ error: `Impossible de comparer les versions : ${err.message}` });
+  }
+});
+
+// POST /api/procedures/:id/versions/:versionId/distribution-sheet — résumé condensé pour un
+// public cible qui doit connaître la procédure sans nécessairement la lire en entier. Réservé
+// à une version APPROVED (contrairement à check-compliance/compare, valables sur un
+// brouillon) : diffuser un résumé d'un texte pas encore validé n'aurait pas de sens.
+// Contrairement à check-compliance/compare, PERSISTÉ sur la version (voir schema.sql) pour
+// être réaffiché en priorité dans la bannière d'accusé de lecture de ProcedureDetail.jsx à
+// chaque chargement, pas seulement au moment de sa génération.
+router.post(
+  '/:id/versions/:versionId/distribution-sheet',
+  [body('target_audience').optional({ values: 'falsy' }).trim()],
+  async (req, res) => {
+    const version = await fetchVersionForAction(req, res);
+    if (!version) return;
+
+    if (version.status !== 'approved') {
+      return res.status(409).json({ error: 'Seule une version approuvée peut avoir une fiche de diffusion.' });
+    }
+
+    let sheet;
+    try {
+      sheet = await generateProcedureDistributionSheet(version.content, req.body.target_audience);
+    } catch (err) {
+      return res.status(503).json({ error: `Impossible de générer la fiche de diffusion : ${err.message}` });
+    }
+
+    const distributionSheet = { ...sheet, target_audience: req.body.target_audience || null, generated_at: new Date().toISOString() };
+
+    const { data, error } = await supabase
+      .from('procedure_versions')
+      .update({ distribution_sheet: distributionSheet })
+      .eq('id', version.id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement de la fiche de diffusion." });
+    }
+
+    res.json(data);
+  }
+);
+
+// POST /api/procedures/:id/suggest-revision-from-capa — à partir d'un CAPA déjà lié à cette
+// procédure (voir procedure_capa_links / POST .../link-capa), propose les sections à réviser.
+// Ne persiste rien (comme generate-draft) : le résultat n'est qu'une proposition, à l'auteur
+// de choisir de préremplir une nouvelle version avec ou de l'ignorer.
+router.post('/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMessage('CAPA invalide.')], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+  }
+
+  const { data: link } = await supabase
+    .from('procedure_capa_links')
+    .select('capa:capas(id, title, root_cause, corrective_action, preventive_action)')
+    .eq('tenant_id', req.tenantId)
+    .eq('procedure_id', req.params.id)
+    .eq('capa_id', req.body.capa_id)
+    .maybeSingle();
+
+  if (!link) {
+    return res.status(404).json({ error: "Ce CAPA n'est pas lié à cette procédure." });
+  }
+
+  const { data: procedure } = await supabase
+    .from('procedures')
+    .select('id, current_version_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (!procedure) {
+    return res.status(404).json({ error: 'Procédure introuvable.' });
+  }
+
+  let currentContent = null;
+  if (procedure.current_version_id) {
+    const { data: currentVersion } = await supabase
+      .from('procedure_versions')
+      .select('content')
+      .eq('id', procedure.current_version_id)
+      .maybeSingle();
+    currentContent = currentVersion?.content ?? null;
+  }
+
+  try {
+    const suggestion = await suggestProcedureRevisionFromCapa(link.capa, currentContent);
+    res.json(suggestion);
+  } catch (err) {
+    res.status(503).json({ error: `Impossible de générer une suggestion de révision : ${err.message}` });
   }
 });
 

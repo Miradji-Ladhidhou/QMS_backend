@@ -849,6 +849,13 @@ create table procedure_versions (
   -- Drive-only ici, pas de repli Supabase : voir le résumé de session pour la justification.
   attachment_drive_file_id  text,
   attachment_file_name      text,
+  -- Fiche de diffusion IA (résumé condensé pour un public cible qui doit connaître la
+  -- procédure sans nécessairement la lire en entier) — générée seulement sur une version
+  -- APPROVED (voir POST .../distribution-sheet), persistée ici pour être réaffichée en
+  -- priorité dans la bannière d'accusé de lecture de ProcedureDetail.jsx à chaque chargement,
+  -- pas seulement au moment de sa génération. {target_audience, summary, key_points,
+  -- audience_notes, generated_at}.
+  distribution_sheet jsonb,
   -- Recherche plein texte du contenu (objet/domaine d'application/responsabilités + texte des
   -- sections du gabarit) — même principe que documents.search_vector (trigger +
   -- to_tsvector('french', ...) + index GIN), utilisé par GET /api/procedures?search= via
