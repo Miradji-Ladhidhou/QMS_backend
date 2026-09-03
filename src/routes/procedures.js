@@ -176,7 +176,16 @@ router.get('/:id', async (req, res) => {
     .eq('id', req.params.id)
     .single();
 
-  if (error || !procedure) {
+  // PGRST116 = "no rows" (.single() sur 0 résultat) : c'est le SEUL cas où 404 est correct.
+  // Toute autre erreur (colonne/contrainte manquante après une migration pas encore appliquée
+  // en production, par ex.) était jusqu'ici avalée dans le même 404 générique, indiscernable
+  // d'une procédure qui n'existe vraiment pas — bug réel rapporté (404 sur un id valide, rien
+  // dans les logs pour comprendre pourquoi).
+  if (error && error.code !== 'PGRST116') {
+    console.error('Erreur lors de la récupération de la procédure :', error);
+    return res.status(500).json({ error: 'Erreur lors de la récupération de la procédure.' });
+  }
+  if (!procedure) {
     return res.status(404).json({ error: 'Procédure introuvable.' });
   }
 
