@@ -436,6 +436,45 @@ describe('POST /api/procedures/:id/acknowledge', () => {
       .set('Authorization', `Bearer ${member.token}`);
     expect(second.status).toBe(201);
   });
+
+  it("apparaît dans le suivi personnel (my_acknowledgment sur GET /:id) pour celui qui a lu, jamais pour un autre", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [reader, other] = tenant.users;
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-031');
+    const version = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/validate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+
+    const beforeAck = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${reader.token}`);
+    expect(beforeAck.body.my_acknowledgment).toBeNull();
+
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/acknowledge`)
+      .set('Authorization', `Bearer ${reader.token}`)
+      .expect(201);
+
+    const afterAck = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${reader.token}`);
+    expect(afterAck.body.my_acknowledgment).not.toBeNull();
+    expect(afterAck.body.my_acknowledgment.acknowledged_at).toBeTruthy();
+
+    const otherView = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${other.token}`);
+    expect(otherView.body.my_acknowledgment).toBeNull();
+  });
 });
 
 describe('GET /api/procedures/:id — historique des versions', () => {
@@ -501,6 +540,53 @@ describe('GET /api/procedures — filtres', () => {
     } finally {
       await otherTenant.cleanup();
     }
+  });
+
+  it('filtre par processus', async () => {
+    tenant = await createTenant();
+    await createProcedure(tenant.admin.token, 'PROC-042', { process: 'Achats' });
+    await createProcedure(tenant.admin.token, 'PROC-043', { process: 'Production' });
+
+    const res = await request(app)
+      .get('/api/procedures')
+      .query({ process: 'Achats' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((p) => p.number)).toEqual(['PROC-042']);
+  });
+
+  it('search trouve aussi une procédure par le contenu de sa version courante, pas seulement numéro/titre', async () => {
+    tenant = await createTenant();
+    const withMatch = await createProcedure(tenant.admin.token, 'PROC-044', { title: 'Maîtrise des enregistrements' });
+    const withoutMatch = await createProcedure(tenant.admin.token, 'PROC-045', { title: 'Nettoyage des locaux' });
+
+    const version = await request(app)
+      .post(`/api/procedures/${withMatch.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        content: {
+          sections: [{ key: 'etapes', label: 'Étapes', content: 'Chaque autoclave doit être vérifié avant utilisation.' }],
+        },
+      });
+    expect(version.status).toBe(201);
+    await request(app)
+      .post(`/api/procedures/${withMatch.id}/versions/${version.body.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+    await request(app)
+      .post(`/api/procedures/${withMatch.id}/versions/${version.body.id}/validate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+
+    const res = await request(app)
+      .get('/api/procedures')
+      .query({ search: 'autoclave' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.map((p) => p.number)).toEqual([withMatch.number]);
+    expect(res.body.map((p) => p.number)).not.toContain(withoutMatch.number);
   });
 });
 

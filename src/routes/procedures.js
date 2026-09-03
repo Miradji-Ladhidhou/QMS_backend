@@ -116,7 +116,23 @@ router.get(
       queryBuilder = queryBuilder.neq('status', 'obsolete');
     }
     if (req.query.process) queryBuilder = queryBuilder.ilike('process', `%${req.query.process}%`);
-    if (req.query.search) queryBuilder = queryBuilder.or(`title.ilike.%${req.query.search}%,number.ilike.%${req.query.search}%`);
+
+    // search porte sur le numéro/titre (ilike, comme avant) OU le contenu de la version
+    // COURANTE (recherche plein texte, voir search_procedure_ids dans schema.sql — même
+    // principe que search_documents pour Documents) : le query builder Supabase ne sait pas
+    // filtrer sur une colonne d'une table jointe embarquée, donc la fonction renvoie juste les
+    // id concernés, réinjectés ici via .in(), le reste du filtrage (statut/processus/tri) reste
+    // géré normalement au-dessus.
+    if (req.query.search) {
+      const { data: matches, error: searchError } = await supabase.rpc('search_procedure_ids', {
+        p_tenant_id: req.tenantId,
+        p_query: req.query.search,
+      });
+      if (searchError) {
+        return res.status(500).json({ error: 'Impossible de rechercher les procédures.' });
+      }
+      queryBuilder = queryBuilder.in('id', matches.map((m) => m.id));
+    }
 
     const { data, error } = await queryBuilder;
     if (error) {

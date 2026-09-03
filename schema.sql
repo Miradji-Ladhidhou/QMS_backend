@@ -849,6 +849,11 @@ create table procedure_versions (
   -- Drive-only ici, pas de repli Supabase : voir le résumé de session pour la justification.
   attachment_drive_file_id  text,
   attachment_file_name      text,
+  -- Recherche plein texte du contenu (objet/domaine d'application/responsabilités + texte des
+  -- sections du gabarit) — même principe que documents.search_vector (trigger +
+  -- to_tsvector('french', ...) + index GIN), utilisé par GET /api/procedures?search= via
+  -- search_procedure_ids() ci-dessous plutôt qu'un scan complet du jsonb à chaque requête.
+  search_vector tsvector,
   created_at    timestamptz not null default now(),
   updated_at    timestamptz not null default now()
 );
@@ -1342,6 +1347,7 @@ create index idx_document_acknowledgments_document_id on document_acknowledgment
 create index idx_procedures_tenant_id on procedures (tenant_id);
 create index idx_procedure_versions_tenant_id on procedure_versions (tenant_id);
 create index idx_procedure_versions_procedure_id on procedure_versions (procedure_id);
+create index idx_procedure_versions_search_vector on procedure_versions using gin (search_vector);
 create index idx_procedure_templates_tenant_id on procedure_templates (tenant_id);
 create index idx_procedure_acknowledgments_tenant_id on procedure_acknowledgments (tenant_id);
 create index idx_procedure_acknowledgments_procedure_version_id on procedure_acknowledgments (procedure_version_id);
@@ -1404,6 +1410,32 @@ $$;
 
 create trigger trg_documents_search_vector before insert or update on documents
   for each row execute function documents_search_vector_update();
+
+-- Même principe que documents_search_vector_update ci-dessus, mais construit depuis le
+-- contenu jsonb d'une version plutôt que des colonnes texte : objet/domaine
+-- d'application/responsabilités concaténés au texte de chaque section du gabarit
+-- (content->'sections', tableau de {key,label,content}).
+create or replace function procedure_versions_search_vector_update()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.search_vector := to_tsvector(
+    'french',
+    coalesce(new.content->>'objet', '') || ' ' ||
+    coalesce(new.content->>'domaine_application', '') || ' ' ||
+    coalesce(new.content->>'responsabilites', '') || ' ' ||
+    coalesce(
+      (select string_agg(section->>'content', ' ') from jsonb_array_elements(coalesce(new.content->'sections', '[]'::jsonb)) as section),
+      ''
+    )
+  );
+  return new;
+end;
+$$;
+
+create trigger trg_procedure_versions_search_vector before insert or update on procedure_versions
+  for each row execute function procedure_versions_search_vector_update();
 
 create trigger trg_capas_updated_at before update on capas
   for each row execute function set_updated_at();
@@ -1606,6 +1638,29 @@ as $$
     )
   order by rank desc
   limit p_limit;
+$$;
+
+-- Utilisée par GET /api/procedures?search= (routes/procedures.js) : renvoie les id de
+-- procédures dont le numéro/titre correspond (ilike, comportement inchangé) OU dont le
+-- CONTENU DE LA VERSION COURANTE correspond (plein texte, procedure_versions.search_vector) —
+-- jamais l'historique complet, une procédure n'est cherchée qu'à travers ce qui fait foi
+-- aujourd'hui. Le résultat n'est qu'une liste d'id : le tri, l'embed current_version et les
+-- filtres statut/processus restent gérés par le query builder Supabase côté route, comme
+-- avant l'ajout de cette fonction.
+create or replace function search_procedure_ids(p_tenant_id uuid, p_query text)
+returns table (id uuid)
+language sql
+stable
+as $$
+  select p.id
+  from procedures p
+  left join procedure_versions pv on pv.id = p.current_version_id
+  where p.tenant_id = p_tenant_id
+    and (
+      p.number ilike '%' || p_query || '%'
+      or p.title ilike '%' || p_query || '%'
+      or (pv.search_vector is not null and pv.search_vector @@ websearch_to_tsquery('french', p_query))
+    );
 $$;
 
 -- =============================================================================
