@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
 
@@ -13,12 +13,15 @@ afterEach(async () => {
 });
 
 describe('GET /api/procedure-templates', () => {
-  it("structure vide tant qu'aucun gabarit n'a été enregistré", async () => {
+  it("propose un point de départ minimal (jamais persisté) tant qu'aucun gabarit n'a été enregistré", async () => {
     tenant = await createTenant();
 
     const res = await request(app).get('/api/procedure-templates').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.status).toBe(200);
-    expect(res.body.section_structure).toEqual([]);
+    expect(res.body.section_structure.length).toBeGreaterThan(0);
+
+    const { data: row } = await admin.from('procedure_templates').select('id').eq('tenant_id', tenant.tenantId).maybeSingle();
+    expect(row).toBeNull();
   });
 });
 

@@ -6,13 +6,22 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 
+// Une procédure sans AUCUNE section de gabarit n'a que 3 champs génériques (Objet/Domaine
+// d'application/Responsabilités) — jamais le déroulé réel du processus, l'élément qui fait
+// qu'une procédure est utilisable (voir la définition qualité donnée par l'utilisateur : "les
+// étapes, le déroulement séquentiel des actions à mener"). Point de départ minimal proposé
+// par défaut tant qu'un tenant n'a rien configuré — jamais persisté en base tant que personne
+// n'appuie sur Enregistrer (voir PUT ci-dessous), donc toujours librement renommable/
+// supprimable, pas une contrainte imposée.
+const DEFAULT_SECTION_STRUCTURE = [{ key: 'etapes', label: 'Étapes du processus' }];
+
 router.use(requireAuth);
 router.use(requireMenuVisible('procedures'));
 
 // GET /api/procedure-templates — le gabarit du tenant courant. Contrairement à GET /api/tenant,
-// pas de ligne par défaut créée automatiquement en base : un tenant qui n'a encore rien
-// configuré reçoit simplement une structure vide (le frontend affiche alors le formulaire de
-// configuration, jamais une ligne fantôme en base tant que personne n'a rien enregistré).
+// pas de ligne par défaut créée automatiquement EN BASE : un tenant qui n'a encore rien
+// configuré reçoit un point de départ minimal (DEFAULT_SECTION_STRUCTURE) mais aucune ligne
+// fantôme n'est jamais écrite tant que personne n'a explicitement enregistré (PUT).
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('procedure_templates')
@@ -24,7 +33,7 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer le gabarit.' });
   }
 
-  res.json(data || { tenant_id: req.tenantId, section_structure: [] });
+  res.json(data || { tenant_id: req.tenantId, section_structure: DEFAULT_SECTION_STRUCTURE });
 });
 
 // PUT /api/procedure-templates — remplace le gabarit du tenant courant (upsert : première

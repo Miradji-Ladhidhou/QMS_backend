@@ -49,9 +49,16 @@ function canActOnVersion(req, version) {
   return MANAGER_ROLES.includes(req.userRole) || version.author_id === req.user.id;
 }
 
+// Même point de départ minimal que GET /api/procedure-templates (voir
+// routes/procedureTemplates.js#DEFAULT_SECTION_STRUCTURE) tant qu'aucun gabarit n'est
+// réellement enregistré — sans quoi generate-draft/check-compliance/generate-draft-from-
+// qqoqccp verraient un gabarit "vide" différent de celui affiché à l'écran par
+// ProcedureSectionsEditor, et rédigeraient une procédure sans aucune section de contenu réel.
+const DEFAULT_SECTION_STRUCTURE = [{ key: 'etapes', label: 'Étapes du processus' }];
+
 async function fetchTenantTemplate(tenantId) {
   const { data } = await supabase.from('procedure_templates').select('*').eq('tenant_id', tenantId).maybeSingle();
-  return data;
+  return data || { tenant_id: tenantId, section_structure: DEFAULT_SECTION_STRUCTURE };
 }
 
 // POST /api/procedures/generate-draft — appelé depuis le formulaire de création, AVANT que la
