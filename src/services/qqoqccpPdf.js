@@ -150,6 +150,19 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
       doc.y = boxTop + 24 + 8;
     }
 
+    // Pied de page numéroté — voir listReportPdf.js pour la même construction.
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      const bottomMargin = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;
+      doc.fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, doc.page.height - 30, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+      doc.page.margins.bottom = bottomMargin;
+    }
+
     doc.end();
   });
 }

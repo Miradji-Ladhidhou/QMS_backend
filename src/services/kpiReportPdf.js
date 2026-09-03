@@ -586,6 +586,21 @@ export function buildKpiReportPdf({ tenantName, tenantLogo, kpis, detailStatsByK
       drawSummaryPage(doc, tenantName, tenantLogo, kpis);
     }
 
+    // Pied de page numéroté — voir listReportPdf.js pour la même construction (bufferedPageRange
+    // + neutralisation temporaire de la marge basse, pour éviter qu'un .text() proche du bas ne
+    // déclenche une page fantôme rien que pour cet ajout).
+    const range = doc.bufferedPageRange();
+    for (let i = range.start; i < range.start + range.count; i++) {
+      doc.switchToPage(i);
+      const bottomMargin = doc.page.margins.bottom;
+      doc.page.margins.bottom = 0;
+      doc.fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, doc.page.height - 30, {
+        width: CONTENT_WIDTH,
+        align: 'center',
+      });
+      doc.page.margins.bottom = bottomMargin;
+    }
+
     doc.end();
   });
 }
