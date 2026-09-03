@@ -48,6 +48,62 @@ describe('POST /api/procedures', () => {
   });
 });
 
+describe('POST /api/procedures/:id/versions — ai_generated', () => {
+  it('false par défaut, true si fourni explicitement', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-005');
+
+    const defaultRes = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    expect(defaultRes.body.ai_generated).toBe(false);
+
+    const aiRes = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ content: { objet: 'Généré par IA' }, ai_generated: true });
+    expect(aiRes.body.ai_generated).toBe(true);
+  });
+});
+
+// Ces 3 routes appellent Groq en direct : comme POST /api/risks/service-suggestion et
+// consorts, aucun test automatisé ne couvre le chemin qui appelle réellement l'IA (vérifié
+// manuellement, voir le smoke test du Prompt 3). On couvre ici uniquement la résolution de la
+// version/procédure et les cas d'erreur qui ne nécessitent pas d'atteindre l'appel Groq.
+describe('POST /api/procedures/generate-draft — validation', () => {
+  it('400 sans titre', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .post('/api/procedures/generate-draft')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ process: 'Qualité' });
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/procedures/:id/versions/:versionId/check-compliance et /compare — résolution de la version', () => {
+  it('404 sur une version qui ne correspond pas à la procédure', async () => {
+    tenant = await createTenant();
+    const procedureA = await createProcedure(tenant.admin.token, 'PROC-006');
+    const procedureB = await createProcedure(tenant.admin.token, 'PROC-007');
+    const versionOfB = await request(app)
+      .post(`/api/procedures/${procedureB.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+
+    const compliance = await request(app)
+      .post(`/api/procedures/${procedureA.id}/versions/${versionOfB.body.id}/check-compliance`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(compliance.status).toBe(404);
+
+    const compare = await request(app)
+      .post(`/api/procedures/${procedureA.id}/versions/${versionOfB.body.id}/compare`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(compare.status).toBe(404);
+  });
+});
+
 describe('POST /api/procedures/:id/versions', () => {
   it('première version à 1.0, puis incrémentée automatiquement', async () => {
     tenant = await createTenant();

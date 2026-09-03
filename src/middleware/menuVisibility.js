@@ -19,6 +19,7 @@ export const MENU_ITEM_KEYS = [
   'haccp',
   'suppliers',
   'management-reviews',
+  'procedures',
   'my-approvals',
   'services',
   'employees',

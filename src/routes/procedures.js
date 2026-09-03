@@ -2,6 +2,11 @@ import { Router } from 'express';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import {
+  generateProcedureDraft,
+  checkProcedureTemplateCompliance,
+  compareProcedureVersions,
+} from '../services/groq.js';
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
@@ -23,6 +28,37 @@ function bumpVersion(version) {
 function canActOnVersion(req, version) {
   return MANAGER_ROLES.includes(req.userRole) || version.author_id === req.user.id;
 }
+
+async function fetchTenantTemplate(tenantId) {
+  const { data } = await supabase.from('procedure_templates').select('*').eq('tenant_id', tenantId).maybeSingle();
+  return data;
+}
+
+// POST /api/procedures/generate-draft — appelé depuis le formulaire de création, AVANT que la
+// procédure existe : rien n'est persisté ici, le frontend préremplit juste l'éditeur avec le
+// résultat (éditable, jamais publié tel quel — voir POST /:id/versions pour la vraie création).
+router.post(
+  '/generate-draft',
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('process').optional({ values: 'falsy' }).trim(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const template = await fetchTenantTemplate(req.tenantId);
+
+    try {
+      const draft = await generateProcedureDraft({ title: req.body.title, process: req.body.process }, template);
+      res.json(draft);
+    } catch (err) {
+      res.status(503).json({ error: `Impossible de générer un brouillon IA : ${err.message}` });
+    }
+  }
+);
 
 // GET /api/procedures — liste, filtrable par statut/processus/recherche texte. Pas de système
 // de catégories pour ce module (contrairement à CAPA/Documents) : ouvert à tout rôle
@@ -134,7 +170,10 @@ router.post(
 // a pas de notion de "rédiger au nom de quelqu'un d'autre".
 router.post(
   '/:id/versions',
-  [body('content').optional().isObject().withMessage('Contenu invalide.')],
+  [
+    body('content').optional().isObject().withMessage('Contenu invalide.'),
+    body('ai_generated').optional().isBoolean().withMessage('Valeur invalide.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -169,6 +208,7 @@ router.post(
         procedure_id: procedure.id,
         version: nextVersion,
         content: req.body.content || {},
+        ai_generated: req.body.ai_generated || false,
         author_id: req.user.id,
       })
       .select('*, author:users!procedure_versions_author_id_fkey(id, full_name)')
@@ -197,6 +237,48 @@ async function fetchVersionForAction(req, res) {
   }
   return version;
 }
+
+// POST /api/procedures/:id/versions/:versionId/check-compliance — vérifie le contenu de cette
+// version contre le gabarit du tenant. Rien n'est persisté (ni le résultat, ni un flag sur la
+// version) : c'est une aide avant soumission, pas une décision enregistrée.
+router.post('/:id/versions/:versionId/check-compliance', async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  const template = await fetchTenantTemplate(req.tenantId);
+
+  try {
+    const result = await checkProcedureTemplateCompliance(version.content, template);
+    res.json(result);
+  } catch (err) {
+    res.status(503).json({ error: `Impossible de vérifier la conformité : ${err.message}` });
+  }
+});
+
+// POST /api/procedures/:id/versions/:versionId/compare — compare cette version à celle qui la
+// précède immédiatement pour la même procédure (previous = null pour une toute première
+// version, voir compareProcedureVersions dans groq.js qui gère ce cas explicitement).
+router.post('/:id/versions/:versionId/compare', async (req, res) => {
+  const version = await fetchVersionForAction(req, res);
+  if (!version) return;
+
+  const { data: previousVersion } = await supabase
+    .from('procedure_versions')
+    .select('content')
+    .eq('procedure_id', req.params.id)
+    .neq('id', version.id)
+    .lt('created_at', version.created_at)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  try {
+    const result = await compareProcedureVersions(previousVersion?.content ?? null, version.content);
+    res.json(result);
+  } catch (err) {
+    res.status(503).json({ error: `Impossible de comparer les versions : ${err.message}` });
+  }
+});
 
 // POST /api/procedures/:id/versions/:versionId/submit — passage en attente de validation
 // ("en_validation"). Réservé à l'auteur de CETTE version, ou admin/manager.
