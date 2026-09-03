@@ -877,6 +877,7 @@ create table user_notification_preferences (
   email_training_renewal    boolean not null default true,
   email_approval_requests   boolean not null default true,
   email_task_due            boolean not null default true,
+  email_procedure_review    boolean not null default true,
   digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now()

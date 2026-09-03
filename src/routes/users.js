@@ -14,6 +14,7 @@ const NOTIFICATION_PREFERENCE_FIELDS = [
   'email_training_renewal',
   'email_approval_requests',
   'email_task_due',
+  'email_procedure_review',
   'digest_frequency',
 ];
 
@@ -125,6 +126,7 @@ router.patch(
     body('email_training_renewal').optional().isBoolean().withMessage('Valeur invalide.'),
     body('email_approval_requests').optional().isBoolean().withMessage('Valeur invalide.'),
     body('email_task_due').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('email_procedure_review').optional().isBoolean().withMessage('Valeur invalide.'),
     body('digest_frequency').optional({ values: 'falsy' }).isIn(DIGEST_FREQUENCIES).withMessage('Fréquence invalide.'),
   ],
   async (req, res) => {

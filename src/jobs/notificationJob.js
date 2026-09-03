@@ -8,6 +8,7 @@ import {
   getNotificationPreferences,
   markNotificationSent,
   createInAppNotification,
+  sendImmediateNotification,
 } from '../services/notificationHelpers.js';
 
 const REVIEW_WINDOW_DAYS = 30;
@@ -15,6 +16,7 @@ const CAPA_WINDOW_DAYS = 7;
 const TRAINING_WINDOW_DAYS = 60;
 const TASK_WINDOW_DAYS = 3;
 const APPROVAL_REMINDER_AFTER_DAYS = 3;
+const PROCEDURE_REVIEW_THRESHOLDS_DAYS = [30, 15, 7];
 
 function addDaysIso(days) {
   const date = new Date();
@@ -141,6 +143,28 @@ export async function getStaleApprovalAlerts(tenantId) {
   return pendingApprovals.map((approval) => ({ ...approval, workflow: workflowsById.get(approval.workflow_id) }));
 }
 
+// Procédures dont la prochaine révision tombe PILE dans 30, 15 ou 7 jours — des seuils
+// discrets, pas une fenêtre glissante comme getDocumentAlerts (qui ré-alerte chaque jour tant
+// que la date n'est pas dépassée) : chaque jalon n'est atteint qu'un jour précis dans la vie
+// d'une procédure, jamais répété le lendemain.
+export async function getProcedureReviewAlerts(tenantId) {
+  const thresholdDates = PROCEDURE_REVIEW_THRESHOLDS_DAYS.map((days) => addDaysIso(days));
+  const { data, error } = await supabase
+    .from('procedures')
+    .select('id, number, title, next_review_date, created_by')
+    .eq('tenant_id', tenantId)
+    .not('next_review_date', 'is', null)
+    .not('created_by', 'is', null)
+    .in('next_review_date', thresholdDates);
+
+  if (error) throw new Error(`Alertes procédures : ${error.message}`);
+
+  return data.map((procedure) => ({
+    ...procedure,
+    days_remaining: PROCEDURE_REVIEW_THRESHOLDS_DAYS[thresholdDates.indexOf(procedure.next_review_date)],
+  }));
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -191,13 +215,15 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals] = await Promise.all([
-    getDocumentAlerts(tenantId),
-    getCapaAlerts(tenantId),
-    getTrainingAlerts(tenantId),
-    getTaskAlerts(tenantId),
-    getStaleApprovalAlerts(tenantId),
-  ]);
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts] =
+    await Promise.all([
+      getDocumentAlerts(tenantId),
+      getCapaAlerts(tenantId),
+      getTrainingAlerts(tenantId),
+      getTaskAlerts(tenantId),
+      getStaleApprovalAlerts(tenantId),
+      getProcedureReviewAlerts(tenantId),
+    ]);
 
   for (const doc of documentAlerts) {
     await maybeSendDigestItem({
@@ -304,6 +330,33 @@ async function processTenant(tenantId) {
       notificationTitle: 'Rappel : approbation en attente',
       notificationMessage: `${document.number} — ${document.title}`,
       notificationLink: `/documents/${document.id}`,
+    });
+  }
+
+  // Alerte à seuil (un jalon = un envoi, jamais répété) plutôt qu'un item de digest : envoyée
+  // via sendImmediateNotification, indépendamment de digest_frequency — contrairement aux
+  // alertes ci-dessus qui se répètent chaque jour et peuvent donc attendre le résumé
+  // hebdomadaire du lundi, un jalon "30/15/7 jours avant" atteint un mardi et non reporté à un
+  // digest ne reviendrait jamais.
+  for (const procedure of procedureReviewAlerts) {
+    await sendImmediateNotification({
+      tenantId,
+      userId: procedure.created_by,
+      prefField: 'email_procedure_review',
+      notificationType: 'procedure_review_due',
+      referenceId: procedure.id,
+      templateName: 'procedureReviewDue',
+      subject: `Procédure à réviser dans ${procedure.days_remaining} jours : ${procedure.number}`,
+      variables: {
+        procedureNumber: procedure.number,
+        procedureTitle: procedure.title,
+        reviewDate: procedure.next_review_date,
+        daysRemaining: procedure.days_remaining,
+        procedureUrl: `${frontendUrl}/procedures/${procedure.id}`,
+      },
+      notificationTitle: 'Procédure à réviser',
+      notificationMessage: `${procedure.number} — ${procedure.title} (dans ${procedure.days_remaining} jours)`,
+      notificationLink: `/procedures/${procedure.id}`,
     });
   }
 }
