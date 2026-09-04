@@ -243,7 +243,7 @@ router.patch(
     // hebdomadaire complétée en retard verrait sa cadence dériver au fil des semaines.
     const isClosingRecurring = existing.status !== 'done' && update.status === 'done' && existing.recurrence !== 'none';
     if (isClosingRecurring) {
-      await supabase.from('tasks').insert({
+      const { error: recurrenceError } = await supabase.from('tasks').insert({
         tenant_id: req.tenantId,
         title: existing.title,
         description: existing.description,
@@ -258,6 +258,12 @@ router.patch(
         recurrence_interval: existing.recurrence_interval,
         created_by: req.user.id,
       });
+      // Ne bloque jamais la clôture de la tâche courante pour cet échec : la clôture elle-même
+      // reste l'action demandée par l'utilisateur, mais on trace l'échec pour ne pas perdre
+      // silencieusement une occurrence dans la chaîne de récurrence.
+      if (recurrenceError) {
+        console.error(`Échec de la recréation de l'occurrence récurrente pour la tâche ${existing.id} :`, recurrenceError);
+      }
     }
 
     const { data, error } = await supabase
