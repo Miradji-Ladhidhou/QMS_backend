@@ -4,6 +4,8 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { buildCapaPdf } from '../services/capaPdf.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
@@ -223,6 +225,48 @@ router.get('/:id', async (req, res) => {
     linked_procedures: procedureLinks.map((link) => link.procedure),
     is_private_to_me: capa.category?.owner_user_id === req.user.id,
   });
+});
+
+// GET /api/capas/:id/pdf — fiche imprimable d'une CAPA (voir services/capaPdf.js). Chemin à
+// deux segments : ne rentre jamais en conflit avec GET /:id ci-dessus, même principe que
+// /:id/pdf dans procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id (catégorie
+// restreinte ou partage individuel).
+router.get('/:id/pdf', async (req, res) => {
+  const { data: capa, error } = await supabase.from('capas').select(CAPA_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
+
+  if (error || !capa) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
+  }
+
+  if (req.userRole !== 'admin') {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId,
+      resourceType: 'capa',
+      resourceId: capa.id,
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    if (!shared) {
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: capa.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'CAPA introuvable.' });
+      }
+    }
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildCapaPdf({ tenantName: tenant?.name, tenantLogo, capa });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${capa.number || capa.id}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/capas — création, numérotation automatique CAPA-{année}-{seq}

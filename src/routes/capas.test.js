@@ -15,6 +15,57 @@ afterEach(async () => {
   }
 });
 
+describe('GET /api/capas/:id/pdf', () => {
+  it('génère un PDF valide avec le contenu de la CAPA', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA à exporter', description: 'Description de test', root_cause: 'Cause racine de test' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/capas/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('404 sur une CAPA d’un autre tenant, et sur une catégorie restreinte sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const otherTenant = await createTenant();
+    try {
+      const categoryRes = await request(app)
+        .post('/api/module-categories')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ resource_type: 'capa', name: 'Restreinte', is_restricted: true });
+
+      const created = await request(app)
+        .post('/api/capas')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: 'CAPA restreinte', category_id: categoryRes.body.id });
+      expect(created.status).toBe(201);
+
+      const foreignAttempt = await request(app)
+        .get(`/api/capas/${created.body.id}/pdf`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(foreignAttempt.status).toBe(404);
+
+      const restrictedAttempt = await request(app)
+        .get(`/api/capas/${created.body.id}/pdf`)
+        .set('Authorization', `Bearer ${manager.token}`);
+      expect(restrictedAttempt.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
 describe('POST /api/capas', () => {
   it('un member peut créer une CAPA, auto-assignée à lui-même quelle que soit la valeur envoyée', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
