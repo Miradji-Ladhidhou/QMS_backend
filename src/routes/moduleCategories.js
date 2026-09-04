@@ -22,6 +22,7 @@ const RESOURCE_TYPES = [
   'haccp_plan',
   'task',
   'kpi',
+  'procedure',
 ];
 
 router.use(requireAuth);

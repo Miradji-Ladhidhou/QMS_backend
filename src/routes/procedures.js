@@ -12,7 +12,7 @@ import { resolveTenantStorageProvider, safeStorageContentType } from '../service
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
 import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
 import { isSharedWithUser } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
+import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import {
   generateProcedureDraft,
   generateProcedureDraftFromQqoqccp,
@@ -220,9 +220,9 @@ router.post(
   }
 );
 
-// GET /api/procedures — liste, filtrable par statut/processus/recherche texte. Pas de système
-// de catégories pour ce module (contrairement à CAPA/Documents) : ouvert à tout rôle
-// authentifié, comme la lecture des audits/CAPA.
+// GET /api/procedures — liste, filtrable par statut/processus/recherche texte. Catégorie
+// (dossier) optionnelle comme les autres modules génériques (voir module_categories) : ouvert à
+// tout rôle authentifié tant qu'aucune catégorie n'est marquée restreinte, opt-in.
 router.get(
   '/',
   [
@@ -247,7 +247,7 @@ router.get(
           id, version, status, validated_at,
           author:users!procedure_versions_author_id_fkey(id, full_name),
           validator:users!procedure_versions_validator_id_fkey(id, full_name)
-        )`
+        ), category:categories(id, name, color, is_restricted, owner_user_id)`
       )
       .eq('tenant_id', req.tenantId)
       .order('number', { ascending: true });
@@ -284,7 +284,8 @@ router.get(
       return res.status(500).json({ error: 'Impossible de récupérer les procédures.' });
     }
 
-    res.json(data);
+    const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+    res.json(visible);
   }
 );
 
@@ -313,7 +314,7 @@ router.get('/:id', async (req, res) => {
   const { data: procedure, error } = await supabase
     .from('procedures')
     .select(
-      '*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status), obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name)'
+      '*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status), obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)'
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -330,6 +331,19 @@ router.get('/:id', async (req, res) => {
   }
   if (!procedure) {
     return res.status(404).json({ error: 'Procédure introuvable.' });
+  }
+
+  if (req.userRole !== 'admin' && procedure.category?.is_restricted) {
+    const categoryAllowed = await hasGenericCategoryPermission({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      categoryId: procedure.category_id,
+      permission: 'view',
+    });
+    if (!categoryAllowed) {
+      return res.status(404).json({ error: 'Procédure introuvable.' });
+    }
   }
 
   const { data: versions, error: versionsError } = await supabase
@@ -492,14 +506,16 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('process').optional({ values: 'falsy' }).trim(),
     body('next_review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
+  requireValidCategoryId('procedure'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { number, title, process, next_review_date: nextReviewDate } = req.body;
+    const { number, title, process, next_review_date: nextReviewDate, category_id: categoryId } = req.body;
 
     const { data, error } = await supabase
       .from('procedures')
@@ -509,6 +525,7 @@ router.post(
         title,
         process: process || null,
         next_review_date: nextReviewDate || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select()
@@ -522,6 +539,37 @@ router.post(
     }
 
     res.status(201).json(data);
+  }
+);
+
+// PATCH /api/procedures/:id/category — reclasse une procédure existante dans un autre dossier
+// (ou aucun). Même garde qu'ailleurs pour ce module (voir POST /:id/versions ci-dessous) :
+// admin/manager, pas l'auteur seul — reclasser change la visibilité de tout le monde, pas
+// seulement le contenu de sa propre version.
+router.patch(
+  '/:id/category',
+  requireRole(...MANAGER_ROLES),
+  [body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.')],
+  requireValidCategoryId('procedure'),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('procedures')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select('*, category:categories(id, name, color, is_restricted, owner_user_id)')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Procédure introuvable.' });
+    }
+
+    res.json(data);
   }
 );
 

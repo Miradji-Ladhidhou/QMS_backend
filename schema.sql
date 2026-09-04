@@ -1078,7 +1078,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan'
+      'haccp_plan', 'procedure'
     )
   ),
   name          text not null,
@@ -1128,6 +1128,7 @@ alter table audits add column category_id uuid references categories (id) on del
 alter table risks add column category_id uuid references categories (id) on delete set null;
 alter table kpis add column category_id uuid references categories (id) on delete set null;
 alter table haccp_plans add column category_id uuid references categories (id) on delete set null;
+alter table procedures add column category_id uuid references categories (id) on delete set null;
 
 -- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
 -- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).

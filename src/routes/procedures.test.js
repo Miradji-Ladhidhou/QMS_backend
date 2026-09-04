@@ -62,6 +62,63 @@ describe('POST /api/procedures', () => {
   });
 });
 
+describe('Catégorie (dossier) sur les procédures', () => {
+  it('un member peut créer avec category_id, admin/manager peuvent reclasser via PATCH /:id/category', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const category = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'procedure', name: 'Qualité' });
+    expect(category.status).toBe(201);
+
+    const created = await createProcedure(member.token, 'PROC-CAT-1', { category_id: category.body.id });
+    expect(created.category_id).toBe(category.body.id);
+
+    const other = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'procedure', name: 'Sécurité' });
+    expect(other.status).toBe(201);
+
+    const reclassified = await request(app)
+      .patch(`/api/procedures/${created.id}/category`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: other.body.id });
+    expect(reclassified.status).toBe(200);
+    expect(reclassified.body.category.name).toBe('Sécurité');
+
+    const blocked = await request(app)
+      .patch(`/api/procedures/${created.id}/category`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ category_id: category.body.id });
+    expect(blocked.status).toBe(403);
+  });
+
+  it('une procédure dans une catégorie restreinte est invisible à un member sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const category = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'procedure', name: 'Direction', is_restricted: true });
+    expect(category.status).toBe(201);
+
+    const created = await createProcedure(tenant.admin.token, 'PROC-CAT-2', { category_id: category.body.id });
+
+    const list = await request(app).get('/api/procedures').set('Authorization', `Bearer ${member.token}`);
+    expect(list.body.find((p) => p.id === created.id)).toBeUndefined();
+
+    const detail = await request(app).get(`/api/procedures/${created.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(detail.status).toBe(404);
+
+    const asAdmin = await request(app).get(`/api/procedures/${created.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(asAdmin.status).toBe(200);
+  });
+});
+
 describe('POST /api/procedures/:id/versions — ai_generated', () => {
   it('false par défaut, true si fourni explicitement', async () => {
     tenant = await createTenant();
