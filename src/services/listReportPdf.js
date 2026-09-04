@@ -25,7 +25,7 @@ function formatDateTime(dateStr) {
 // faire échouer toute la génération du rapport).
 function drawPageHeader(doc, tenantName, title, generatedBy) {
   doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text(title, PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 60 });
+  doc.fillColor('#ffffff').fontSize(18).text(title, PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 72 });
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
   const generatedLine = generatedBy
@@ -39,7 +39,7 @@ function drawPageHeader(doc, tenantName, title, generatedBy) {
 function drawLogo(doc, tenantLogo) {
   if (!tenantLogo) return;
   try {
-    doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+    doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
   } catch {
     // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
   }

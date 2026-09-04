@@ -333,7 +333,7 @@ function drawPageHeader(doc, tenantName, tenantLogo) {
 
   if (tenantLogo) {
     try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
     } catch {
       // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
     }

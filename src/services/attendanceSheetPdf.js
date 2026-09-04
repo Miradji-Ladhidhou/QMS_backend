@@ -37,14 +37,14 @@ function attendanceSheetReference(trainingId, date) {
 
 function drawPageHeader(doc, tenantName, tenantLogo, trainingTitle) {
   doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text('Fiche de participation', PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 60 });
+  doc.fillColor('#ffffff').fontSize(18).text('Fiche de participation', PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 72 });
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
   doc.text(trainingTitle, PAGE_MARGIN, 65);
   doc.fillColor(INK);
   if (tenantLogo) {
     try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
     } catch {
       // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
     }

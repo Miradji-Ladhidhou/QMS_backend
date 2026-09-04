@@ -64,7 +64,7 @@ export function buildTrainingCertificatePdf({
 
     if (tenantLogo) {
       try {
-        doc.image(tenantLogo, PAGE_WIDTH / 2 - 25, MARGIN + 26, { fit: [46, 46], align: 'center' });
+        doc.image(tenantLogo, PAGE_WIDTH / 2 - 28, MARGIN + 22, { fit: [56, 56], align: 'center' });
       } catch {
         // Format non supporté par pdfkit ou fichier corrompu : certificat sans logo, pas d'erreur.
       }

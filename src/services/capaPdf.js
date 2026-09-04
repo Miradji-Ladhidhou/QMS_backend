@@ -33,21 +33,29 @@ function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
 }
 
+// Hauteur du bandeau calculée depuis le titre réel (numéro + titre de la CAPA, longueur
+// arbitraire saisie par l'utilisateur) plutôt que fixée à 86 — un titre assez long pour passer
+// sur 2 lignes chevauchait sinon le nom du tenant/la date juste en dessous, positionnés à des
+// y fixes qui ne tenaient pas compte du rendu réel du titre.
 function drawPageHeader(doc, tenantName, tenantLogo, capa) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc
-    .fillColor('#ffffff')
-    .fontSize(16)
-    .text(`${capa.number ? `${capa.number} — ` : ''}${capa.title}`, PAGE_MARGIN, 22, { width: CONTENT_WIDTH - 60 });
+  const titleText = `${capa.number ? `${capa.number} — ` : ''}${capa.title}`;
+  const titleWidth = CONTENT_WIDTH - 72;
+  doc.fontSize(16);
+  const titleHeight = doc.heightOfString(titleText, { width: titleWidth });
+  const bandHeight = Math.max(86, 22 + titleHeight + 34);
+
+  doc.rect(0, 0, PAGE_WIDTH, bandHeight).fill(NAVY);
+  doc.fillColor('#ffffff').fontSize(16).text(titleText, PAGE_MARGIN, 22, { width: titleWidth });
+  const subtitleY = 22 + titleHeight + 8;
   doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
+  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, subtitleY);
+  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, subtitleY + 13);
   doc.fillColor(INK);
-  doc.y = 104;
+  doc.y = bandHeight + 18;
 
   if (tenantLogo) {
     try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 50, 18, { fit: [50, 50], align: 'right', valign: 'center' });
+      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, (bandHeight - 62) / 2, { fit: [62, 62], align: 'right', valign: 'center' });
     } catch {
       // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
     }
