@@ -24,3 +24,15 @@ describe('Filet de sécurité global (app.js)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// Régression réelle : Helmet interdit par défaut toute mise en cadre (frame-ancestors 'self'),
+// ce qui bloquait silencieusement l'aperçu en ligne d'un document Google Drive
+// (DocumentPreviewModal.jsx charge /api/documents/drive-file dans une <iframe> depuis
+// l'origine DU FRONTEND, différente de ce backend) — voir app.js pour le correctif.
+describe('En-tête frame-ancestors (app.js)', () => {
+  it("autorise explicitement FRONTEND_URL à nous mettre en cadre, en plus de 'self'", async () => {
+    const res = await request(app).get('/health');
+    const csp = res.headers['content-security-policy'];
+    expect(csp).toContain("frame-ancestors 'self' " + process.env.FRONTEND_URL);
+  });
+});

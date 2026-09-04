@@ -63,7 +63,22 @@ const app = express();
 // l'app.
 app.set('trust proxy', 1);
 
-app.use(helmet());
+// Helmet par défaut interdit toute mise en cadre (frame-ancestors 'self') — bloque
+// silencieusement l'aperçu en ligne d'un document Google Drive (voir DocumentPreviewModal.jsx,
+// GET /api/documents/:id/preview-url) : ce document est servi en <iframe> depuis CE backend
+// (route /api/documents/drive-file), mais affiché sur l'origine DU FRONTEND, différente.
+// Autorise donc explicitement cette seule origine de confiance (déjà validée au démarrage,
+// même valeur que CORS ci-dessous) à nous mettre en cadre — jamais un joker '*'.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+        'frame-ancestors': ["'self'", process.env.FRONTEND_URL],
+      },
+    },
+  })
+);
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(apiLimiter);
 // Limite par défaut (100kb) trop juste pour POST /api/reports/table-pdf : un export de
