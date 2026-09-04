@@ -11,7 +11,7 @@ import { buildProcedureWordDocument } from '../services/procedureWord.js';
 import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
 import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
-import { isSharedWithUser } from '../services/recordSharing.js';
+import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import {
   generateProcedureDraft,
@@ -284,7 +284,23 @@ router.get(
       return res.status(500).json({ error: 'Impossible de récupérer les procédures.' });
     }
 
-    const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+    if (req.userRole === 'admin') {
+      return res.json(data);
+    }
+
+    // Un partage (voir record_shares/recordSharing.js, bouton Partager) donne accès à une
+    // procédure précise en plus des règles normales — jamais une restriction, uniquement un
+    // octroi supplémentaire. Même principe que capas.js.
+    const sharedIds = await getSharedResourceIds({
+      tenantId: req.tenantId,
+      resourceType: 'procedure',
+      userId: req.user.id,
+      userRole: req.userRole,
+    });
+    const categoryViewableIds = new Set(
+      (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((p) => p.id)
+    );
+    const visible = data.filter((procedure) => sharedIds.has(procedure.id) || categoryViewableIds.has(procedure.id));
     res.json(visible);
   }
 );
@@ -334,15 +350,24 @@ router.get('/:id', async (req, res) => {
   }
 
   if (req.userRole !== 'admin' && procedure.category?.is_restricted) {
-    const categoryAllowed = await hasGenericCategoryPermission({
+    const shared = await isSharedWithUser({
       tenantId: req.tenantId,
+      resourceType: 'procedure',
+      resourceId: procedure.id,
       userId: req.user.id,
       userRole: req.userRole,
-      categoryId: procedure.category_id,
-      permission: 'view',
     });
-    if (!categoryAllowed) {
-      return res.status(404).json({ error: 'Procédure introuvable.' });
+    if (!shared) {
+      const categoryAllowed = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: procedure.category_id,
+        permission: 'view',
+      });
+      if (!categoryAllowed) {
+        return res.status(404).json({ error: 'Procédure introuvable.' });
+      }
     }
   }
 

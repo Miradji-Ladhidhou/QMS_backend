@@ -33,6 +33,15 @@ async function createComplaint(token, extra = {}) {
   return res.body;
 }
 
+async function createProcedure(token, number, extra = {}) {
+  const res = await request(app)
+    .post('/api/procedures')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ number, title: `Procédure ${number}`, ...extra });
+  expect(res.status).toBe(201);
+  return res.body;
+}
+
 // CAPA/réclamations/QQOQCCP sont visibles par tout le tenant par défaut (comme les
 // Documents) — pour démontrer qu'un partage individuel donne réellement accès, ces tests le
 // font sur une catégorie explicitement restreinte (Paramètres > Catégories), sinon un member
@@ -239,6 +248,29 @@ describe('Partage d’un élément précis (record_shares)', () => {
     const afterList = await request(app).get('/api/qqoqccp').set('Authorization', `Bearer ${member.token}`);
     expect(afterList.body.map((a) => a.id)).toContain(analysis.id);
     const afterDetail = await request(app).get(`/api/qqoqccp/${analysis.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(afterDetail.status).toBe(200);
+  });
+
+  it("un membre ne voit une procédure d'un dossier restreint qu'après un partage direct", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const category = await createRestrictedCategory(tenant.admin.token, 'procedure');
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-SHARE-1', { category_id: category.id });
+
+    const beforeList = await request(app).get('/api/procedures').set('Authorization', `Bearer ${member.token}`);
+    expect(beforeList.body.map((p) => p.id)).not.toContain(procedure.id);
+    const beforeDetail = await request(app).get(`/api/procedures/${procedure.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(beforeDetail.status).toBe(404);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'procedure', resource_id: procedure.id, subject_type: 'user', subject_id: member.id })
+      .expect(201);
+
+    const afterList = await request(app).get('/api/procedures').set('Authorization', `Bearer ${member.token}`);
+    expect(afterList.body.map((p) => p.id)).toContain(procedure.id);
+    const afterDetail = await request(app).get(`/api/procedures/${procedure.id}`).set('Authorization', `Bearer ${member.token}`);
     expect(afterDetail.status).toBe(200);
   });
 });
