@@ -474,6 +474,99 @@ router.get('/:id/pdf', async (req, res) => {
   res.send(pdfBuffer);
 });
 
+// PATCH /api/procedures/bulk-category — déplace plusieurs procédures d'un coup vers un dossier
+// (ou aucun). Placée avant PATCH /:id/category pour ne pas être capturée comme un id, même
+// convention que /bulk-category dans les autres modules.
+router.patch(
+  '/bulk-category',
+  requireRole(...MANAGER_ROLES),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une procédure.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  requireValidCategoryId('procedure'),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('procedures')
+      .update({ category_id: req.body.category_id || null })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors du déplacement.' });
+    }
+
+    res.json({ updated: data.length });
+  }
+);
+
+// DELETE /api/procedures/bulk — suppression en masse, mêmes garde-fous que DELETE /:id
+// ci-dessous (auteur ou admin, jamais une procédure qui a quitté le brouillon) : les ids qui ne
+// les respectent pas sont silencieusement ignorés plutôt que de faire échouer toute la
+// sélection, même principe que DELETE /tasks/bulk (tasks.js).
+router.delete(
+  '/bulk',
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins une procédure.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: candidates, error: fetchError } = await supabase
+      .from('procedures')
+      .select('id, created_by')
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids);
+
+    if (fetchError) {
+      return res.status(500).json({ error: 'Impossible de récupérer ces procédures.' });
+    }
+
+    const deletableIds = req.userRole === 'admin' ? candidates.map((p) => p.id) : candidates.filter((p) => p.created_by === req.user.id).map((p) => p.id);
+    if (deletableIds.length === 0) {
+      return res.json({ deleted: 0 });
+    }
+
+    const { data: nonDraftVersions, error: versionsError } = await supabase
+      .from('procedure_versions')
+      .select('procedure_id')
+      .in('procedure_id', deletableIds)
+      .neq('status', 'draft');
+
+    if (versionsError) {
+      return res.status(500).json({ error: 'Impossible de vérifier les versions de ces procédures.' });
+    }
+
+    const nonDraftIds = new Set(nonDraftVersions.map((v) => v.procedure_id));
+    const finalIds = deletableIds.filter((id) => !nonDraftIds.has(id));
+    if (finalIds.length === 0) {
+      return res.json({ deleted: 0 });
+    }
+
+    const { error: deleteError, count } = await supabase
+      .from('procedures')
+      .delete({ count: 'exact' })
+      .in('id', finalIds);
+
+    if (deleteError) {
+      return res.status(500).json({ error: 'Erreur lors de la suppression.' });
+    }
+
+    res.json({ deleted: count });
+  }
+);
+
 // DELETE /api/procedures/:id — suppression réelle, réservée aux procédures qui n'ont JAMAIS
 // quitté le brouillon : dès qu'une version a été soumise ne serait-ce qu'une fois (même
 // rejetée depuis), elle fait partie de la piste d'audit et ne doit plus jamais disparaître —

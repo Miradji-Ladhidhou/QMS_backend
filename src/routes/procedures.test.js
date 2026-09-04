@@ -119,6 +119,70 @@ describe('Catégorie (dossier) sur les procédures', () => {
   });
 });
 
+describe('Actions en masse sur les procédures', () => {
+  it('PATCH /bulk-category déplace plusieurs procédures, réservé admin/manager', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const a = await createProcedure(tenant.admin.token, 'PROC-BULK-1');
+    const b = await createProcedure(tenant.admin.token, 'PROC-BULK-2');
+
+    const category = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'procedure', name: 'Qualité' });
+    expect(category.status).toBe(201);
+
+    const blocked = await request(app)
+      .patch('/api/procedures/bulk-category')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [a.id, b.id], category_id: category.body.id });
+    expect(blocked.status).toBe(403);
+
+    const res = await request(app)
+      .patch('/api/procedures/bulk-category')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ids: [a.id, b.id], category_id: category.body.id });
+    expect(res.status).toBe(200);
+    expect(res.body.updated).toBe(2);
+
+    const list = await request(app).get('/api/procedures').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(list.body.filter((p) => [a.id, b.id].includes(p.id)).every((p) => p.category_id === category.body.id)).toBe(true);
+  });
+
+  it('DELETE /bulk supprime les brouillons éligibles et ignore silencieusement le reste', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const ownDraft = await createProcedure(member.token, 'PROC-BULK-3');
+    const othersDraft = await createProcedure(tenant.admin.token, 'PROC-BULK-4');
+    const submitted = await createProcedure(tenant.admin.token, 'PROC-BULK-5');
+    const version = await request(app)
+      .post(`/api/procedures/${submitted.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    expect(version.status).toBe(201);
+    await request(app)
+      .post(`/api/procedures/${submitted.id}/versions/${version.body.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+
+    // Un member ne peut supprimer que sa propre procédure brouillon : othersDraft et submitted
+    // (déjà soumise) sont silencieusement ignorées, seule ownDraft est réellement supprimée.
+    const res = await request(app)
+      .delete('/api/procedures/bulk')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ ids: [ownDraft.id, othersDraft.id, submitted.id] });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(1);
+
+    const list = await request(app).get('/api/procedures').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const remainingIds = list.body.map((p) => p.id);
+    expect(remainingIds).not.toContain(ownDraft.id);
+    expect(remainingIds).toContain(othersDraft.id);
+    expect(remainingIds).toContain(submitted.id);
+  });
+});
+
 describe('POST /api/procedures/:id/versions — ai_generated', () => {
   it('false par défaut, true si fourni explicitement', async () => {
     tenant = await createTenant();
