@@ -1519,6 +1519,50 @@ router.patch(
   }
 );
 
+// POST /api/documents/:id/mark-reviewed — pousse explicitement review_date en avant, pour le
+// cas où aucune fréquence de révision n'est configurée (ni sur le document, ni par défaut sur
+// le tenant, voir tenants.document_review_frequency_months / Paramètres > Documents) : sans
+// fréquence, uploader une nouvelle version ne fait JAMAIS avancer review_date
+// (computeReviewDateUpdate ci-dessus renvoie {} tant que rien n'est paramétré), donc un
+// document déjà en retard le reste indéfiniment même après une vraie mise à jour de contenu —
+// ce bouton comble ce trou en laissant l'utilisateur choisir/confirmer la prochaine date à la
+// main. Même garde que /metadata (admin/manager + permission catégorie) : c'est le même niveau
+// de correction de traçabilité qualité.
+router.post(
+  '/:id/mark-reviewed',
+  requireRole('admin', 'manager'),
+  requireCategoryPermission('edit', resolveDocumentById),
+  [body('review_date').isISO8601().withMessage('Date de révision invalide.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('documents')
+      .update({ review_date: req.body.review_date })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select('*, category:document_categories(id, name, color)')
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Document introuvable.' });
+    }
+
+    await logAudit({
+      tenantId: req.tenantId,
+      documentId: req.params.id,
+      userId: req.user.id,
+      action: 'marked_reviewed',
+      details: { review_date: req.body.review_date },
+    });
+
+    res.json(data);
+  }
+);
+
 // DELETE /api/documents/bulk — suppression en masse. Placée avant DELETE /:id pour ne pas être
 // capturée comme un id, même convention que /bulk-category. Contrairement aux autres modules,
 // requireRole('admin','manager') ne suffit pas seul ici : chaque document reste soumis à

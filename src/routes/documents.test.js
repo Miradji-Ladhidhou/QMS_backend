@@ -82,6 +82,77 @@ describe('GET /api/documents/:id/audit-log', () => {
   });
 });
 
+// Sans fréquence de révision configurée (ni sur le document, ni tenants.
+// document_review_frequency_months), uploader une nouvelle version ne fait jamais avancer
+// review_date (voir computeReviewDateUpdate) : un document déjà en retard le reste
+// indéfiniment. Ce bouton comble ce trou en poussant explicitement review_date, quel que soit
+// l'état de la fréquence.
+describe('POST /api/documents/:id/mark-reviewed', () => {
+  async function createDocument(token, number, extra = {}) {
+    const req = request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${token}`)
+      .field('number', number)
+      .field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it('pousse review_date, journalise l’action, et rejette une date invalide', async () => {
+    tenant = await createTenant();
+    const doc = await createDocument(tenant.admin.token, 'DOC-MR-001', { review_date: '2026-01-01' });
+
+    const invalid = await request(app)
+      .post(`/api/documents/${doc.id}/mark-reviewed`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ review_date: 'pas-une-date' });
+    expect(invalid.status).toBe(400);
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/mark-reviewed`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ review_date: '2027-01-01' });
+    expect(res.status).toBe(200);
+    expect(res.body.review_date).toBe('2027-01-01');
+
+    const auditLog = await request(app)
+      .get(`/api/documents/${doc.id}/audit-log`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    const entry = auditLog.body.find((row) => row.action === 'marked_reviewed');
+    expect(entry).toBeDefined();
+    expect(entry.details).toEqual({ review_date: '2027-01-01' });
+  });
+
+  it('réservé admin/manager, respecte la permission de catégorie comme /metadata', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const doc = await createDocument(tenant.admin.token, 'DOC-MR-002');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/mark-reviewed`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ review_date: '2027-01-01' });
+    expect(res.status).toBe(403);
+  });
+
+  it('404 sur un document d’un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const doc = await createDocument(tenant.admin.token, 'DOC-MR-003');
+      const res = await request(app)
+        .post(`/api/documents/${doc.id}/mark-reviewed`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ review_date: '2027-01-01' });
+      expect(res.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
 // Prompt B3 : l'upload doit basculer sur Google Drive UNIQUEMENT si tenant_storage_settings
 // vaut 'google_drive' pour ce tenant. Un tenant tout neuf n'a aucune ligne dans cette table
 // (comportement par défaut, voir schema.sql) — ces tests verrouillent qu'il continue d'uploader
