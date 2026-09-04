@@ -201,6 +201,57 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     expect(memberRes.body.kpis.preview).toEqual([]);
   });
 
+  it('le statut hors objectif se base sur les 6 derniers relevés, pas toute la vie du KPI', async () => {
+    tenant = await createTenant();
+
+    // KPI 1 : mauvais historiquement (loin dans le passé), bon récemment — la moyenne sur
+    // toute la vie serait hors objectif, mais ce n'est plus le cas depuis un moment.
+    const recovered = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI redressé', target: 5, target_direction: 'max' });
+    const oldBadDates = ['2025-01-01', '2025-02-01', '2025-03-01', '2025-04-01'];
+    for (const date of oldBadDates) {
+      await request(app)
+        .post(`/api/kpis/${recovered.body.id}/records`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ period_date: date, value: 50 }); // très mauvais, loin dans le passé
+    }
+    const recentGoodDates = ['2026-03-01', '2026-04-01', '2026-05-01', '2026-06-01', '2026-07-01', '2026-08-01'];
+    for (const date of recentGoodDates) {
+      await request(app)
+        .post(`/api/kpis/${recovered.body.id}/records`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ period_date: date, value: 2 }); // bon, récent
+    }
+
+    // KPI 2 : bon historiquement, mauvais récemment — la moyenne sur toute la vie serait
+    // dans l'objectif, mais la situation actuelle est mauvaise.
+    const declining = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI en dégradation', target: 5, target_direction: 'max' });
+    const oldGoodDates = ['2025-01-01', '2025-02-01', '2025-03-01', '2025-04-01'];
+    for (const date of oldGoodDates) {
+      await request(app)
+        .post(`/api/kpis/${declining.body.id}/records`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ period_date: date, value: 2 }); // bon, loin dans le passé
+    }
+    const recentBadDates = ['2026-03-01', '2026-04-01', '2026-05-01', '2026-06-01', '2026-07-01', '2026-08-01'];
+    for (const date of recentBadDates) {
+      await request(app)
+        .post(`/api/kpis/${declining.body.id}/records`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ period_date: date, value: 50 }); // mauvais, récent
+    }
+
+    const res = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.kpis.off_target).toBe(1);
+    expect(res.body.kpis.preview).toHaveLength(1);
+    expect(res.body.kpis.preview[0]).toMatchObject({ id: declining.body.id, name: 'KPI en dégradation', average: 50 });
+  });
+
   it('compte les plans HACCP actifs pour admin/manager (filtrable par service), toujours à 0 pour member', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];

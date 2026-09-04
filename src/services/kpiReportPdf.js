@@ -22,6 +22,17 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
+// Même fenêtre que routes/dashboard.js#KPI_RECENT_WINDOW et Kpis.jsx (frontend) : le statut
+// good/bad reflète les relevés RÉCENTS, jamais toute la vie du KPI — sinon ce rapport PDF
+// afficherait un statut différent de ce que montre l'app pour le même KPI.
+const KPI_RECENT_WINDOW = 6;
+
+// records : déjà trié par period_date croissant chez les deux appelants (voir plus bas).
+function computeRecentAverage(records) {
+  const recent = records.slice(-KPI_RECENT_WINDOW);
+  return recent.length > 0 ? Number((recent.reduce((sum, r) => sum + r.value, 0) / recent.length).toFixed(2)) : null;
+}
+
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js) : neutre si pas d'objectif ou pas
 // encore de valeur, sinon atteint/non atteint selon le sens de l'objectif.
 function getKpiStatus(value, target, targetDirection) {
@@ -404,9 +415,10 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     return;
   }
 
-  // Le statut et la valeur mise en avant reflètent la moyenne de toutes les périodes
-  // enregistrées, pas seulement la dernière — cohérent avec la carte KPI du frontend.
-  const averageValue = records.length > 0 ? Number((records.reduce((sum, r) => sum + r.value, 0) / records.length).toFixed(2)) : null;
+  // Le statut et la valeur mise en avant reflètent la moyenne des dernières périodes
+  // enregistrées (voir KPI_RECENT_WINDOW), jamais toute la vie du KPI — cohérent avec la carte
+  // KPI du frontend et le Dashboard.
+  const averageValue = computeRecentAverage(records);
   const status = getKpiStatus(averageValue, kpi.target, targetDirection);
 
   // 32pt titre+objectif avant le graphique, CHART_HEIGHT pour le graphique, puis marge/
@@ -536,7 +548,7 @@ function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
     // buildSeriesInfo / drawKpiSection) — mélanger plusieurs séries donnerait un chiffre
     // trompeur ici aussi, donc "Plusieurs séries" plutôt qu'une fausse moyenne.
     const { showMultiSeries } = buildSeriesInfo(kpi);
-    const averageValue = records.length > 0 ? Number((records.reduce((sum, r) => sum + r.value, 0) / records.length).toFixed(2)) : null;
+    const averageValue = computeRecentAverage(records);
     const status = showMultiSeries ? null : getKpiStatus(averageValue, kpi.target, targetDirection);
 
     doc.fontSize(9).fillColor(INK);

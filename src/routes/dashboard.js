@@ -115,12 +115,22 @@ async function countProceduresToReview(tenantId) {
   return count || 0;
 }
 
+// Nombre de relevés RÉCENTS (les plus proches d'aujourd'hui par period_date) utilisés pour
+// juger si un KPI est hors objectif — jamais toute sa vie entière. Historique réel : la moyenne
+// "toute l'histoire" utilisée avant ce changement diluait une mauvaise tendance récente derrière
+// des années de bonnes valeurs, rendant le compteur "hors objectif" silencieux sur des KPI dont
+// la situation ACTUELLE était pourtant mauvaise — perçu à raison comme "pas synchronisé avec la
+// réalité". Même fenêtre utilisée ici et dans Kpis.jsx (frontend), pour que le nombre affiché
+// sur une carte KPI et son statut good/bad restent l'un ET l'autre décrits par la même moyenne.
+const KPI_RECENT_WINDOW = 6;
+
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js, dupliqué aussi dans
-// kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne de ses relevés ne respecte pas
-// le sens de l'objectif (target_direction). Pas de service_id sur les KPI (voir schema.sql) :
-// toujours tout le tenant, jamais scopé — comme documents.to_review. `preview` renvoie jusqu'à
-// 3 KPI hors objectif avec leurs derniers points (mini-courbe côté dashboard) plutôt qu'un
-// simple chiffre — même dataset déjà chargé pour calculer la moyenne, aucune requête en plus.
+// kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne de ses KPI_RECENT_WINDOW derniers
+// relevés ne respecte pas le sens de l'objectif (target_direction). Pas de service_id sur les
+// KPI (voir schema.sql) : toujours tout le tenant, jamais scopé — comme documents.to_review.
+// `preview` renvoie jusqu'à 3 KPI hors objectif avec leurs 8 derniers points (mini-courbe côté
+// dashboard, volontairement plus large que la fenêtre de calcul pour donner un peu de contexte
+// visuel) plutôt qu'un simple chiffre — même dataset déjà chargé, aucune requête en plus.
 async function computeKpiSummary(tenantId) {
   const { data: kpis, error } = await supabase
     .from('kpis')
@@ -132,10 +142,11 @@ async function computeKpiSummary(tenantId) {
   const offTargetKpis = [];
   for (const kpi of kpis) {
     if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
-    const average = kpi.records.reduce((sum, record) => sum + record.value, 0) / kpi.records.length;
+    const sortedValues = [...kpi.records].sort((a, b) => (a.period_date < b.period_date ? -1 : 1)).map((r) => r.value);
+    const recentValues = sortedValues.slice(-KPI_RECENT_WINDOW);
+    const average = recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length;
     const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
     if (!meetsTarget) {
-      const sortedValues = [...kpi.records].sort((a, b) => (a.period_date < b.period_date ? -1 : 1)).map((r) => r.value);
       offTargetKpis.push({
         id: kpi.id,
         name: kpi.name,

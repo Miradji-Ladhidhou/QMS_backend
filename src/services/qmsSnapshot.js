@@ -74,19 +74,28 @@ async function countTrainingsToRenew(tenantId) {
   return count;
 }
 
+// Même fenêtre que routes/dashboard.js#KPI_RECENT_WINDOW, Kpis.jsx et kpiReportPdf.js : le
+// statut hors objectif reflète les relevés RÉCENTS, jamais toute la vie du KPI — sinon
+// l'instantané d'une revue de direction pourrait contredire ce que montre l'app elle-même.
+const KPI_RECENT_WINDOW = 6;
+
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js), déjà dupliqué dans
 // kpiReportPdf.js et dashboard.js pour la même raison.
 async function countOffTargetKpis(tenantId) {
   const { data, error } = await supabase
     .from('kpis')
-    .select('id, target, target_direction, records:kpi_records(value)')
+    .select('id, target, target_direction, records:kpi_records(period_date, value)')
     .eq('tenant_id', tenantId);
   if (error || !data) return 0;
 
   let count = 0;
   for (const kpi of data) {
     if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
-    const average = kpi.records.reduce((sum, record) => sum + record.value, 0) / kpi.records.length;
+    const recentValues = [...kpi.records]
+      .sort((a, b) => (a.period_date < b.period_date ? -1 : 1))
+      .slice(-KPI_RECENT_WINDOW)
+      .map((r) => r.value);
+    const average = recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length;
     const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
     if (!meetsTarget) count += 1;
   }
