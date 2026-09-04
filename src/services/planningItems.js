@@ -102,6 +102,32 @@ export async function fetchDocumentItems(tenantId) {
   );
 }
 
+// Procédures avec une prochaine révision — même forme que fetchDocumentItems (pas de
+// service_id/category_id sur procedures, voir schema.sql : toujours tout le tenant, jamais
+// scopé ni filtré par catégorie, contrairement à capas/audits/...). Une procédure déjà
+// obsolete est exclue : sa révision n'a plus de sens, même logique que isReviewOverdue côté
+// frontend (Procedures.jsx).
+export async function fetchProcedureItems(tenantId) {
+  const { data, error } = await supabase
+    .from('procedures')
+    .select('id, number, title, next_review_date')
+    .eq('tenant_id', tenantId)
+    .neq('status', 'obsolete')
+    .not('next_review_date', 'is', null);
+
+  if (error || !data) return [];
+
+  return data.map((procedure) =>
+    withOverdue({
+      type: 'procedure',
+      id: procedure.id,
+      title: `${procedure.number} — ${procedure.title}`,
+      date: procedure.next_review_date,
+      link: `/procedures/${procedure.id}`,
+    })
+  );
+}
+
 // Formations à échéance, comptes ET personnel sans compte — dédupliquées au dernier
 // enregistrement par (formation, personne), comme trainings.js/dashboard.js.
 export async function fetchTrainingItems(tenantId, { userId, userIds }) {

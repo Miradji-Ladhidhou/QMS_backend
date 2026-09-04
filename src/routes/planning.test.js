@@ -256,4 +256,28 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     const afterInactive = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterInactive.body.items.some((i) => i.type === 'supplier' && i.id === supplier.body.id)).toBe(false);
   });
+
+  it('inclut les procédures avec une prochaine révision pour admin/manager, jamais pour member (pas de porteur individuel), exclut les obsolètes', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const procedure = await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ number: 'PROC-P01', title: 'Procédure planning', next_review_date: '2026-08-01' });
+    const obsoleteProcedure = await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ number: 'PROC-P02', title: 'Procédure obsolète', next_review_date: '2026-08-01' });
+    await admin.from('procedures').update({ status: 'obsolete' }).eq('id', obsoleteProcedure.body.id);
+
+    const adminRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const item = adminRes.body.items.find((i) => i.type === 'procedure' && i.id === procedure.body.id);
+    expect(item).toBeDefined();
+    expect(item.is_overdue).toBe(true);
+    expect(adminRes.body.items.some((i) => i.id === obsoleteProcedure.body.id)).toBe(false);
+
+    const memberRes = await request(app).get('/api/planning').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.items.some((i) => i.type === 'procedure')).toBe(false);
+  });
 });

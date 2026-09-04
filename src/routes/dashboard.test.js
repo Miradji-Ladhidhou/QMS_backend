@@ -28,6 +28,17 @@ async function makeCapa(token, title, { serviceId, status, assignedTo, categoryI
   return res.body.id;
 }
 
+async function makeProcedure(token, number, { nextReviewDate, status } = {}) {
+  const res = await request(app)
+    .post('/api/procedures')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ number, title: `Procédure ${number}`, next_review_date: nextReviewDate });
+  if (status) {
+    await admin.from('procedures').update({ status }).eq('id', res.body.id);
+  }
+  return res.body.id;
+}
+
 async function makeRestrictedCategory(token, name = 'Restreinte') {
   const res = await request(app)
     .post('/api/module-categories')
@@ -399,6 +410,44 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     expect(afterClosed.body.risks).toEqual({ active: 0, overdue: 0 });
   });
 
+  it('compte les procédures à réviser sous 30 jours pour admin/manager (jamais scopé par service, pas de service_id sur procedures), toujours à 0 pour member, exclut les obsolètes', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const serviceA = await makeService(tenant.admin.token, 'Service A');
+
+    await makeProcedure(tenant.admin.token, 'PROC-D01', { nextReviewDate: '2026-08-20' }); // sous 30 jours
+    await makeProcedure(tenant.admin.token, 'PROC-D02', { nextReviewDate: '2027-01-01' }); // hors fenêtre
+    await makeProcedure(tenant.admin.token, 'PROC-D03', { nextReviewDate: '2026-08-15', status: 'obsolete' }); // exclue
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.procedures.to_review).toBe(1);
+
+    // Filtrer sur un service ne change rien : les procédures n'ont pas de service_id.
+    const scoped = await request(app)
+      .get('/api/dashboard/stats')
+      .query({ service_id: serviceA })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(scoped.body.procedures.to_review).toBe(1);
+
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.procedures.to_review).toBe(0);
+  });
+
+  it('total "en retard" inclut aussi les procédures en retard de révision pour admin, jamais pour member, exclut les obsolètes', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    await makeProcedure(tenant.admin.token, 'PROC-D04', { nextReviewDate: '2026-08-01' });
+    await makeProcedure(tenant.admin.token, 'PROC-D05', { nextReviewDate: '2026-08-01', status: 'obsolete' });
+
+    const adminRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminRes.body.overdue.total).toBe(1);
+
+    // Pas de porteur individuel sur une procédure : jamais compté dans le total d'un member.
+    const memberRes = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${member.token}`);
+    expect(memberRes.body.overdue.total).toBe(0);
+  });
+
   it('fournisseurs et revues de direction : uniquement pour admin/manager, toujours à 0 pour member', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
@@ -516,6 +565,17 @@ describe('GET /api/dashboard/recent-activity', () => {
 
     const adminRes = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(adminRes.body.some((item) => item.label.includes('restreinte'))).toBe(true);
+  });
+
+  it('inclut les procédures, sans filtrage par catégorie (le module n’en a pas)', async () => {
+    tenant = await createTenant();
+    const procedureId = await makeProcedure(tenant.admin.token, 'PROC-D06');
+
+    const res = await request(app).get('/api/dashboard/recent-activity').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    const entry = res.body.find((item) => item.id === procedureId);
+    expect(entry).toMatchObject({ module: 'procedures', link: `/procedures/${procedureId}`, action: 'created' });
+    expect(entry.label).toContain('PROC-D06');
   });
 
   it('tronque à 8 résultats au total', async () => {

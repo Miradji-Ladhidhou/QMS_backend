@@ -5,6 +5,7 @@ import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '
 import {
   fetchCapaItems,
   fetchDocumentItems,
+  fetchProcedureItems,
   fetchTrainingItems,
   fetchTaskItems,
   fetchAuditItems,
@@ -17,14 +18,15 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireMenuVisible('planning'));
 
-// GET /api/planning — agrège CAPA/documents/formations/tâches/audits/réclamations/risques en
-// une liste chronologique unique, avec le même filtrage par rôle et par service que
-// /api/dashboard/stats :
+// GET /api/planning — agrège CAPA/documents/procédures/formations/tâches/audits/
+// réclamations/risques en une liste chronologique unique, avec le même filtrage par rôle et
+// par service que /api/dashboard/stats :
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : auto-scopé sur ses services par défaut, élargissement ponctuel possible
 // - member : uniquement ses propres éléments (CAPA/réclamations assignées, ses formations,
 //   ses tâches, les audits qu'il mène, les risques dont il est responsable) — jamais de
-//   documents (pas de porteur individuel) ni de vue tenant/service
+//   documents ni de procédures (pas de porteur individuel, voir schema.sql) ni de vue
+//   tenant/service
 router.get('/', async (req, res) => {
   const requestedServiceIds = parseServiceIdsParam(req.query.service_id);
   if (!requestedServiceIds) {
@@ -53,19 +55,22 @@ router.get('/', async (req, res) => {
 
     const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
 
-    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] = await Promise.all([
-      fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-      fetchDocumentItems(req.tenantId),
-      fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
-      fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
-      fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-      fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-      fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-      fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-    ]);
+    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] =
+      await Promise.all([
+        fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchDocumentItems(req.tenantId),
+        fetchProcedureItems(req.tenantId),
+        fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
+        fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
+        fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      ]);
     items = [
       ...capaItems,
       ...documentItems,
+      ...procedureItems,
       ...trainingItems,
       ...taskItems,
       ...auditItems,
