@@ -15,7 +15,12 @@ const EVALUATION_DECISIONS = ['maintained', 'under_watch', 'to_replace'];
 router.use(requireAuth);
 router.use(requireMenuVisible('suppliers'));
 
-const SUPPLIER_SELECT = '*, service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)';
+// L'alias de la relation module_categories est "folder", pas "category" : `suppliers` a sa
+// propre colonne texte historique `category` (le type de fournisseur, ex. "Matières premières")
+// — l'aliaser en "category" écraserait cette colonne dans le JSON renvoyé par PostgREST (deux
+// clés identiques dans le même select, la dernière gagne), rendant le texte libre inaccessible
+// et cassant l'affichage (un objet rendu là où le frontend attend une chaîne).
+const SUPPLIER_SELECT = '*, service:services(id, name), folder:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/suppliers — liste tenant-wide par défaut (transparence, comme audits/risks : un
 // fournisseur n'est "possédé" par personne en particulier), sauf catégorie restreinte
@@ -36,7 +41,7 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
-  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data, categoryKey: 'folder' });
   res.json(viewable);
 });
 
@@ -79,7 +84,7 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les évaluations de ce fournisseur.' });
   }
 
-  res.json({ ...supplier, evaluations, is_private_to_me: supplier.category?.owner_user_id === req.user.id });
+  res.json({ ...supplier, evaluations, is_private_to_me: supplier.folder?.owner_user_id === req.user.id });
 });
 
 // POST /api/suppliers — admin/manager uniquement : la gestion du référentiel fournisseurs est

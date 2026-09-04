@@ -57,11 +57,15 @@ export async function hasGenericCategoryPermission({ tenantId, userId, userRole,
 // la partie "partage individuel" (à combiner par l'appelant si son module en a un, voir
 // routes/capas.js). tenantId n'est volontairement pas nécessaire ici : les category_id à
 // vérifier viennent déjà d'éléments filtrés sur le bon tenant par l'appelant.
-export async function filterViewableByCategory({ userId, userRole, items }) {
+// categoryKey : clé sous laquelle la relation catégorie a été jointe (voir SUPPLIER_SELECT dans
+// routes/suppliers.js — aliasée "folder" plutôt que "category" pour ne pas écraser la colonne
+// texte historique `suppliers.category` dans le JSON renvoyé). 'category' par défaut pour tous
+// les autres appelants, inchangés.
+export async function filterViewableByCategory({ userId, userRole, items, categoryKey = 'category' }) {
   if (ADMIN_ROLES.includes(userRole)) return items;
 
   const restrictedCategoryIds = [
-    ...new Set(items.filter((item) => item.category?.is_restricted).map((item) => item.category_id)),
+    ...new Set(items.filter((item) => item[categoryKey]?.is_restricted).map((item) => item.category_id)),
   ];
   if (restrictedCategoryIds.length === 0) return items;
 
@@ -73,7 +77,7 @@ export async function filterViewableByCategory({ userId, userRole, items }) {
     .eq('subject_id', userId);
 
   if (directError) {
-    return items.filter((item) => !item.category?.is_restricted);
+    return items.filter((item) => !item[categoryKey]?.is_restricted);
   }
 
   const directDecisionByCategoryId = new Map(directPerms.map((row) => [row.category_id, row.can_view]));
@@ -98,7 +102,7 @@ export async function filterViewableByCategory({ userId, userRole, items }) {
   }
 
   return items.filter((item) => {
-    if (!item.category?.is_restricted) return true;
+    if (!item[categoryKey]?.is_restricted) return true;
     if (directDecisionByCategoryId.has(item.category_id)) return directDecisionByCategoryId.get(item.category_id);
     return viewableCategoryIdsFromGroups.has(item.category_id);
   });

@@ -17,8 +17,13 @@ const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 router.use(requireAuth);
 router.use(requireMenuVisible('risks'));
 
+// La relation module_categories est aliasée "folder", pas "category" : `risks` a sa propre
+// colonne texte historique `category` (même raisonnement que SUPPLIER_SELECT dans
+// routes/suppliers.js) — l'aliaser en "category" écraserait cette colonne dans le JSON
+// renvoyé par PostgREST, rendant le texte libre inaccessible et cassant l'affichage (un objet
+// rendu là où le frontend attend une chaîne).
 const RISK_SELECT =
-  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
+  '*, owner_user:users!risks_owner_fkey(id, full_name), service:services(id, name), linked_capa:capas!risks_linked_capa_id_fkey(id, number, title, status), folder:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/risks — liste tenant-wide, tous les rôles (transparence : le registre des risques
 // concerne le SMQ dans son ensemble, comme les audits). Filtrable par statut/type/service. Une
@@ -36,7 +41,7 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer le registre des risques.' });
   }
 
-  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data, categoryKey: 'folder' });
   res.json(visible);
 });
 
@@ -59,7 +64,7 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Risque introuvable.' });
   }
 
-  res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+  res.json({ ...data, is_private_to_me: data.folder?.owner_user_id === req.user.id });
 });
 
 // POST /api/risks — admin/manager uniquement : l'identification structurée d'un risque est
