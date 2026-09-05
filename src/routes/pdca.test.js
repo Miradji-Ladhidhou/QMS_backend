@@ -289,6 +289,50 @@ describe('POST /api/pdca/:id/generate — permissions et validation', () => {
   });
 });
 
+describe('POST /api/pdca/:id/create-capa — lien bidirectionnel, admin/manager OU créateur', () => {
+  it('crée une CAPA liée avec pdca_project_id et met à jour pdca_projects.linked_capa_id', async () => {
+    tenant = await createTenant();
+    const pdca = await makePdca(tenant.admin.token, { plan_content: 'Plan initial.' });
+
+    const capa = await request(app)
+      .post(`/api/pdca/${pdca.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Standardiser la nouvelle procédure' });
+    expect(capa.status).toBe(201);
+    expect(capa.body.pdca_project_id).toBe(pdca.body.id);
+    expect(capa.body.origin).toContain('Projet PDCA');
+
+    const detail = await request(app).get(`/api/pdca/${pdca.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detail.body.linked_capa.id).toBe(capa.body.id);
+  });
+
+  it('201 pour le créateur même en rôle member (dérogation) ; 201 pour un manager qui n’a pas créé le projet ; 403 pour un member ni créateur ni manager', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }, { role: 'manager' }] });
+    const [creator, other, manager] = tenant.users;
+    const pdca = await makePdca(creator.token);
+
+    const byCreator = await request(app)
+      .post(`/api/pdca/${pdca.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${creator.token}`)
+      .send({ title: 'CAPA créée par le porteur du projet' });
+    expect(byCreator.status).toBe(201);
+
+    const pdca2 = await makePdca(creator.token);
+    const byManager = await request(app)
+      .post(`/api/pdca/${pdca2.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ title: 'CAPA créée par un manager' });
+    expect(byManager.status).toBe(201);
+
+    const pdca3 = await makePdca(creator.token);
+    const byOther = await request(app)
+      .post(`/api/pdca/${pdca3.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${other.token}`)
+      .send({ title: 'Tentative non autorisée' });
+    expect(byOther.status).toBe(403);
+  });
+});
+
 describe('Catégorie restreinte — visibilité GET /, GET /:id', () => {
   it("un member ne voit un projet PDCA d'une catégorie restreinte qu'avec une permission de catégorie ; admin voit toujours", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });

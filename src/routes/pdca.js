@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { generatePdcaPhaseSuggestion } from '../services/groq.js';
+import { notifyCapaAssigned } from '../services/capaNotifications.js';
 
 const router = Router();
 
@@ -13,12 +14,14 @@ const MANAGER_ROLES = ['admin', 'manager'];
 // ni de retour en arrière (pas de statut libre, voir schema.sql).
 const PDCA_SEQUENCE = ['plan', 'do', 'check', 'act', 'closed'];
 const PHASE_LABELS = { plan: 'Plan', do: 'Do', check: 'Check', act: 'Act' };
+// Mêmes niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans accidents.js/risks.js.
+const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
 router.use(requireAuth);
 router.use(requireMenuVisible('pdca'));
 
 const PDCA_SELECT =
-  '*, service:services(id, name), owner_user:users!pdca_projects_owner_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)';
+  '*, service:services(id, name), owner_user:users!pdca_projects_owner_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id), linked_capa:capas!pdca_projects_linked_capa_id_fkey(id, number, title, status)';
 
 function today() {
   return new Date().toISOString().slice(0, 10);
@@ -401,6 +404,111 @@ router.post(
     }
 
     res.json(data);
+  }
+);
+
+// POST /api/pdca/:id/create-capa — crée une CAPA à partir de ce projet et lie les deux dans les
+// deux sens. Même mécanique que POST /risks/:id/create-capa, MAIS permission différente :
+// contrairement à risks.js/accidents.js (réservé admin/manager), ici admin/manager OU
+// created_by === req.user.id — exactement comme PATCH /:id et POST /:id/advance ci-dessus.
+// Ouvrir une CAPA depuis la conclusion Act d'un cycle qu'on a soi-même documenté est un
+// prolongement naturel de son propre suivi, pas un acte de pilotage managérial séparé.
+router.post(
+  '/:id/create-capa',
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
+    body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
+    body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
+    body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
+    body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+    body('root_cause').optional({ values: 'falsy' }).trim(),
+    body('corrective_action').optional({ values: 'falsy' }).trim(),
+    body('preventive_action').optional({ values: 'falsy' }).trim(),
+  ],
+  async (req, res) => {
+    const { data: pdca, error: fetchError } = await supabase
+      .from('pdca_projects')
+      .select('id, title, service_id, description, check_content, act_content, created_by')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !pdca) {
+      return res.status(404).json({ error: 'Projet PDCA introuvable.' });
+    }
+
+    const isManager = MANAGER_ROLES.includes(req.userRole);
+    if (!isManager && pdca.created_by !== req.user.id) {
+      return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const {
+      title,
+      service_id: serviceId,
+      severity,
+      priority,
+      assigned_to: assignedTo,
+      due_date: dueDate,
+      root_cause: rootCause,
+      corrective_action: correctiveAction,
+      preventive_action: preventiveAction,
+    } = req.body;
+
+    // description : le premier contenu non vide parmi Act (où "ceci nécessite un suivi
+    // formel" se décide), Check (repli si on ouvre la CAPA avant d'avoir rédigé Act), puis la
+    // description du projet — jamais vide. root_cause : Check uniquement (l'étape la plus
+    // proche d'un diagnostic de cause dans un cycle PDCA), distinct d'Act pour ne pas dupliquer
+    // le même texte dans les deux champs si l'appelant ne fournit pas root_cause lui-même.
+    const defaultDescription = pdca.act_content || pdca.check_content || pdca.description || undefined;
+
+    const { data: capa, error: capaError } = await supabase
+      .from('capas')
+      .insert({
+        tenant_id: req.tenantId,
+        title,
+        origin: `Projet PDCA — ${pdca.title}`,
+        description: defaultDescription,
+        service_id: serviceId || pdca.service_id || null,
+        severity: severity || undefined,
+        priority: priority || undefined,
+        assigned_to: assignedTo || null,
+        due_date: dueDate || null,
+        root_cause: rootCause || pdca.check_content || null,
+        corrective_action: correctiveAction || null,
+        preventive_action: preventiveAction || null,
+        pdca_project_id: pdca.id,
+        created_by: req.user.id,
+      })
+      .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+      .single();
+
+    if (capaError) {
+      return res.status(500).json({ error: 'Erreur lors de la création de la CAPA.' });
+    }
+
+    if (capa.assigned_to) {
+      notifyCapaAssigned(req.tenantId, capa).catch((err) =>
+        console.error("Échec de la notification d'assignation CAPA :", err.message)
+      );
+    }
+
+    const { error: linkError } = await supabase
+      .from('pdca_projects')
+      .update({ linked_capa_id: capa.id })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', pdca.id);
+
+    if (linkError) {
+      console.error("Échec de la mise à jour du projet PDCA après création de la CAPA :", linkError.message);
+    }
+
+    res.status(201).json(capa);
   }
 );
 

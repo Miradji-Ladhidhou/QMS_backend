@@ -271,8 +271,9 @@ alter table capas add column accident_id uuid references accidents (id) on delet
 
 -- Démarches d'amélioration continue (PDCA — ISO 9001 §10.3), un enregistrement par cycle.
 -- status suit littéralement les 4 phases (jamais un statut libre) plutôt que de dupliquer
--- une notion d'avancement séparée du contenu documenté ci-dessous, phase par phase. Pas de
--- lien CAPA (contrairement à accidents) : module volontairement autonome pour l'instant.
+-- une notion d'avancement séparée du contenu documenté ci-dessous, phase par phase.
+-- linked_capa_id peut référencer capas directement ici (capas est déjà définie plus haut dans
+-- ce fichier) — même principe bidirectionnel que accidents.linked_capa_id.
 create table pdca_projects (
   id                 uuid primary key default gen_random_uuid(),
   tenant_id          uuid not null references tenants (id) on delete cascade,
@@ -291,12 +292,17 @@ create table pdca_projects (
   act_content        text,
   act_completed_at   date,
   category_id        uuid references categories (id) on delete set null,
+  linked_capa_id     uuid references capas (id) on delete set null,
   closed_at          timestamptz,
   created_by         uuid references users (id) on delete set null,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now()
 );
 create index idx_pdca_projects_tenant_id on pdca_projects (tenant_id);
+
+-- Projet PDCA à l'origine de cette CAPA (voir aussi pdca_projects.linked_capa_id, l'inverse) —
+-- même principe bidirectionnel que les autres colonnes miroir de ce fichier.
+alter table capas add column pdca_project_id uuid references pdca_projects (id) on delete set null;
 
 create table qqoqccp_analyses (
   id                     uuid primary key default gen_random_uuid(),
