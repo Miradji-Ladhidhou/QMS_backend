@@ -38,7 +38,6 @@ const STYLE_THEMES = {
     fontFamily: 'Times New Roman',
     baseFontSize: 22,
     titleBlock: { type: 'centered-bold', text: 'PROCEDURE DU SYSTEME DE GESTION DE LA QUALITE' },
-    sommaire: true,
     sectionTitle: { type: 'bold-plain' },
     subBulletMarker: 'o',
     calloutBySeverity: {
@@ -54,7 +53,6 @@ const STYLE_THEMES = {
     fontFamily: 'Times New Roman',
     baseFontSize: 22,
     titleBlock: { type: 'plain', text: 'PROCÉDURE QUALITÉ' },
-    sommaire: false,
     sectionTitle: { type: 'bold-plain' },
     subBulletMarker: '-',
     calloutBySeverity: {
@@ -70,7 +68,6 @@ const STYLE_THEMES = {
     fontFamily: 'Calibri',
     baseFontSize: 22,
     titleBlock: { type: 'banner', background: '2C5F8A', textColor: 'FFFFFF' },
-    sommaire: false,
     sectionTitle: { type: 'left-border', color: '2C5F8A' },
     subBulletMarker: 'none',
     calloutBySeverity: {
@@ -87,7 +84,6 @@ const STYLE_THEMES = {
     fontFamily: 'Arial',
     baseFontSize: 24,
     titleBlock: { type: 'banner', background: '000000', textColor: 'F2A900' },
-    sommaire: false,
     sectionTitle: { type: 'band', background: 'D9D9D9', textColor: '000000' },
     subBulletMarker: '-',
     calloutBySeverity: {
@@ -360,14 +356,26 @@ export async function buildProcedureWordDocument({ presetId, tenantName, procedu
   body.push(identityTable(theme, { procedure, version }));
   body.push(new Paragraph({ text: '' }));
 
-  if (theme.sommaire) {
-    body.push(new Paragraph({ spacing: { before: 100, after: 100 }, children: [new TextRun({ text: 'Sommaire', bold: true })] }));
-    body.push(new Paragraph({ children: [new TextRun('•  Objet')] }));
-    body.push(new Paragraph({ children: [new TextRun("•  Domaine d'application")] }));
-    body.push(new Paragraph({ children: [new TextRun('•  Responsabilités')] }));
-    sections.forEach((section) => body.push(new Paragraph({ children: [new TextRun(`•  ${section.label}`)] })));
-    if (content.documents_associes?.length) body.push(new Paragraph({ children: [new TextRun('•  Documents associés')] }));
-    body.push(new Paragraph({ children: [new TextRun('•  Historique des versions')] }));
+  // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) et que celui du
+  // PDF (services/procedurePdf.js) : avant, seul le style mtl-logistique en avait un — désormais
+  // les 4 styles en ont un, pour la même raison que l'écran (naviguer un document de plusieurs
+  // pages sans en faire une simple compilation de texte). Contrairement au PDF, Word ne connaît
+  // pas les numéros de page au moment de la génération (la pagination réelle dépend du rendu de
+  // Word chez le lecteur) : la liste reste donc sans numéro, comme le sommaire de l'écran
+  // lui-même (une simple liste de libellés, pas un renvoi de page).
+  const tocLabels = [
+    content.objet && 'Objet',
+    content.domaine_application && "Domaine d'application",
+    content.responsabilites && 'Responsabilités',
+    ...sections.map((s) => s.label),
+    content.documents_associes?.length > 0 && 'Documents associés',
+    'Historique des versions',
+  ].filter(Boolean);
+
+  if (tocLabels.length >= 3) {
+    body.push(sectionTitleParagraph(theme, 'Sommaire'));
+    tocLabels.forEach((label) => body.push(new Paragraph({ children: [new TextRun(`•  ${label}`)] })));
+    body.push(new Paragraph({ text: '' }));
   }
 
   body.push(sectionTitleParagraph(theme, '1. Objet'));

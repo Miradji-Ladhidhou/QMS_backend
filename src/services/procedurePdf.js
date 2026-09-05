@@ -224,7 +224,14 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor));
+
+    // Suit la page courante pour construire le sommaire (voir plus bas) — incrémenté au même
+    // rythme que les pages réellement ajoutées, y compris la page réservée au sommaire lui-même.
+    let currentPageNumber = 1;
+    doc.on('pageAdded', () => {
+      currentPageNumber += 1;
+      drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor);
+    });
 
     drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor);
 
@@ -260,16 +267,45 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       });
     }
 
+    const sections = version.content?.sections || [];
+    const documentsAssocies = version.content?.documents_associes || [];
+
+    // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) : Objet/Domaine/
+    // Responsabilités seulement s'ils sont renseignés, une entrée par section, Documents associés
+    // s'il y en a — plus Historique des versions, propre à l'imprimé. Le seuil de 3 reprend celui
+    // de l'écran : sous 3 entrées, naviguer n'apporte rien face à un document déjà court.
+    const tocLabels = [
+      version.content?.objet && 'Objet',
+      version.content?.domaine_application && "Domaine d'application",
+      version.content?.responsabilites && 'Responsabilités',
+      ...sections.map((s) => s.label),
+      documentsAssocies.length > 0 && 'Documents associés',
+      'Historique des versions',
+    ].filter(Boolean);
+
+    let sommairePageIndex = null;
+    let sommaireStartY = null;
+    const tocEntries = [];
+    if (tocLabels.length >= 3) {
+      doc.addPage(); // page réservée, remplie plus bas une fois les numéros de page connus
+      sommairePageIndex = currentPageNumber - 1; // pages sont indexées à partir de 0, currentPageNumber à partir de 1
+      sommaireStartY = doc.y;
+      doc.addPage(); // le contenu réel reprend sur une page fraîche, jamais sur la page réservée
+    }
+
     doc.moveDown(0.5);
+    if (tocLabels.includes('Objet')) tocEntries.push({ label: 'Objet', page: currentPageNumber });
     drawNumberedSection(doc, 1, 'Objet', version.content?.objet, accentColor);
+    if (tocLabels.includes("Domaine d'application")) tocEntries.push({ label: "Domaine d'application", page: currentPageNumber });
     drawNumberedSection(doc, 2, "Domaine d'application", version.content?.domaine_application, accentColor);
+    if (tocLabels.includes('Responsabilités')) tocEntries.push({ label: 'Responsabilités', page: currentPageNumber });
     drawNumberedSection(doc, 3, 'Responsabilités', version.content?.responsabilites, accentColor);
 
-    const sections = version.content?.sections || [];
     if (sections.length > 0) {
       doc.fontSize(11).fillColor(accentColor).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.4);
       sections.forEach((section, index) => {
+        tocEntries.push({ label: section.label, page: currentPageNumber });
         if (section.subsections?.length) {
           drawGeneratedSection(doc, `4.${index + 1}`, section.label, section.subsections, accentColor, infoBoxStyle);
         } else {
@@ -278,8 +314,8 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       });
     }
 
-    const documentsAssocies = version.content?.documents_associes || [];
     if (documentsAssocies.length > 0) {
+      tocEntries.push({ label: 'Documents associés', page: currentPageNumber });
       doc
         .fontSize(11)
         .fillColor(accentColor)
@@ -294,6 +330,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
 
     // Historique des versions en bas de document — traçabilité qualité, même esprit que le
     // tableau "Historique des versions" déjà affiché sur ProcedureDetail.jsx.
+    tocEntries.push({ label: 'Historique des versions', page: currentPageNumber });
     doc.moveDown(0.3);
     doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(GRID).lineWidth(0.5).stroke();
     doc.moveDown(0.6);
@@ -312,6 +349,24 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       doc.fontSize(8.5).fillColor(MUTED).text(authorLine + validatorLine, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.5);
     });
+
+    // Remplit la page réservée plus haut, maintenant que le numéro de page de chaque entrée est
+    // connu — même technique que le pied de page ci-dessous (bufferPages + switchToPage vers une
+    // page déjà créée). Sans risque de débordement en pratique (une procédure a rarement assez de
+    // sections pour remplir une A4 rien qu'avec leurs libellés) ; si jamais c'était le cas,
+    // pdfkit ajouterait la suite à la toute fin du document plutôt que juste après cette page.
+    if (sommairePageIndex !== null) {
+      doc.switchToPage(sommairePageIndex);
+      doc.y = sommaireStartY;
+      doc.fontSize(13).fillColor(accentColor).text('Sommaire', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.moveDown(0.8);
+      tocEntries.forEach((entry) => {
+        const rowY = doc.y;
+        doc.fontSize(10).fillColor(INK).text(entry.label, PAGE_MARGIN, rowY, { width: CONTENT_WIDTH - 50 });
+        doc.fontSize(10).fillColor(MUTED).text(String(entry.page), PAGE_MARGIN, rowY, { width: CONTENT_WIDTH, align: 'right' });
+        doc.moveDown(0.5);
+      });
+    }
 
     // Pied de page numéroté — même construction que listReportPdf.js/qqoqccpPdf.js.
     const range = doc.bufferedPageRange();
