@@ -12,6 +12,7 @@ import {
   fetchComplaintItems,
   fetchRiskItems,
   fetchSupplierItems,
+  fetchPdcaItems,
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
@@ -203,6 +204,25 @@ async function countManagementReviewsDraft(tenantId) {
   return count || 0;
 }
 
+// Accidents du travail non clôturés. Pas de fetchAccidentItems dans planningItems.js : occurred_at
+// est une date rétrospective (déjà passée par construction), elle ne correspond pas à la notion
+// d'échéance à venir que fetchXItems/le planning exploitent — requête dédiée ici. Applique quand
+// même filterViewableByCategory (comme fetchRiskItems etc.) : sans ça, le compteur du widget
+// révèlerait l'existence d'accidents dans un dossier restreint à un rôle qui ne devrait pas le voir.
+async function countAccidentsOpen(tenantId, { userId, userRole }, serviceIds) {
+  let query = supabase
+    .from('accidents')
+    .select('id, category_id, category:categories(id, is_restricted)')
+    .eq('tenant_id', tenantId)
+    .neq('status', 'closed');
+  if (serviceIds) query = query.in('service_id', serviceIds);
+
+  const { data, error } = await query;
+  if (error || !data) return 0;
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+  return visible.length;
+}
+
 // Métriques tenant entier (aucun filtre de service, vision "admin"), sans dépendre d'un
 // utilisateur précis — réutilisée par la route pour la vue par défaut (serviceIds === null,
 // voir plus bas) ET par dashboardSnapshotJob.js (aucun req.user disponible dans un job planifié).
@@ -224,8 +244,9 @@ async function computeTenantMetrics(tenantId) {
   const kpiSummary = await computeKpiSummary(tenantId);
   const managementReviewsDraft = await countManagementReviewsDraft(tenantId);
   const haccpActivePlans = await countActiveHaccpPlans(tenantId, null);
+  const accidentsOpen = await countAccidentsOpen(tenantId, scopeUser);
 
-  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] =
+  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems] =
     await Promise.all([
       fetchCapaItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchDocumentItems(tenantId),
@@ -236,6 +257,7 @@ async function computeTenantMetrics(tenantId) {
       fetchComplaintItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchRiskItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchSupplierItems(tenantId, { serviceIds: null, ...scopeUser }),
+      fetchPdcaItems(tenantId, { serviceIds: null, ...scopeUser }),
     ]);
   const overdueTotal = countOverdueItems([
     capaItems,
@@ -247,6 +269,7 @@ async function computeTenantMetrics(tenantId) {
     complaintItems,
     riskItems,
     supplierItems,
+    pdcaItems,
   ]);
 
   return {
@@ -261,6 +284,8 @@ async function computeTenantMetrics(tenantId) {
     suppliers: countActiveAndOverdue(supplierItems),
     management_reviews: { draft: managementReviewsDraft },
     haccp: { active_plans: haccpActivePlans },
+    accidents: { open: accidentsOpen },
+    pdca: countActiveAndOverdue(pdcaItems),
     overdue: { total: overdueTotal },
   };
 }
@@ -286,8 +311,8 @@ function diffMetrics(current, previous) {
 export { computeTenantMetrics };
 
 // GET /api/dashboard/stats — indicateurs agrégés {capas, documents, trainings, kpis, audits,
-// complaints, risks, suppliers, management_reviews, haccp, overdue}, filtrage par service selon
-// le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
+// complaints, risks, suppliers, management_reviews, haccp, accidents, pdca, overdue}, filtrage
+// par service selon le rôle. ?service_id= accepte une ou plusieurs valeurs (répéter le paramètre :
 // ?service_id=a&service_id=b), pour le sélecteur multi-services du dashboard.
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : filtré automatiquement sur ses services (table user_services, prompt B2) si
@@ -324,15 +349,16 @@ router.get('/stats', async (req, res) => {
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
-    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchComplaintItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchRiskItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchPdcaItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
     ]);
-    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems]);
+    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems]);
 
     return res.json({
       capas: countCapasByStatus(capas),
@@ -356,6 +382,10 @@ router.get('/stats', async (req, res) => {
       suppliers: { active: 0, overdue: 0 },
       management_reviews: { draft: 0 },
       haccp: { active_plans: 0 },
+      // Pas de vue personnelle pour les accidents (injured_user_id désigne la personne
+      // blessée, pas un porteur de suivi) : même 0 forcé que documents/kpis/suppliers ci-dessus.
+      accidents: { open: 0 },
+      pdca: countActiveAndOverdue(pdcaItems),
       overdue: { total: overdueTotal },
       // Pas de tendances pour member : la vue personnelle ne correspond à aucun instantané
       // (toujours tenant entier, voir computeTenantMetrics/dashboardSnapshotJob.js).
@@ -407,8 +437,9 @@ router.get('/stats', async (req, res) => {
     const kpiSummary = await computeKpiSummary(req.tenantId);
     const managementReviewsDraft = await countManagementReviewsDraft(req.tenantId);
     const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
+    const accidentsOpen = await countAccidentsOpen(req.tenantId, { userId: req.user.id, userRole: req.userRole }, serviceIds);
 
-    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] =
+    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems] =
       await Promise.all([
         fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchDocumentItems(req.tenantId),
@@ -419,6 +450,7 @@ router.get('/stats', async (req, res) => {
         fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       ]);
     const overdueTotal = countOverdueItems([
       capaItems,
@@ -430,6 +462,7 @@ router.get('/stats', async (req, res) => {
       complaintItems,
       riskItems,
       supplierItems,
+      pdcaItems,
     ]);
 
     metrics = {
@@ -444,6 +477,8 @@ router.get('/stats', async (req, res) => {
       suppliers: countActiveAndOverdue(supplierItems),
       management_reviews: { draft: managementReviewsDraft },
       haccp: { active_plans: haccpActivePlans },
+      accidents: { open: accidentsOpen },
+      pdca: countActiveAndOverdue(pdcaItems),
       overdue: { total: overdueTotal },
     };
   }
