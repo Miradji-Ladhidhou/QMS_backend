@@ -23,6 +23,8 @@ const RESOURCE_TYPES = [
   'task',
   'kpi',
   'procedure',
+  'accident',
+  'pdca',
 ];
 
 router.use(requireAuth);

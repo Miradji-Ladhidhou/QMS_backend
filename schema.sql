@@ -232,6 +232,72 @@ create table capa_comments (
   created_at  timestamptz not null default now()
 );
 
+-- Registre des accidents du travail (ISO 45001) : déclaration, analyse de cause,
+-- suivi jusqu'à clôture. injured_user_id/injured_employee_id : même double identité
+-- que tasks.assigned_to/assigned_employee_id (personne avec ou sans compte),
+-- mutuellement exclusifs. Pas de champ "priority" distinct : severity en tient déjà
+-- lieu, comme risks n'a pas de priorité séparée de son couple probabilité/gravité.
+-- linked_capa_id peut référencer capas directement ici (capas est déjà définie plus
+-- haut dans ce fichier) — même principe bidirectionnel que qqoqccp_analyses.linked_capa_id.
+create table accidents (
+  id                  uuid primary key default gen_random_uuid(),
+  tenant_id           uuid not null references tenants (id) on delete cascade,
+  title               text not null,
+  occurred_at         date not null,
+  location            text,
+  injured_user_id     uuid references users (id) on delete set null,
+  injured_employee_id uuid references employees (id) on delete set null,
+  service_id          uuid references services (id) on delete set null,
+  description         text,
+  immediate_cause     text,
+  immediate_actions   text,
+  root_cause          text,
+  severity            text not null default 'minor' check (severity in ('minor', 'moderate', 'severe', 'fatal')),
+  with_lost_time      boolean not null default false,
+  lost_days           integer,
+  status              text not null default 'open' check (status in ('open', 'investigating', 'closed')),
+  category_id         uuid references categories (id) on delete set null,
+  linked_capa_id      uuid references capas (id) on delete set null,
+  closed_at           timestamptz,
+  created_by          uuid references users (id) on delete set null,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
+);
+create index idx_accidents_tenant_id on accidents (tenant_id);
+
+-- Accident du travail à l'origine de cette CAPA (voir aussi accidents.linked_capa_id,
+-- l'inverse) — même principe bidirectionnel que les autres colonnes miroir de ce fichier.
+alter table capas add column accident_id uuid references accidents (id) on delete set null;
+
+-- Démarches d'amélioration continue (PDCA — ISO 9001 §10.3), un enregistrement par cycle.
+-- status suit littéralement les 4 phases (jamais un statut libre) plutôt que de dupliquer
+-- une notion d'avancement séparée du contenu documenté ci-dessous, phase par phase. Pas de
+-- lien CAPA (contrairement à accidents) : module volontairement autonome pour l'instant.
+create table pdca_projects (
+  id                 uuid primary key default gen_random_uuid(),
+  tenant_id          uuid not null references tenants (id) on delete cascade,
+  title              text not null,
+  description        text,
+  service_id         uuid references services (id) on delete set null,
+  owner              uuid references users (id) on delete set null,
+  target_date        date,
+  status             text not null default 'plan' check (status in ('plan', 'do', 'check', 'act', 'closed')),
+  plan_content       text,
+  plan_completed_at  date,
+  do_content         text,
+  do_completed_at    date,
+  check_content      text,
+  check_completed_at date,
+  act_content        text,
+  act_completed_at   date,
+  category_id        uuid references categories (id) on delete set null,
+  closed_at          timestamptz,
+  created_by         uuid references users (id) on delete set null,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+create index idx_pdca_projects_tenant_id on pdca_projects (tenant_id);
+
 create table qqoqccp_analyses (
   id                     uuid primary key default gen_random_uuid(),
   tenant_id              uuid not null references tenants (id) on delete cascade,
@@ -1078,7 +1144,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure'
+      'haccp_plan', 'procedure', 'accident', 'pdca'
     )
   ),
   name          text not null,
@@ -1524,6 +1590,12 @@ create trigger trg_complaints_updated_at before update on complaints
 create trigger trg_risks_updated_at before update on risks
   for each row execute function set_updated_at();
 
+create trigger trg_accidents_updated_at before update on accidents
+  for each row execute function set_updated_at();
+
+create trigger trg_pdca_projects_updated_at before update on pdca_projects
+  for each row execute function set_updated_at();
+
 create trigger trg_haccp_plans_updated_at before update on haccp_plans
   for each row execute function set_updated_at();
 
@@ -1756,6 +1828,8 @@ alter table management_reviews enable row level security;
 alter table management_review_actions enable row level security;
 alter table complaints enable row level security;
 alter table risks enable row level security;
+alter table accidents enable row level security;
+alter table pdca_projects enable row level security;
 alter table haccp_plans enable row level security;
 alter table haccp_process_steps enable row level security;
 alter table haccp_hazards enable row level security;
@@ -1895,6 +1969,16 @@ create policy complaints_isolation on complaints
   with check (tenant_id = auth_tenant_id());
 
 create policy risks_isolation on risks
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy accidents_isolation on accidents
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy pdca_projects_isolation on pdca_projects
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

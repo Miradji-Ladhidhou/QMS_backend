@@ -20,6 +20,8 @@ export const MENU_ITEM_KEYS = [
   'suppliers',
   'management-reviews',
   'procedures',
+  'accidents',
+  'pdca',
   'my-approvals',
   'services',
   'employees',
