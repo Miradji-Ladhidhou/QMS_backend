@@ -23,6 +23,24 @@ function fillMergedRow(sheet, rowNumber, columnCount, text, style) {
   row.commit();
 }
 
+// Plafond de largeur de colonne (caractères) : une valeur exceptionnellement longue dans une
+// seule cellule ne doit pas rendre toute la colonne (et donc le classeur) disproportionnée —
+// la cellule reste consultable au clic, Excel proposant nativement le retour à la ligne/zoom.
+const MAX_COLUMN_WIDTH_CHARS = 50;
+// Échantillon de lignes utilisé pour estimer la largeur de colonne sans mesurer les 5000 lignes
+// possibles (voir routes/reports.js) à chaque génération — même principe que listReportPdf.js.
+const WIDTH_SAMPLE_SIZE = 200;
+
+function estimateColumnWidth(col, rows) {
+  const sample = rows.slice(0, WIDTH_SAMPLE_SIZE);
+  const maxValueLength = sample.reduce((max, row) => {
+    const value = row[col.key];
+    if (value === null || value === undefined || value === '') return max;
+    return Math.max(max, String(value).length);
+  }, 0);
+  return Math.min(MAX_COLUMN_WIDTH_CHARS, Math.max(12, col.label.length + 4, maxValueLength + 2));
+}
+
 // Génère un classeur Excel réel — contrairement au CSV, garde les cellules vides réellement
 // vides (pas de "—") : un tableur doit rester filtrable/triable nativement par qui le reçoit.
 // columns/rows : même forme que buildListReportPdf (columns: [{key,label}], rows: objets ou
@@ -31,7 +49,10 @@ export async function buildListReportXlsx({ tenantName, title, subtitle, generat
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet(sanitizeSheetName(title));
 
-  sheet.columns = columns.map((col) => ({ key: col.key, width: Math.max(12, col.label.length + 4) }));
+  // Largeur basée sur le contenu réel (libellé ET valeurs), pas seulement le libellé — une
+  // colonne "Titre" avec des valeurs courtes ne doit pas hériter de la même largeur qu'une
+  // colonne "Titre" dont les valeurs font 80 caractères.
+  sheet.columns = columns.map((col) => ({ key: col.key, width: estimateColumnWidth(col, rows) }));
 
   fillMergedRow(sheet, 1, columns.length, title, {
     font: { bold: true, size: 14, color: { argb: WHITE_ARGB } },
@@ -69,6 +90,13 @@ export async function buildListReportXlsx({ tenantName, title, subtitle, generat
 
   // Les en-têtes restent visibles au défilement — ce que le CSV ne peut pas proposer.
   sheet.views = [{ state: 'frozen', ySplit: headerRowNumber }];
+
+  // Tri/filtre natif Excel sur l'en-tête du tableau — la ligne méta/titre au-dessus reste hors
+  // de la plage filtrable, seul le vrai tableau de données l'est.
+  sheet.autoFilter = {
+    from: { row: headerRowNumber, column: 1 },
+    to: { row: headerRowNumber + rows.length, column: columns.length },
+  };
 
   return workbook.xlsx.writeBuffer();
 }
