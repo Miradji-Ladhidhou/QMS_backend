@@ -389,11 +389,40 @@ Responsabilités : ${content.responsabilites || 'non renseigné'}
 ${sections}`;
 }
 
+const DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT = 500;
+
+// Contrairement aux autres usages de formatProcedureContentForPrompt (comparaison de versions,
+// suggestion de révision depuis une CAPA), qui doivent rester fidèles au texte exact, une fiche
+// de diffusion n'est qu'un résumé condensé — un extrait par section suffit. Pour une procédure
+// générée en "brouillon complet" (plusieurs sections détaillées, voir procedureFullDraftJob.js),
+// le contenu intégral pouvait représenter plusieurs milliers de mots et dépasser la limite de
+// débit de Groq alors que les autres appels IA de l'appli (texte libre court) n'approchent jamais
+// cette taille. Pas de "(key: ...)" ici non plus : contrairement aux autres prompts, la réponse
+// attendue (PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT) ne référence aucune section_key.
+function formatProcedureContentForDistributionSheetPrompt(content) {
+  if (!content) return '(aucun contenu)';
+  const sections = (content.sections || [])
+    .map((s) => {
+      const text = s.content || '';
+      const excerpt =
+        text.length > DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT
+          ? `${text.slice(0, DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT)}…`
+          : text;
+      return `## ${s.label}\n${excerpt || '(vide)'}`;
+    })
+    .join('\n\n');
+  return `Objet : ${content.objet || 'non renseigné'}
+Domaine d'application : ${content.domaine_application || 'non renseigné'}
+Responsabilités : ${content.responsabilites || 'non renseigné'}
+
+${sections}`;
+}
+
 function buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience) {
   return `Public cible : ${targetAudience || 'non renseigné'}
 
-Contenu complet de la procédure :
-${formatProcedureContentForPrompt(procedureContent)}`;
+Contenu de la procédure (extrait par section) :
+${formatProcedureContentForDistributionSheetPrompt(procedureContent)}`;
 }
 
 // procedureContent : le jsonb content de la version approuvée. targetAudience : texte libre
