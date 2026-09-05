@@ -252,6 +252,43 @@ describe('DELETE /api/pdca/:id — admin ou créateur', () => {
   });
 });
 
+// POST /api/pdca/:id/generate appelle Groq en direct : comme pour POST /api/ai/capa-suggestion,
+// POST /api/risks/service-suggestion et POST /api/haccp/steps/:stepId/hazard-suggestion, aucun
+// test automatisé ne couvre le chemin qui appelle réellement l'IA (vérifié manuellement). On
+// couvre ici uniquement permission, 404 et le cas "projet clôturé".
+describe('POST /api/pdca/:id/generate — permissions et validation', () => {
+  it('403 pour un member qui n’est pas le créateur ; 404 pour un projet inexistant', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [creator, other] = tenant.users;
+    const pdca = await makePdca(creator.token);
+
+    const otherAttempt = await request(app)
+      .post(`/api/pdca/${pdca.body.id}/generate`)
+      .set('Authorization', `Bearer ${other.token}`);
+    expect(otherAttempt.status).toBe(403);
+
+    const notFound = await request(app)
+      .post('/api/pdca/00000000-0000-0000-0000-000000000000/generate')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(notFound.status).toBe(404);
+  });
+
+  it('400 si le projet est déjà clôturé', async () => {
+    tenant = await createTenant();
+    const pdca = await makePdca(tenant.admin.token, { plan_content: 'Plan initial.' });
+    const id = pdca.body.id;
+    const token = tenant.admin.token;
+
+    await request(app).post(`/api/pdca/${id}/advance`).set('Authorization', `Bearer ${token}`).send({ do_content: 'Fait.' });
+    await request(app).post(`/api/pdca/${id}/advance`).set('Authorization', `Bearer ${token}`).send({ check_content: 'Vérifié.' });
+    await request(app).post(`/api/pdca/${id}/advance`).set('Authorization', `Bearer ${token}`).send({ act_content: 'Ajusté.' });
+    await request(app).post(`/api/pdca/${id}/advance`).set('Authorization', `Bearer ${token}`).send({});
+
+    const res = await request(app).post(`/api/pdca/${id}/generate`).set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('Catégorie restreinte — visibilité GET /, GET /:id', () => {
   it("un member ne voit un projet PDCA d'une catégorie restreinte qu'avec une permission de catégorie ; admin voit toujours", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });

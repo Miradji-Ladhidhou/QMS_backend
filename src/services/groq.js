@@ -191,6 +191,50 @@ export async function generateRiskSuggestion(data) {
   return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data));
 }
 
+const PDCA_PHASE_RESPONSE_CONTRACT = `Rédige la valeur en français, quelle que soit la langue du contexte fourni en entrée.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "content": "string"
+}
+"content" : le texte à documenter pour l'étape demandée (plusieurs phrases, éventuellement plusieurs paragraphes séparés par des sauts de ligne) — concret et exploitable tel quel, jamais un texte générique du type "à compléter".`;
+
+const PDCA_PHASE_SYSTEM_PROMPT = `Tu es un expert qualité (amélioration continue, cycle PDCA/roue de Deming) qui aide à rédiger le contenu d'UNE SEULE étape d'un projet d'amélioration continue, à partir de son titre, de sa description, et du contenu déjà rédigé pour les étapes précédentes du même cycle.
+
+Reste cohérent avec ce qui a déjà été documenté : le Do doit mettre en œuvre ce que prévoyait le Plan, le Check doit vérifier les résultats du Do au regard des objectifs du Plan, et l'Act doit tirer les conséquences du Check — jamais une étape rédigée isolément du reste du cycle.
+
+${PDCA_PHASE_RESPONSE_CONTRACT}`;
+
+const PDCA_PHASE_LABELS = { plan: 'Plan', do: 'Do', check: 'Check', act: 'Act' };
+const PDCA_PHASE_DESCRIPTIONS = {
+  plan: 'les objectifs mesurables visés par ce projet et les actions concrètes envisagées pour les atteindre',
+  do: 'la mise en œuvre concrète des actions planifiées : ce qui est fait, comment, et par qui',
+  check: 'la vérification des résultats obtenus au regard des objectifs fixés dans le Plan : mesures et constats',
+  act: 'les ajustements et décisions de pérennisation (standardisation, généralisation, ou nouveau cycle) tirés du Check',
+};
+
+function buildPdcaPhaseUserPrompt({ phase, title, description, planContent, doContent, checkContent }) {
+  const priorPhases = [];
+  if (planContent && phase !== 'plan') priorPhases.push(`Plan : ${planContent}`);
+  if (doContent && !['plan', 'do'].includes(phase)) priorPhases.push(`Do : ${doContent}`);
+  if (checkContent && phase === 'act') priorPhases.push(`Check : ${checkContent}`);
+
+  return `Titre du projet : ${title}
+Description : ${description || 'non renseignée'}
+
+Étape à rédiger : ${PDCA_PHASE_LABELS[phase]} — rédige ${PDCA_PHASE_DESCRIPTIONS[phase]}.
+${priorPhases.length ? `\nCe qui a déjà été documenté pour les étapes précédentes de ce cycle :\n${priorPhases.join('\n')}` : "\n(Aucune étape précédente documentée pour l'instant.)"}`;
+}
+
+// { phase, title, description, planContent, doContent, checkContent } — voir POST
+// /pdca/:id/generate dans routes/pdca.js, toujours appelé pour l'étape COURANTE du cycle. Rien
+// n'est persisté par cet appel : le frontend ne fait que préremplir le brouillon de la phase
+// (PdcaDetail.jsx), à valider ou corriger avant d'enregistrer via PATCH /pdca/:id — même
+// principe que generateCapaSuggestion et le reste des suggestions IA de l'app.
+export async function generatePdcaPhaseSuggestion(data) {
+  return callGroq(PDCA_PHASE_SYSTEM_PROMPT, buildPdcaPhaseUserPrompt(data));
+}
+
 // =============================================================================
 // Module Procédures — prompts-implementation-module-procedures.md (Prompt 3) référençait un
 // fichier de templates system/user "fournis séparément" qui n'a jamais existé (placeholder

@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { generatePdcaPhaseSuggestion } from '../services/groq.js';
 
 const router = Router();
 
@@ -220,6 +221,51 @@ router.patch(
     res.json(data);
   }
 );
+
+// POST /api/pdca/:id/generate — brouillon IA (Groq) pour le contenu de l'étape COURANTE du
+// cycle, à partir du titre/description du projet et de ce qui est déjà documenté pour les
+// étapes précédentes. Permission identique à PATCH/:id et POST /:id/advance (admin/manager ou
+// créateur) : c'est la même personne qui documente qui peut se faire aider à rédiger. Ne
+// persiste rien — le frontend ne fait que préremplir le brouillon de la phase, à valider ou
+// corriger avant d'enregistrer via PATCH /:id (même principe que le reste des suggestions IA de
+// l'app, voir services/groq.js).
+router.post('/:id/generate', async (req, res) => {
+  const { data: existing, error: fetchError } = await supabase
+    .from('pdca_projects')
+    .select('*')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (fetchError || !existing) {
+    return res.status(404).json({ error: 'Projet PDCA introuvable.' });
+  }
+
+  const isManager = MANAGER_ROLES.includes(req.userRole);
+  if (!isManager && existing.created_by !== req.user.id) {
+    return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+  }
+
+  if (existing.status === 'closed') {
+    return res.status(400).json({ error: 'Ce projet PDCA est déjà clôturé.' });
+  }
+
+  let suggestion;
+  try {
+    suggestion = await generatePdcaPhaseSuggestion({
+      phase: existing.status,
+      title: existing.title,
+      description: existing.description,
+      planContent: existing.plan_content,
+      doContent: existing.do_content,
+      checkContent: existing.check_content,
+    });
+  } catch (err) {
+    return res.status(503).json({ error: `Impossible de générer une suggestion IA : ${err.message}` });
+  }
+
+  res.json({ content: suggestion.content });
+});
 
 // DELETE /api/pdca/:id — admin ou créateur uniquement (voir DELETE /bulk ci-dessous : un
 // manager qui n'a pas créé le projet n'a ici pas plus de droits qu'un member, contrairement à
