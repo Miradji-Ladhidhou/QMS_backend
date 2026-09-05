@@ -64,8 +64,20 @@ function drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor) {
 // jamais un contenu inventé pour l'occasion.
 function drawImportantBox(doc, { color, background, label, text }) {
   doc.moveDown(0.3);
-  const boxTop = doc.y;
   const height = doc.heightOfString(text, { width: CONTENT_WIDTH - 16 }) + 30;
+
+  // doc.rect() ne déclenche jamais de saut de page automatique (contrairement à .text()) : sans
+  // cette vérification, un encadré démarré trop bas était coupé en plein milieu par le saut de
+  // page déclenché par le .text() du label ci-dessous, et le `doc.y = boxTop + height + 10`
+  // final restait calculé sur les coordonnées de l'ANCIENNE page — poussant le curseur bien au-
+  // delà du bas de la nouvelle page et laissant une page quasi vide juste après (voir l'audit du
+  // PDF généré pour une procédure au brouillon complet, où un callout par étape reproduisait ce
+  // motif toutes les 2-3 pages).
+  if (doc.y + height > doc.page.height - doc.page.margins.bottom) {
+    doc.addPage();
+  }
+
+  const boxTop = doc.y;
   doc.rect(PAGE_MARGIN, boxTop, CONTENT_WIDTH, height).fill(background);
   doc.fontSize(9).fillColor(color).text(label, PAGE_MARGIN + 8, boxTop + 8, { width: CONTENT_WIDTH - 16 });
   doc.fontSize(9).fillColor(INK).text(text, PAGE_MARGIN + 8, doc.y + 2, { width: CONTENT_WIDTH - 16 });
@@ -113,6 +125,25 @@ function calloutStyles(infoBoxStyle) {
     warning: { color: AMBER, background: AMBER_LIGHT, label: 'ATTENTION' },
     info: { color: infoBoxStyle.border, background: infoBoxStyle.background, label: 'IMPORTANT' },
   };
+}
+
+// Miroir du PhotoPlaceholder de ProcedureContentView.jsx (écran) — jusqu'ici silencieusement
+// absent du PDF, alors que ces emplacements réservés font partie du contenu réel de la
+// procédure au même titre qu'un callout.
+function drawPhotoPlaceholder(doc, caption) {
+  doc.moveDown(0.2);
+  const boxHeight = 24;
+  if (doc.y + boxHeight > doc.page.height - doc.page.margins.bottom) {
+    doc.addPage();
+  }
+  const boxTop = doc.y;
+  doc.rect(PAGE_MARGIN, boxTop, CONTENT_WIDTH, boxHeight).dash(3, { space: 2 }).strokeColor(MUTED).lineWidth(0.75).stroke();
+  doc.undash();
+  doc
+    .fontSize(8.5)
+    .fillColor(MUTED)
+    .text(`Emplacement réservé à une photo — ${caption}`, PAGE_MARGIN + 8, boxTop + 7, { width: CONTENT_WIDTH - 16 });
+  doc.y = boxTop + boxHeight + 8;
 }
 
 // Rendu d'une section issue du pipeline de génération complète (voir
@@ -163,6 +194,8 @@ function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, acc
       const style = styles[subsection.callout.severity] || styles.info;
       drawImportantBox(doc, { ...style, text: subsection.callout.text });
     }
+
+    (subsection.photo_placeholders || []).forEach((caption) => drawPhotoPlaceholder(doc, caption));
 
     doc.moveDown(0.4);
   });
