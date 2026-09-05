@@ -392,7 +392,7 @@ router.post(
   async (req, res) => {
     const { data: analysis, error: fetchError } = await supabase
       .from('qqoqccp_analyses')
-      .select('id')
+      .select('id, title')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -431,6 +431,7 @@ router.post(
       .insert({
         tenant_id: req.tenantId,
         title,
+        origin: `Analyse QQOQCCP — ${analysis.title}`,
         service: service || null,
         service_id: serviceId || null,
         ref_document: refDocument || null,

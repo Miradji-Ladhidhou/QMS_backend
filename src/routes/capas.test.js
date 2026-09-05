@@ -119,6 +119,64 @@ describe('POST /api/capas', () => {
   });
 });
 
+describe('POST /api/capas — lien QQOQCCP optionnel (raccourci "Structurer la cause avec QQOQCCP")', () => {
+  it('404 si l’analyse QQOQCCP n’existe pas ou appartient à un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    const otherAnalysis = await request(app)
+      .post('/api/qqoqccp')
+      .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+      .send({ title: 'Analyse d’un autre tenant' });
+
+    const unknown = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA avec analyse inexistante', qqoqccp_analysis_id: '00000000-0000-0000-0000-000000000000' });
+    expect(unknown.status).toBe(404);
+
+    const crossTenant = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA avec analyse d’un autre tenant', qqoqccp_analysis_id: otherAnalysis.body.id });
+    expect(crossTenant.status).toBe(404);
+
+    await otherTenant.cleanup();
+  });
+
+  it('201 avec le lien bidirectionnel posé ; origin auto-rempli seulement si absent du payload', async () => {
+    tenant = await createTenant();
+    const analysis = await request(app)
+      .post('/api/qqoqccp')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Pourquoi la ligne 3 s’arrête', quoi: 'Arrêts répétés de la ligne 3' });
+
+    const withoutOrigin = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Sécuriser la ligne 3', qqoqccp_analysis_id: analysis.body.id });
+    expect(withoutOrigin.status).toBe(201);
+    expect(withoutOrigin.body.qqoqccp_analysis_id).toBe(analysis.body.id);
+    expect(withoutOrigin.body.origin).toContain('Analyse QQOQCCP');
+
+    const analysisAfter = await request(app)
+      .get(`/api/qqoqccp/${analysis.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(analysisAfter.body.linked_capa_id).toBe(withoutOrigin.body.id);
+    expect(analysisAfter.body.status).toBe('validated');
+
+    const analysis2 = await request(app)
+      .post('/api/qqoqccp')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Deuxième analyse' });
+    const withOrigin = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA avec origine déjà saisie', origin: 'Origine tapée à la main', qqoqccp_analysis_id: analysis2.body.id });
+    expect(withOrigin.status).toBe(201);
+    expect(withOrigin.body.origin).toBe('Origine tapée à la main');
+  });
+});
+
 describe('service_id : résolution en {id, name} et modification via GET/PATCH', () => {
   it('GET /api/capas et GET /api/capas/:id renvoient service résolu, null si aucun service', async () => {
     tenant = await createTenant();

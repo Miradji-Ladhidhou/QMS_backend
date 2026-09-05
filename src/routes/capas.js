@@ -286,6 +286,7 @@ router.post(
     body('corrective_action').optional({ values: 'falsy' }).trim(),
     body('preventive_action').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('qqoqccp_analysis_id').optional({ values: 'falsy' }).isUUID().withMessage('Analyse QQOQCCP invalide.'),
   ],
   requireValidCategoryId('capa'),
   async (req, res) => {
@@ -308,12 +309,31 @@ router.post(
       corrective_action: correctiveAction,
       preventive_action: preventiveAction,
       category_id: categoryId,
+      qqoqccp_analysis_id: qqoqccpAnalysisId,
     } = req.body;
 
     // Un member peut ouvrir une CAPA mais elle lui est toujours auto-assignée : on ignore
     // toute valeur d'assigned_to reçue du corps de la requête pour ce rôle, sans faire
     // confiance au frontend. admin/manager gardent le comportement d'origine.
     const finalAssignedTo = req.userRole === 'member' ? req.user.id : assignedTo || null;
+
+    // Raccourci "Structurer la cause avec QQOQCCP" depuis NewCapaModal (Capas.jsx) : l'analyse
+    // a déjà été créée par le panneau embarqué, on vérifie juste qu'elle appartient au tenant
+    // avant de la lier — même validation de périmètre que les autres routes create-capa sur
+    // leur ressource source.
+    let qqoqccpAnalysis = null;
+    if (qqoqccpAnalysisId) {
+      const { data: analysis, error: analysisError } = await supabase
+        .from('qqoqccp_analyses')
+        .select('id, title')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', qqoqccpAnalysisId)
+        .single();
+      if (analysisError || !analysis) {
+        return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+      }
+      qqoqccpAnalysis = analysis;
+    }
 
     const { data, error } = await supabase
       .from('capas')
@@ -322,7 +342,9 @@ router.post(
         title,
         service_id: serviceId || null,
         description: description || null,
-        origin: origin || null,
+        // Ne renseigne l'origine automatiquement que si l'utilisateur n'a rien tapé lui-même —
+        // jamais écraser un texte déjà saisi à la main.
+        origin: origin || (qqoqccpAnalysis ? `Analyse QQOQCCP — ${qqoqccpAnalysis.title}` : null),
         ref_document: refDocument || null,
         severity: severity || undefined,
         priority: priority || undefined,
@@ -332,6 +354,7 @@ router.post(
         corrective_action: correctiveAction || null,
         preventive_action: preventiveAction || null,
         category_id: categoryId || null,
+        qqoqccp_analysis_id: qqoqccpAnalysis?.id || null,
         created_by: req.user.id,
       })
       .select(CAPA_SELECT)
@@ -344,6 +367,17 @@ router.post(
     notifyCapaAssigned(req.tenantId, data).catch((err) =>
       console.error("Échec de la notification d'assignation CAPA :", err.message)
     );
+
+    if (qqoqccpAnalysis) {
+      const { error: linkError } = await supabase
+        .from('qqoqccp_analyses')
+        .update({ linked_capa_id: data.id, status: 'validated' })
+        .eq('tenant_id', req.tenantId)
+        .eq('id', qqoqccpAnalysis.id);
+      if (linkError) {
+        console.error("Échec de la mise à jour de l'analyse QQOQCCP après création de la CAPA :", linkError.message);
+      }
+    }
 
     res.status(201).json(data);
   }
