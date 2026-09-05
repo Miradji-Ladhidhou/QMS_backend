@@ -90,6 +90,110 @@ describe('PATCH /api/management-reviews/:id — clôture et snapshot', () => {
   });
 });
 
+function isoDate(daysFromToday) {
+  const date = new Date();
+  date.setDate(date.getDate() + daysFromToday);
+  return date.toISOString().slice(0, 10);
+}
+
+describe('POST /api/management-reviews — période et input_snapshot', () => {
+  it('sans période : input_snapshot reste null ; avec période : calculé et renvoyé', async () => {
+    tenant = await createTenant();
+
+    const withoutPeriod = await makeReview(tenant.admin.token, { title: 'Sans période' });
+    expect(withoutPeriod.status).toBe(201);
+    expect(withoutPeriod.body.input_snapshot).toBeNull();
+
+    const withPeriod = await makeReview(tenant.admin.token, {
+      title: 'Avec période',
+      period_start: isoDate(-30),
+      period_end: isoDate(0),
+    });
+    expect(withPeriod.status).toBe(201);
+    expect(withPeriod.body.input_snapshot).not.toBeNull();
+    expect(withPeriod.body.input_snapshot.period).toEqual({ start: isoDate(-30), end: isoDate(0) });
+  });
+
+  it('400 si period_end est fournie sans period_start, ou antérieure à period_start', async () => {
+    tenant = await createTenant();
+
+    const missingStart = await makeReview(tenant.admin.token, { period_end: isoDate(0) });
+    expect(missingStart.status).toBe(400);
+
+    const reversed = await makeReview(tenant.admin.token, { period_start: isoDate(0), period_end: isoDate(-10) });
+    expect(reversed.status).toBe(400);
+  });
+});
+
+describe('POST /api/management-reviews/:id/refresh-snapshot', () => {
+  it('403 pour un member, 400 sans période, 200 recalcule tant que la revue est en brouillon, 400 une fois clôturée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const noPeriod = await makeReview(tenant.admin.token, { title: 'Sans période' });
+    const noPeriodAttempt = await request(app)
+      .post(`/api/management-reviews/${noPeriod.body.id}/refresh-snapshot`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(noPeriodAttempt.status).toBe(400);
+
+    const review = await makeReview(tenant.admin.token, {
+      title: 'Avec période',
+      period_start: isoDate(-30),
+      period_end: isoDate(0),
+    });
+
+    const memberAttempt = await request(app)
+      .post(`/api/management-reviews/${review.body.id}/refresh-snapshot`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(memberAttempt.status).toBe(403);
+
+    const refreshed = await request(app)
+      .post(`/api/management-reviews/${review.body.id}/refresh-snapshot`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.body.input_snapshot).not.toBeNull();
+
+    await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed' });
+
+    const afterCompletion = await request(app)
+      .post(`/api/management-reviews/${review.body.id}/refresh-snapshot`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(afterCompletion.status).toBe(400);
+  });
+
+  it('modifier la période après clôture est refusé (input_snapshot déjà figé)', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token, {
+      period_start: isoDate(-30),
+      period_end: isoDate(0),
+    });
+
+    await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed' });
+
+    const attempt = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_end: isoDate(10) });
+    expect(attempt.status).toBe(400);
+
+    // Ré-envoyer les MÊMES valeurs de période (ce que fait EditReviewModal à chaque
+    // soumission, même pour éditer un tout autre champ) ne doit pas être bloqué : seul un
+    // changement réel de période est refusé après clôture.
+    const sameValues = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_start: isoDate(-30), period_end: isoDate(0), conclusions: 'Édition légitime après clôture' });
+    expect(sameValues.status).toBe(200);
+    expect(sameValues.body.conclusions).toBe('Édition légitime après clôture');
+  });
+});
+
 describe('Actions de revue — CRUD réservé à admin/manager, création de CAPA liée', () => {
   it('ajoute une action, la lie à une CAPA créée à la volée, et la retrouve dans le détail de la revue', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });

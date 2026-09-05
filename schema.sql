@@ -379,11 +379,19 @@ alter table capas add column audit_finding_id uuid references audit_findings (id
 -- actions de la revue précédente, évolutions du contexte, adéquation des ressources,
 -- opportunités d'amélioration) — la performance du SMQ elle-même (§9.3.2 c) n'est pas un
 -- champ texte à remplir à la main, elle vient du snapshot automatique.
+-- period_start/period_end : fenêtre choisie par le tenant à la création, pour laquelle
+-- input_snapshot agrège les données d'entrée de la revue (tendance KPI, audits/réclamations/
+-- CAPA/risques — voir services/qmsSnapshot.js). Distinct de `snapshot` (état du SMQ à la
+-- CLÔTURE) : input_snapshot est figé dès la création (recalculable via un bouton explicite tant
+-- que status = 'draft'), snapshot est figé à la clôture — deux photos prises à deux moments
+-- différents, jamais la même colonne.
 create table management_reviews (
   id                       uuid primary key default gen_random_uuid(),
   tenant_id                uuid not null references tenants (id) on delete cascade,
   title                    text not null,
   review_date              date not null,
+  period_start             date,
+  period_end               date,
   status                   text not null default 'draft' check (status in ('draft', 'completed')),
   participants             text,
   previous_actions_status  text,
@@ -392,9 +400,12 @@ create table management_reviews (
   improvement_opportunities text,
   conclusions              text,
   snapshot                 jsonb,
+  input_snapshot           jsonb,
   created_by               uuid references users (id) on delete set null,
   created_at               timestamptz not null default now(),
-  updated_at               timestamptz not null default now()
+  updated_at               timestamptz not null default now(),
+  constraint management_reviews_period_order_check
+    check (period_start is null or period_end is null or period_end >= period_start)
 );
 
 -- Actions décidées en sortie de revue (§9.3.3). Même principe bidirectionnel que

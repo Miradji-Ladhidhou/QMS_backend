@@ -100,6 +100,20 @@ router.post(
     body('review_date').isISO8601().withMessage('Date de revue invalide.'),
     body('participants').optional({ values: 'falsy' }).trim(),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('period_start').optional({ values: 'falsy' }).isISO8601().withMessage('Date de début de période invalide.'),
+    body('period_end')
+      .optional({ values: 'falsy' })
+      .isISO8601()
+      .withMessage('Date de fin de période invalide.')
+      .custom((value, { req }) => {
+        if (Boolean(value) !== Boolean(req.body.period_start)) {
+          throw new Error('period_start et period_end doivent être fournis ensemble.');
+        }
+        if (value && req.body.period_start && value < req.body.period_start) {
+          throw new Error('period_end doit être postérieure ou égale à period_start.');
+        }
+        return true;
+      }),
   ],
   requireValidCategoryId('management_review'),
   async (req, res) => {
@@ -108,12 +122,22 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    const periodStart = req.body.period_start || null;
+    const periodEnd = req.body.period_end || null;
+    // Calcul synchrone : ce projet n'a pas de file d'attente de tâches (seulement des jobs cron
+    // périodiques, voir app.js), et quelques centaines de ms sur une action admin peu fréquente
+    // sont acceptables plutôt que de construire une infrastructure asynchrone pour ce seul besoin.
+    const inputSnapshot = periodStart && periodEnd ? await buildQmsSnapshot(req.tenantId, { periodStart, periodEnd }) : null;
+
     const { data, error } = await supabase
       .from('management_reviews')
       .insert({
         tenant_id: req.tenantId,
         title: req.body.title,
         review_date: req.body.review_date,
+        period_start: periodStart,
+        period_end: periodEnd,
+        input_snapshot: inputSnapshot,
         participants: req.body.participants || null,
         category_id: req.body.category_id || null,
         created_by: req.user.id,
@@ -174,6 +198,8 @@ router.patch(
     body('status').optional().isIn(REVIEW_STATUSES).withMessage('Statut invalide.'),
     ...REVIEW_TEXT_FIELDS.filter((f) => f !== 'title').map((field) => body(field).optional({ values: 'falsy' }).trim()),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('period_start').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de début de période invalide.'),
+    body('period_end').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de fin de période invalide.'),
   ],
   requireValidCategoryId('management_review'),
   async (req, res) => {
@@ -184,7 +210,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('management_reviews')
-      .select('id, status, snapshot')
+      .select('id, status, snapshot, period_start, period_end')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -193,12 +219,27 @@ router.patch(
       return res.status(404).json({ error: 'Revue de direction introuvable.' });
     }
 
+    // Une revue clôturée ne doit plus jamais voir sa période bouger : ce serait invalider
+    // silencieusement l'input_snapshot déjà figé, qui est censé refléter cette période précise.
+    // Comparé à la valeur déjà en base (pas juste la présence du champ) : EditReviewModal
+    // envoie toujours period_start/period_end dans son payload, y compris pour une revue
+    // clôturée où l'utilisateur ne voulait modifier qu'un autre champ (ex. les conclusions) —
+    // un simple "le champ est présent" bloquerait à tort cette édition légitime.
+    const periodChanged =
+      ('period_start' in req.body && (req.body.period_start || null) !== existing.period_start) ||
+      ('period_end' in req.body && (req.body.period_end || null) !== existing.period_end);
+    if (periodChanged && existing.status === 'completed') {
+      return res.status(400).json({ error: 'Impossible de modifier la période une fois la revue clôturée.' });
+    }
+
     const update = {};
     for (const field of [...REVIEW_TEXT_FIELDS, 'review_date']) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('status' in req.body) update.status = req.body.status;
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
+    if ('period_start' in req.body) update.period_start = req.body.period_start || null;
+    if ('period_end' in req.body) update.period_end = req.body.period_end || null;
 
     if (update.status === 'completed' && !existing.snapshot) {
       update.snapshot = await buildQmsSnapshot(req.tenantId);
@@ -271,6 +312,48 @@ router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   }
 
   res.status(204).end();
+});
+
+// POST /api/management-reviews/:id/refresh-snapshot — recalcule input_snapshot à la demande,
+// uniquement tant que la revue est en brouillon : une fois clôturée, les données d'entrée
+// restent figées exactement comme `snapshot` (même invariant d'auditabilité — une revue déjà
+// tenue ne doit plus jamais changer de chiffres).
+router.post('/:id/refresh-snapshot', requireRole('admin', 'manager'), async (req, res) => {
+  const { data: existing, error: fetchError } = await supabase
+    .from('management_reviews')
+    .select('id, status, period_start, period_end')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (fetchError || !existing) {
+    return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  }
+  if (existing.status !== 'draft') {
+    return res.status(400).json({ error: "Les données d'entrée ne peuvent être actualisées que sur une revue en brouillon." });
+  }
+  if (!existing.period_start || !existing.period_end) {
+    return res.status(400).json({ error: 'Aucune période définie pour cette revue.' });
+  }
+
+  const inputSnapshot = await buildQmsSnapshot(req.tenantId, {
+    periodStart: existing.period_start,
+    periodEnd: existing.period_end,
+  });
+
+  const { data, error } = await supabase
+    .from('management_reviews')
+    .update({ input_snapshot: inputSnapshot })
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .select('*')
+    .single();
+
+  if (error || !data) {
+    return res.status(500).json({ error: "Erreur lors de l'actualisation des données d'entrée." });
+  }
+
+  res.json(data);
 });
 
 async function resolveReview(req, res) {
