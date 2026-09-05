@@ -12,6 +12,7 @@ import {
   fetchComplaintItems,
   fetchRiskItems,
   fetchSupplierItems,
+  fetchPdcaItems,
 } from '../services/planningItems.js';
 
 const router = Router();
@@ -36,15 +37,16 @@ router.get('/', async (req, res) => {
   let items;
 
   if (req.userRole === 'member') {
-    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchAuditItems(req.tenantId, { leadAuditorId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchComplaintItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchRiskItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchPdcaItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
     ]);
-    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems];
+    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems, ...pdcaItems];
   } else {
     const serviceIds = await resolveServiceScope({
       tenantId: req.tenantId,
@@ -55,18 +57,29 @@ router.get('/', async (req, res) => {
 
     const trainingUserIds = serviceIds ? await fetchServiceUserIds(req.tenantId, serviceIds) : null;
 
-    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems] =
-      await Promise.all([
-        fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-        fetchDocumentItems(req.tenantId),
-        fetchProcedureItems(req.tenantId),
-        fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
-        fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
-        fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-        fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-        fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-        fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
-      ]);
+    const [
+      capaItems,
+      documentItems,
+      procedureItems,
+      trainingItems,
+      taskItems,
+      auditItems,
+      complaintItems,
+      riskItems,
+      supplierItems,
+      pdcaItems,
+    ] = await Promise.all([
+      fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchDocumentItems(req.tenantId),
+      fetchProcedureItems(req.tenantId),
+      fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
+      fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
+      fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchComplaintItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+    ]);
     items = [
       ...capaItems,
       ...documentItems,
@@ -77,6 +90,7 @@ router.get('/', async (req, res) => {
       ...complaintItems,
       ...riskItems,
       ...supplierItems,
+      ...pdcaItems,
     ];
   }
 

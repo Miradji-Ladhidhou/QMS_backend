@@ -291,6 +291,41 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, use
   );
 }
 
+// Projets PDCA non clôturés avec une date cible — scope : ceux dont je suis responsable
+// (member), par service, ou tout le tenant selon le mode. Même principe de transparence que les
+// risques (voir pdca.js) : la lecture reste ouverte à tous les rôles, seule la SÉLECTION des
+// items du planning personnel d'un member change ici.
+export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, userRole }) {
+  let query = supabase
+    .from('pdca_projects')
+    .select('id, title, target_date, category_id, category:categories(id, is_restricted)')
+    .eq('tenant_id', tenantId)
+    .not('target_date', 'is', null)
+    .neq('status', 'closed');
+
+  if (ownerId) {
+    query = query.eq('owner', ownerId);
+  } else if (serviceIds) {
+    if (serviceIds.length === 0) return [];
+    query = query.in('service_id', serviceIds);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  const visible = await filterViewableByCategory({ userId, userRole, items: data });
+
+  return visible.map((pdca) =>
+    withOverdue({
+      type: 'pdca',
+      id: pdca.id,
+      title: pdca.title,
+      date: pdca.target_date,
+      link: `/pdca/${pdca.id}`,
+    })
+  );
+}
+
 // Tâches manuelles non terminées — personnelles (créées ou assignées à moi) pour member,
 // tout le tenant pour admin/manager (pas de notion de service sur les tâches).
 export async function fetchTaskItems(tenantId, { personalUserId, userId, userRole }) {
