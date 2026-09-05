@@ -314,6 +314,13 @@ router.patch(
     const update = {};
 
     if ('role' in req.body) {
+      // Même garde que is_active ci-dessous : un admin qui se rétrograde perd
+      // immédiatement l'accès à cette route (requireRole('admin')) et n'a alors plus aucun
+      // moyen de revenir en arrière lui-même — verrouillage potentiellement définitif si
+      // c'était le seul admin du tenant.
+      if (target.id === req.user.id) {
+        return res.status(403).json({ error: 'Vous ne pouvez pas modifier votre propre rôle.' });
+      }
       update.role = req.body.role;
     }
 

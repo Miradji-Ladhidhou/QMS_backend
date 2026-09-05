@@ -67,6 +67,18 @@ describe('PATCH /api/users/:id — gestion symétrique entre admins', () => {
     expect(res.status).toBe(403);
   });
 
+  it('un admin ne peut jamais changer son propre rôle — perdrait sinon l’accès à cette route sans recours', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .patch(`/api/users/${tenant.admin.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role: 'manager' });
+    expect(res.status).toBe(403);
+
+    const stillAdmin = await request(app).get('/api/users/me').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(stillAdmin.body.role).toBe('admin');
+  });
+
   it('member bloqué (403) sur la modification d’un autre utilisateur', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
     const [member, manager] = tenant.users;
