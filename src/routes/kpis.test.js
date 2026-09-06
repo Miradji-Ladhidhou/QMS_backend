@@ -239,3 +239,84 @@ describe('KPI manuel à plusieurs séries (calc_type = "manual")', () => {
     expect(conflict.status).toBe(409);
   });
 });
+
+describe('POST/PATCH /api/kpis — responsable (owner)', () => {
+  it('accepte un responsable à la création et à la modification, renvoyé avec son nom', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const created = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI avec responsable', owner: manager.id });
+    expect(created.status).toBe(201);
+    expect(created.body.owner).toBe(manager.id);
+    expect(created.body.owner_user.full_name).toBe('Test manager');
+
+    const updated = await request(app)
+      .patch(`/api/kpis/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ owner: null });
+    expect(updated.status).toBe(200);
+    expect(updated.body.owner).toBeNull();
+  });
+});
+
+describe('POST /api/kpis/:id/create-capa — lien bidirectionnel', () => {
+  it('crée une CAPA liée dans les deux sens, assignée par défaut au responsable du KPI', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Taux de service', unit: '%', target: 95, target_direction: 'min', owner: manager.id });
+
+    const res = await request(app)
+      .post(`/api/kpis/${kpi.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Taux de service hors objectif' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.title).toBe('Taux de service hors objectif');
+    expect(res.body.kpi_id).toBe(kpi.body.id);
+    expect(res.body.assigned_to).toBe(manager.id);
+
+    const { data: kpiRow } = await admin.from('kpis').select('linked_capa_id').eq('id', kpi.body.id).single();
+    expect(kpiRow.linked_capa_id).toBe(res.body.id);
+
+    const kpiDetail = await request(app).get(`/api/kpis/${kpi.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(kpiDetail.body.linked_capa.id).toBe(res.body.id);
+  });
+
+  it('refuse un member, 404 sur un KPI d’un autre tenant, et exige un titre', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const otherTenant = await createTenant();
+    try {
+      const kpi = await request(app)
+        .post('/api/kpis')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ name: 'KPI protégé' });
+
+      const memberAttempt = await request(app)
+        .post(`/api/kpis/${kpi.body.id}/create-capa`)
+        .set('Authorization', `Bearer ${member.token}`)
+        .send({ title: 'CAPA' });
+      expect(memberAttempt.status).toBe(403);
+
+      const foreignAttempt = await request(app)
+        .post(`/api/kpis/${kpi.body.id}/create-capa`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ title: 'CAPA' });
+      expect(foreignAttempt.status).toBe(404);
+
+      const missingTitle = await request(app)
+        .post(`/api/kpis/${kpi.body.id}/create-capa`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: '' });
+      expect(missingTitle.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});

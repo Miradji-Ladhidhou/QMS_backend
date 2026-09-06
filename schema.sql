@@ -739,6 +739,18 @@ create table kpis (
   updated_at  timestamptz not null default now()
 );
 
+-- Responsable du suivi de ce KPI (clause 9.1.1 de l'ISO 9001 : la surveillance d'un indicateur
+-- doit être rattachée à quelqu'un) — même nom de colonne que pdca_projects.owner.
+alter table kpis add column owner uuid references users (id) on delete set null;
+
+-- Lien bidirectionnel avec capas, même principe que partout ailleurs dans ce fichier
+-- (complaints.linked_capa_id/capas.complaint_id, pdca_projects.linked_capa_id/capas.pdca_project_id...)
+-- — jusqu'ici le SEUL module de constat/mesure sans ce lien, alors qu'un KPI durablement hors
+-- objectif est un déclencheur d'action corrective aussi naturel qu'une réclamation (clause
+-- 9.1.3 : utiliser les données de performance pour identifier les besoins d'amélioration).
+alter table kpis add column linked_capa_id uuid references capas (id) on delete set null;
+alter table capas add column kpi_id uuid references kpis (id) on delete set null;
+
 -- Import générique : un fichier peut avoir n'importe quelle structure de colonnes, donc
 -- on ne fige rien au niveau du schéma. kpi_id est nullable le temps de l'import initial :
 -- on peut déposer un fichier, voir les colonnes qu'il contient, puis choisir ensuite à

@@ -7,16 +7,21 @@ import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { notifyCapaAssigned } from '../services/capaNotifications.js';
 
 const router = Router();
 
 const KPI_FREQUENCIES = ['daily', 'weekly', 'monthly', 'quarterly', 'yearly'];
 const KPI_TARGET_DIRECTIONS = ['min', 'max'];
+// Mêmes niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans accidents.js/risks.js.
+const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 // Le type de calcul précis (ratio, sum, average, min, max, count, count_grouped) vit dans
 // kpi_calculation_configs.calc_type — ici on distingue seulement saisie manuelle vs calculée.
 const KPI_CALCULATION_TYPES = ['manual', 'import'];
 export const KPI_CALC_TYPES = ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped', 'manual'];
-const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id', 'category_id'];
+const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequency', 'calculation_type', 'folder_id', 'category_id', 'owner'];
+// Réutilisé par GET / (liste), GET /:id et le create-capa réciproque ci-dessous.
+const KPI_JOINS = 'owner_user:users!kpis_owner_fkey(id, full_name), linked_capa:capas!kpis_linked_capa_id_fkey(id, number, title, status)';
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
   'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
@@ -37,7 +42,7 @@ router.get('/', async (req, res) => {
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
     // répartition) et de nommer chaque courbe, sans une requête par KPI.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -77,7 +82,7 @@ router.get('/report', async (req, res) => {
     // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
     // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -144,6 +149,7 @@ router.post(
       .withMessage('Type de calcul invalide.'),
     body('folder_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('owner').optional({ values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
   ],
   requireValidCategoryId('kpi'),
   async (req, res) => {
@@ -161,6 +167,7 @@ router.post(
       calculation_type: calculationType,
       folder_id: folderId,
       category_id: categoryId,
+      owner,
     } = req.body;
 
     if (folderId) {
@@ -187,8 +194,9 @@ router.post(
         calculation_type: calculationType || undefined,
         folder_id: folderId || null,
         category_id: categoryId || null,
+        owner: owner || null,
       })
-      .select()
+      .select(`*, ${KPI_JOINS}`)
       .single();
 
     if (error) {
@@ -204,7 +212,7 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id)`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -279,6 +287,7 @@ router.patch(
       .withMessage('Type de calcul invalide.'),
     body('folder_id').optional({ nullable: true }).custom((value) => value === null || typeof value === 'string').withMessage('Dossier invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('owner').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
   ],
   requireValidCategoryId('kpi'),
   async (req, res) => {
@@ -298,6 +307,9 @@ router.patch(
     }
     if ('category_id' in update) {
       update.category_id = update.category_id || null;
+    }
+    if ('owner' in update) {
+      update.owner = update.owner || null;
     }
 
     if (Object.keys(update).length === 0) {
@@ -321,7 +333,7 @@ router.patch(
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select()
+      .select(`*, ${KPI_JOINS}`)
       .single();
 
     if (error || !data) {
@@ -329,6 +341,85 @@ router.patch(
     }
 
     res.json(data);
+  }
+);
+
+// POST /api/kpis/:id/create-capa — crée une CAPA à partir de ce KPI et lie les deux dans les
+// deux sens. Même mécanique que POST /pdca/:id/create-capa (routes/pdca.js) : un KPI durablement
+// hors objectif est un déclencheur d'action corrective aussi naturel qu'une réclamation ou un
+// constat d'audit (clause 9.1.3 de l'ISO 9001). Pas de garde "déjà lié" ici non plus, même choix
+// que les autres sens de ce lien — un second appel écrase simplement l'ancien.
+router.post(
+  '/:id/create-capa',
+  requireRole('admin', 'manager'),
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),
+    body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
+    body('assigned_to').optional({ values: 'falsy' }).isUUID().withMessage('Utilisateur assigné invalide.'),
+    body('due_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+  ],
+  async (req, res) => {
+    const { data: kpi, error: fetchError } = await supabase
+      .from('kpis')
+      .select('id, name, unit, target, target_direction, owner')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !kpi) {
+      return res.status(404).json({ error: 'KPI introuvable.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { title, severity, priority, due_date: dueDate } = req.body;
+    // assigned_to par défaut = le responsable du KPI (s'il en a un) : c'est déjà la personne la
+    // mieux placée pour traiter la dérive qu'elle suit, pas besoin de le redemander.
+    const assignedTo = req.body.assigned_to || kpi.owner || null;
+    const targetText = kpi.target !== null ? `${kpi.target_direction === 'max' ? '≤' : '≥'} ${kpi.target}${kpi.unit || ''}` : null;
+
+    const { data: capa, error: capaError } = await supabase
+      .from('capas')
+      .insert({
+        tenant_id: req.tenantId,
+        title,
+        origin: `KPI — ${kpi.name}`,
+        description: targetText ? `Objectif : ${targetText}.` : null,
+        severity: severity || undefined,
+        priority: priority || undefined,
+        assigned_to: assignedTo,
+        due_date: dueDate || null,
+        kpi_id: kpi.id,
+        created_by: req.user.id,
+      })
+      .select('*, assigned:users!capas_assigned_to_fkey(id, full_name)')
+      .single();
+
+    if (capaError) {
+      return res.status(500).json({ error: 'Erreur lors de la création de la CAPA.' });
+    }
+
+    if (capa.assigned_to) {
+      notifyCapaAssigned(req.tenantId, capa).catch((err) =>
+        console.error("Échec de la notification d'assignation CAPA :", err.message)
+      );
+    }
+
+    const { error: linkError } = await supabase
+      .from('kpis')
+      .update({ linked_capa_id: capa.id })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', kpi.id);
+
+    if (linkError) {
+      console.error('Échec de la mise à jour du KPI après création de la CAPA :', linkError.message);
+    }
+
+    res.status(201).json(capa);
   }
 );
 
