@@ -332,7 +332,7 @@ export async function fetchTaskItems(tenantId, { personalUserId, userId, userRol
   const { data, error } = await supabase
     .from('tasks')
     .select(
-      'id, title, due_date, assigned_to, created_by, category_id, priority, checklist, recurrence, category:categories(id, is_restricted)'
+      'id, title, due_date, assigned_to, created_by, category_id, priority, checklist, recurrence, category:categories(id, is_restricted), capa:capas(id, number)'
     )
     .eq('tenant_id', tenantId)
     .eq('status', 'todo');
@@ -360,6 +360,7 @@ export async function fetchTaskItems(tenantId, { personalUserId, userId, userRol
       priority: task.priority,
       checklist: task.checklist,
       recurrence: task.recurrence,
+      capa: task.capa || null,
     })
   );
 }

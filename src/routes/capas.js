@@ -158,7 +158,7 @@ router.get('/:id', async (req, res) => {
   const { data: capa, error } = await supabase
     .from('capas')
     .select(
-      `${CAPA_SELECT}, qqoqccp_analysis:qqoqccp_analyses!capas_qqoqccp_analysis_id_fkey(id, title, ai_synthesis)`
+      `${CAPA_SELECT}, qqoqccp_analysis:qqoqccp_analyses!capas_qqoqccp_analysis_id_fkey(id, title, ai_synthesis), pdca_project:pdca_projects!capas_pdca_project_id_fkey(id, title, status)`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -215,6 +215,20 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les procédures liées.' });
   }
 
+  // Tâches de suivi créées depuis cette CAPA (voir POST /:id/create-task) — une CAPA peut se
+  // décomposer en plusieurs tâches, contrairement aux liens *_id 1:1 : simple requête filtrée
+  // par capa_id, pas de colonne réciproque sur capas (voir schema.sql).
+  const { data: linkedTasks, error: linkedTasksError } = await supabase
+    .from('tasks')
+    .select('id, title, due_date, status')
+    .eq('tenant_id', req.tenantId)
+    .eq('capa_id', capa.id)
+    .order('due_date', { ascending: true });
+
+  if (linkedTasksError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les tâches liées.' });
+  }
+
   // is_private_to_me : évite au frontend de comparer capa.category.owner_user_id à
   // l'utilisateur courant lui-même (source d'un vrai bug de course, currentUser et cette
   // requête chargeant en parallèle et pas forcément dans le même ordre) — voir
@@ -223,6 +237,7 @@ router.get('/:id', async (req, res) => {
     ...capa,
     comments,
     linked_procedures: procedureLinks.map((link) => link.procedure),
+    linked_tasks: linkedTasks,
     is_private_to_me: capa.category?.owner_user_id === req.user.id,
   });
 });
@@ -470,6 +485,34 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    if ('effectiveness_verified' in update && update.effectiveness_verified !== null) {
+      // Un verdict d'efficacité (true ou false) sans justification écrite ne tient pas en audit —
+      // indépendant du bloc de clôture ci-dessous, qui ne se déclenche que sur status==='closed' :
+      // ici on couvre aussi le cas où la vérification est enregistrée sans toucher au statut dans
+      // la même requête (voir CapaDetail.jsx#handleSaveEffectiveness, qui envoie les deux champs
+      // ensemble mais jamais le statut).
+      let effectivenessNotes = update.effectiveness_notes;
+      if (effectivenessNotes === undefined) {
+        const { data: existing, error: fetchError } = await supabase
+          .from('capas')
+          .select('effectiveness_notes')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', req.params.id)
+          .single();
+
+        if (fetchError || !existing) {
+          return res.status(404).json({ error: 'CAPA introuvable.' });
+        }
+        effectivenessNotes = existing.effectiveness_notes;
+      }
+
+      if (!effectivenessNotes) {
+        return res
+          .status(400)
+          .json({ error: "Merci de justifier le résultat de la vérification d'efficacité par un commentaire." });
+      }
+    }
+
     if (update.status === 'closed') {
       // Le statut "En vérification" (pending_verification) n'a de sens que si la clôture est
       // réellement subordonnée à une vérification d'efficacité positive — sinon rien n'empêchait
@@ -528,6 +571,138 @@ router.patch(
     }
 
     res.json(data);
+  }
+);
+
+// POST /api/capas/:id/create-task — crée une tâche de suivi (module Planning) rattachée à cette
+// CAPA. Une CAPA peut se décomposer en plusieurs tâches, chacune avec son propre responsable/
+// échéance — contrairement au champ texte unique corrective_action. Volontairement minimal
+// (titre + échéance) : l'édition complète (assigné, priorité, checklist, récurrence) se fait
+// depuis Planning.jsx une fois la tâche créée, pas ici. Même garde que PATCH /:id ci-dessus : un
+// member ne peut pas prolonger une CAPA après sa création.
+router.post(
+  '/:id/create-task',
+  (req, res, next) => {
+    if (req.userRole === 'member') {
+      return res.status(403).json({
+        error: 'Seuls les administrateurs et managers peuvent modifier une CAPA après sa création.',
+      });
+    }
+    next();
+  },
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('due_date').isISO8601().withMessage('Échéance invalide.'),
+  ],
+  async (req, res) => {
+    const { data: capa, error: fetchError } = await supabase
+      .from('capas')
+      .select('id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !capa) {
+      return res.status(404).json({ error: 'CAPA introuvable.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data, error } = await supabase
+      .from('tasks')
+      .insert({
+        tenant_id: req.tenantId,
+        title: req.body.title,
+        due_date: req.body.due_date,
+        capa_id: capa.id,
+        created_by: req.user.id,
+      })
+      .select('id, title, due_date, status')
+      .single();
+
+    if (error) {
+      return res.status(500).json({ error: 'Erreur lors de la création de la tâche.' });
+    }
+
+    res.status(201).json(data);
+  }
+);
+
+// POST /api/capas/:id/create-pdca — lance un nouveau projet PDCA depuis cette CAPA et lie les
+// deux dans les deux sens. Miroir exact de POST /api/pdca/:id/create-capa (routes/pdca.js), en
+// sens inverse : une CAPA qui appelle un suivi plus structuré (plusieurs étapes) peut se
+// prolonger en cycle Plan-Do-Check-Act plutôt que de rester un simple champ texte
+// corrective_action/preventive_action. Pas de garde "déjà lié" ici non plus, par cohérence avec
+// l'autre sens qui n'en a pas — un second appel écrase simplement l'ancien lien.
+router.post(
+  '/:id/create-pdca',
+  (req, res, next) => {
+    if (req.userRole === 'member') {
+      return res.status(403).json({
+        error: 'Seuls les administrateurs et managers peuvent modifier une CAPA après sa création.',
+      });
+    }
+    next();
+  },
+  [
+    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('target_date').optional({ values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+  ],
+  async (req, res) => {
+    const { data: capa, error: fetchError } = await supabase
+      .from('capas')
+      .select('id, number, title, service_id, description, corrective_action, preventive_action')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !capa) {
+      return res.status(404).json({ error: 'CAPA introuvable.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    // plan_content par défaut : ce qui a déjà été décidé côté CAPA (actions corrective/
+    // préventive), pour ne pas faire retaper la même chose dans le cycle PDCA — repli sur
+    // description si aucune des deux actions n'est encore renseignée.
+    const defaultPlanContent = [capa.corrective_action, capa.preventive_action].filter(Boolean).join('\n\n') || capa.description || null;
+
+    const { data: pdca, error: pdcaError } = await supabase
+      .from('pdca_projects')
+      .insert({
+        tenant_id: req.tenantId,
+        title: req.body.title,
+        description: `CAPA ${capa.number} — ${capa.title}`,
+        service_id: capa.service_id || null,
+        target_date: req.body.target_date || null,
+        plan_content: defaultPlanContent,
+        linked_capa_id: capa.id,
+        created_by: req.user.id,
+      })
+      .select('id, title, status')
+      .single();
+
+    if (pdcaError) {
+      return res.status(500).json({ error: 'Erreur lors de la création du projet PDCA.' });
+    }
+
+    const { error: linkError } = await supabase
+      .from('capas')
+      .update({ pdca_project_id: pdca.id })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', capa.id);
+
+    if (linkError) {
+      console.error('Échec de la mise à jour de la CAPA après création du projet PDCA :', linkError.message);
+    }
+
+    res.status(201).json(pdca);
   }
 );
 

@@ -126,7 +126,12 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/capas/${onTime.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     const late = await request(app)
       .post('/api/capas')
@@ -135,7 +140,12 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/capas/${late.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     const noDueDate = await request(app)
       .post('/api/capas')
@@ -144,7 +154,12 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/capas/${noDueDate.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     const snapshot = await buildQmsSnapshot(tenant.tenantId, { periodStart, periodEnd });
     expect(snapshot.capas_period.in_progress).toBe(1);
@@ -165,7 +180,12 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/capas/${noDueDate.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     const snapshot = await buildQmsSnapshot(tenant.tenantId, { periodStart, periodEnd });
     expect(snapshot.capas_period.closed_in_period).toBe(1);

@@ -318,7 +318,7 @@ describe('PATCH /api/capas/:id', () => {
     await request(app)
       .patch(`/api/capas/${created.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ effectiveness_verified: false });
+      .send({ effectiveness_verified: false, effectiveness_notes: "Récidive constatée, l'action n'a pas résolu le problème." });
 
     const res = await request(app)
       .patch(`/api/capas/${created.body.id}`)
@@ -327,6 +327,28 @@ describe('PATCH /api/capas/:id', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error).toBe("Impossible de clôturer une CAPA dont l'efficacité de l'action corrective n'a pas été vérifiée.");
+  });
+
+  it('refuse de vérifier une efficacité (true ou false) sans commentaire de justification', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA sans justification' });
+
+    const resTrue = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ effectiveness_verified: true });
+    expect(resTrue.status).toBe(400);
+    expect(resTrue.body.error).toBe("Merci de justifier le résultat de la vérification d'efficacité par un commentaire.");
+
+    const resFalse = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ effectiveness_verified: false });
+    expect(resFalse.status).toBe(400);
+    expect(resFalse.body.error).toBe("Merci de justifier le résultat de la vérification d'efficacité par un commentaire.");
   });
 
   it('autorise la clôture quand action corrective et efficacité vérifiée sont déjà enregistrées', async () => {
@@ -339,7 +361,7 @@ describe('PATCH /api/capas/:id', () => {
     await request(app)
       .patch(`/api/capas/${created.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ effectiveness_verified: true });
+      .send({ effectiveness_verified: true, effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.' });
 
     const res = await request(app)
       .patch(`/api/capas/${created.body.id}`)
@@ -361,7 +383,12 @@ describe('PATCH /api/capas/:id', () => {
     const res = await request(app)
       .patch(`/api/capas/${created.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('closed');
@@ -450,5 +477,136 @@ describe('DELETE /api/capas/:id', () => {
 
     const { data } = await admin.from('capas').select('id').eq('id', created.body.id).maybeSingle();
     expect(data).toBeNull();
+  });
+});
+
+describe('POST /api/capas/:id/create-task', () => {
+  it('crée une tâche liée (capa_id posé) visible ensuite sur GET /api/capas/:id', async () => {
+    tenant = await createTenant();
+    const capa = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA à décomposer en tâches' });
+
+    const res = await request(app)
+      .post(`/api/capas/${capa.body.id}/create-task`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Prévenir le prestataire', due_date: '2026-12-01' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.title).toBe('Prévenir le prestataire');
+    expect(res.body.due_date).toBe('2026-12-01');
+    expect(res.body.status).toBe('todo');
+
+    const { data: taskRow } = await admin.from('tasks').select('capa_id').eq('id', res.body.id).single();
+    expect(taskRow.capa_id).toBe(capa.body.id);
+
+    const detail = await request(app).get(`/api/capas/${capa.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detail.body.linked_tasks).toHaveLength(1);
+    expect(detail.body.linked_tasks[0].title).toBe('Prévenir le prestataire');
+  });
+
+  it('refuse un member, 404 sur une CAPA d’un autre tenant, et valide titre/échéance', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const otherTenant = await createTenant();
+    try {
+      const capa = await request(app)
+        .post('/api/capas')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: 'CAPA protégée' });
+
+      const memberAttempt = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-task`)
+        .set('Authorization', `Bearer ${member.token}`)
+        .send({ title: 'Tâche', due_date: '2026-12-01' });
+      expect(memberAttempt.status).toBe(403);
+
+      const foreignAttempt = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-task`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ title: 'Tâche', due_date: '2026-12-01' });
+      expect(foreignAttempt.status).toBe(404);
+
+      const missingFields = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-task`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: '' });
+      expect(missingFields.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
+describe('POST /api/capas/:id/create-pdca', () => {
+  it('crée un projet PDCA lié dans les deux sens, avec un plan_content par défaut depuis les actions de la CAPA', async () => {
+    tenant = await createTenant();
+    const capa = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        title: 'CAPA à structurer',
+        corrective_action: 'Action corrective déjà décidée',
+        preventive_action: 'Action préventive déjà décidée',
+      });
+
+    const res = await request(app)
+      .post(`/api/capas/${capa.body.id}/create-pdca`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Cycle PDCA de suivi' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.title).toBe('Cycle PDCA de suivi');
+    expect(res.body.status).toBe('plan');
+
+    const { data: pdcaRow } = await admin
+      .from('pdca_projects')
+      .select('linked_capa_id, plan_content')
+      .eq('id', res.body.id)
+      .single();
+    expect(pdcaRow.linked_capa_id).toBe(capa.body.id);
+    expect(pdcaRow.plan_content).toBe('Action corrective déjà décidée\n\nAction préventive déjà décidée');
+
+    const { data: capaRow } = await admin.from('capas').select('pdca_project_id').eq('id', capa.body.id).single();
+    expect(capaRow.pdca_project_id).toBe(res.body.id);
+
+    const capaDetail = await request(app).get(`/api/capas/${capa.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(capaDetail.body.pdca_project.title).toBe('Cycle PDCA de suivi');
+
+    const pdcaDetail = await request(app).get(`/api/pdca/${res.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(pdcaDetail.body.linked_capa.id).toBe(capa.body.id);
+  });
+
+  it('refuse un member, 404 sur une CAPA d’un autre tenant, et exige un titre', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const otherTenant = await createTenant();
+    try {
+      const capa = await request(app)
+        .post('/api/capas')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: 'CAPA protégée' });
+
+      const memberAttempt = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-pdca`)
+        .set('Authorization', `Bearer ${member.token}`)
+        .send({ title: 'Cycle PDCA' });
+      expect(memberAttempt.status).toBe(403);
+
+      const foreignAttempt = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-pdca`)
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ title: 'Cycle PDCA' });
+      expect(foreignAttempt.status).toBe(404);
+
+      const missingTitle = await request(app)
+        .post(`/api/capas/${capa.body.id}/create-pdca`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: '' });
+      expect(missingTitle.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
   });
 });

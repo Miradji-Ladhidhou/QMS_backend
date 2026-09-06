@@ -1237,6 +1237,12 @@ create table tasks (
   constraint tasks_assignee_check check (not (assigned_to is not null and assigned_employee_id is not null))
 );
 
+-- CAPA à l'origine de cette tâche de suivi (voir routes/capas.js#create-task) — une CAPA peut
+-- se décomposer en plusieurs tâches (responsables/échéances distincts), contrairement aux
+-- liens capas.*_id qui sont tous 1:1 : pas de colonne réciproque sur capas, une simple requête
+-- filtrée par capa_id suffit pour lister les tâches d'une CAPA (voir GET /api/capas/:id).
+alter table tasks add column capa_id uuid references capas (id) on delete set null;
+
 -- Piste d'audit plateforme (espace super admin) : distincte de document_audit_log qui est
 -- scopée à un document dans un tenant — ici les actions traversent les tenants (ex :
 -- suspension d'un tenant par un super admin). Ni actor_id ni target_id n'ont de contrainte

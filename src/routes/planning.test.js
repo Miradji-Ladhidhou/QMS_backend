@@ -59,7 +59,12 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     await request(app)
       .patch(`/api/capas/${capa.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+      .send({
+        status: 'closed',
+        corrective_action: 'Action corrective appliquée',
+        effectiveness_verified: true,
+        effectiveness_notes: 'Contrôle de suivi sans récidive, action jugée efficace.',
+      });
 
     const res = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.body.items.some((item) => item.type === 'capa' && item.id === capa.body.id)).toBe(false);

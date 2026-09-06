@@ -50,7 +50,7 @@ router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tasks')
     .select(
-      '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)'
+      '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id), capa:capas(id, number)'
     )
     .eq('tenant_id', req.tenantId)
     .order('due_date', { ascending: true });
@@ -123,7 +123,7 @@ router.post(
         created_by: req.user.id,
       })
       .select(
-        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)'
+        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id), capa:capas(id, number)'
       )
       .single();
 
@@ -272,7 +272,7 @@ router.patch(
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .select(
-        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)'
+        '*, assigned_user:users!tasks_assigned_to_fkey(id, full_name), assigned_employee:employees(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id), capa:capas(id, number)'
       )
       .single();
 
