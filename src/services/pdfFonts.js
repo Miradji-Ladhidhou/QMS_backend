@@ -9,6 +9,7 @@ import { createRequire } from 'module';
 // PDF de l'application en bénéficient, pas seulement celui qui a révélé le bug.
 const require = createRequire(import.meta.url);
 export const DEJAVU_SANS = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans.ttf');
+export const DEJAVU_SANS_BOLD = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf');
 
 // Limite connue (documentée en détail dans haccpAuditPdf.js) : la ligature "fi" reste correcte
 // à l'affichage/impression mais perd son "i" dans le texte extrait (recherche/copier-coller) —
@@ -19,8 +20,13 @@ export const DEJAVU_SANS = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans.ttf'
 // chaque nouvelle page — pdfkit ne le fait pas tout seul lors d'un saut de page automatique
 // (overflow de texte), qui repasserait sinon silencieusement sur Helvetica dès la page 2.
 // À appeler juste après `new PDFDocument(...)`, avant tout autre texte.
+// 'Body-Bold' n'était jusqu'ici jamais enregistré : chaque générateur PDF ne pouvait
+// différencier un titre du texte courant que par la taille/couleur, jamais par la graisse —
+// d'où des documents qui se lisaient comme un bloc de texte continu malgré des libellés de
+// section censés s'en détacher (voir procedurePdf.js, qui l'utilise désormais).
 export function useUnicodeFont(doc) {
   doc.registerFont('Body', DEJAVU_SANS);
+  doc.registerFont('Body-Bold', DEJAVU_SANS_BOLD);
   doc.font('Body');
   doc.on('pageAdded', () => doc.font('Body'));
 }

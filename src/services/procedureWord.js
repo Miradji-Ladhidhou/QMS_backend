@@ -170,11 +170,17 @@ function photoPlaceholderParagraphs(caption) {
   ];
 }
 
-function sectionTitleParagraph(theme, text) {
-  const base = { text, bold: true, size: theme.baseFontSize + 2 };
+// pageBreakBefore : réservé aux ruptures de chapitre réelles (début du corps de la procédure,
+// historique des versions) — voir buildProcedureWordDocument. Delta de taille porté de +2 à +6
+// par rapport au corps de texte : à +2, un titre en gras ne se distinguait presque pas d'un mot
+// en gras au milieu d'une phrase, d'où l'effet de bloc de texte continu signalé sur le document
+// généré.
+function sectionTitleParagraph(theme, text, { pageBreakBefore = false } = {}) {
+  const base = { text, bold: true, size: theme.baseFontSize + 6 };
   switch (theme.sectionTitle.type) {
     case 'left-border':
       return new Paragraph({
+        pageBreakBefore,
         spacing: { before: 200, after: 100 },
         border: { left: borderLine(theme.sectionTitle.color, BorderStyle.SINGLE, 24) },
         indent: { left: 120 },
@@ -182,26 +188,32 @@ function sectionTitleParagraph(theme, text) {
       });
     case 'band':
       return new Paragraph({
+        pageBreakBefore,
         spacing: { before: 200, after: 100 },
         shading: { type: ShadingType.CLEAR, fill: theme.sectionTitle.background },
         children: [new TextRun({ ...base, color: theme.sectionTitle.textColor })],
       });
     case 'bold-plain':
     default:
-      return new Paragraph({ spacing: { before: 200, after: 100 }, children: [new TextRun(base)] });
+      return new Paragraph({ pageBreakBefore, spacing: { before: 200, after: 100 }, children: [new TextRun(base)] });
   }
 }
+
+// spacing.line en 1/240e de ligne (docx/OOXML) : 276 = 1.15 interligne, une valeur volontairement
+// modeste (pas 1.5) pour ne pas gonfler artificiellement la longueur d'un document déjà détaillé
+// — juste assez pour que le texte respire au lieu de former un bloc compact.
+const BODY_PARAGRAPH_SPACING = { after: 120, line: 276 };
 
 function subBulletParagraphs(theme, bullets) {
   return (bullets || []).map((bullet) => {
     const prefix = theme.subBulletMarker === 'o' ? 'o  ' : theme.subBulletMarker === '-' ? '-  ' : '';
-    return new Paragraph({ indent: { left: 480 }, children: [new TextRun(`${prefix}${bullet}`)] });
+    return new Paragraph({ indent: { left: 480 }, spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${prefix}${bullet}`)] });
   });
 }
 
 function actionParagraphs(theme, actions) {
   return (actions || []).flatMap((action, index) => [
-    new Paragraph({ children: [new TextRun(`${index + 1}. ${stripLeadingNumbering(action.text)}`)] }),
+    new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${index + 1}. ${stripLeadingNumbering(action.text)}`)] }),
     ...subBulletParagraphs(theme, action.sub_bullets),
   ]);
 }
@@ -227,7 +239,7 @@ function subsectionParagraphs(theme, sectionNumber, index, subsection) {
 
   return [
     heading,
-    ...(subsection.intro ? [new Paragraph({ children: [new TextRun(subsection.intro)] })] : []),
+    ...(subsection.intro ? [new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(subsection.intro)] })] : []),
     ...actionParagraphs(theme, subsection.actions),
     ...calloutParagraphs(theme, subsection.callout),
     ...(subsection.photo_placeholders || []).flatMap((caption) => photoPlaceholderParagraphs(caption)),
@@ -237,12 +249,17 @@ function subsectionParagraphs(theme, sectionNumber, index, subsection) {
 // Section sans sous-sections structurées (brouillon rapide généré par generateProcedureDraft,
 // ou rédigé/édité à la main) : un seul bloc de texte à plat, même repli que
 // services/procedurePdf.js#drawSubSection. Le titre de section est déjà posé par
-// sectionTitleParagraph() côté appelant — cette fonction ne rend que le corps.
+// sectionTitleParagraph() côté appelant — cette fonction ne rend que le corps. Une ligne vide
+// dans le texte source (saut de paragraphe volontaire) devient un paragraphe vide plutôt que
+// d'être avalée par split('\n') + spacing, pour préserver la mise en forme telle que saisie.
 function flatSectionBodyParagraphs(section) {
   const bodyLines = (section.content || 'Non renseigné').split('\n');
-  return bodyLines.map((line) => new Paragraph({ children: [new TextRun(line)] }));
+  return bodyLines.map((line) => new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(line)] }));
 }
 
+// Delta porté à +12/+14 (contre +4/+6 avant) : un titre de document doit se voir dès le survol
+// de la page, pas seulement se déduire du gras — même raison que le delta des titres de section
+// ci-dessus, appliquée au niveau le plus visible du document.
 function titleBlockParagraphs(theme, { procedureNumber, procedureTitle, tenantName }) {
   if (theme.titleBlock.type === 'banner') {
     return [
@@ -251,7 +268,7 @@ function titleBlockParagraphs(theme, { procedureNumber, procedureTitle, tenantNa
         alignment: AlignmentType.CENTER,
         spacing: { before: 200, after: 200 },
         children: [
-          new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true, size: theme.baseFontSize + 6, color: theme.titleBlock.textColor }),
+          new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true, size: theme.baseFontSize + 14, color: theme.titleBlock.textColor }),
         ],
       }),
       new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: tenantName || 'Entreprise', color: '666666' })] }),
@@ -262,12 +279,12 @@ function titleBlockParagraphs(theme, { procedureNumber, procedureTitle, tenantNa
     new Paragraph({
       alignment: theme.titleBlock.type === 'centered-bold' ? AlignmentType.CENTER : AlignmentType.START,
       spacing: { after: 100 },
-      children: [new TextRun({ text: theme.titleBlock.text, bold: true, size: theme.baseFontSize + 4 })],
+      children: [new TextRun({ text: theme.titleBlock.text, bold: true, size: theme.baseFontSize + 8 })],
     }),
     new Paragraph({
       alignment: theme.titleBlock.type === 'centered-bold' ? AlignmentType.CENTER : AlignmentType.START,
       spacing: { after: 200 },
-      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true })],
+      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true, size: theme.baseFontSize + 12 })],
     }),
   ];
 }
@@ -404,15 +421,18 @@ export async function buildProcedureWordDocument({ presetId, tenantName, procedu
   }
 
   body.push(sectionTitleParagraph(theme, '1. Objet'));
-  body.push(new Paragraph({ children: [new TextRun(content.objet || 'Non renseigné')] }));
+  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.objet || 'Non renseigné')] }));
   body.push(sectionTitleParagraph(theme, "2. Domaine d'application"));
-  body.push(new Paragraph({ children: [new TextRun(content.domaine_application || 'Non renseigné')] }));
+  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.domaine_application || 'Non renseigné')] }));
   body.push(sectionTitleParagraph(theme, '3. Responsabilités'));
-  body.push(new Paragraph({ children: [new TextRun(content.responsabilites || 'Non renseigné')] }));
+  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.responsabilites || 'Non renseigné')] }));
 
+  // Saut de page avant le corps de la procédure (comme services/procedurePdf.js) : c'est la
+  // partie la plus longue du document, la faire démarrer sur une page fraîche évite qu'elle
+  // s'enchaîne directement à la suite d'Objet/Domaine/Responsabilités sans rupture visuelle.
   sections.forEach((section, index) => {
     const sectionNumber = `${index + 4}`;
-    body.push(sectionTitleParagraph(theme, `${sectionNumber}. ${section.label}`));
+    body.push(sectionTitleParagraph(theme, `${sectionNumber}. ${section.label}`, { pageBreakBefore: index === 0 }));
     if (section.subsections?.length) {
       section.subsections.forEach((subsection, subIndex) => {
         body.push(...subsectionParagraphs(theme, sectionNumber, subIndex, subsection));
@@ -428,8 +448,9 @@ export async function buildProcedureWordDocument({ presetId, tenantName, procedu
     body.push(...documentsAssociesParagraphs(content.documents_associes));
   }
 
-  body.push(new Paragraph({ text: '' }));
-  body.push(sectionTitleParagraph(theme, 'Historique des versions'));
+  // Sur sa propre page, même logique que le corps ci-dessus : une annexe de traçabilité mélangée
+  // au texte qui précède se perdait visuellement plutôt que de se lire comme une section à part.
+  body.push(sectionTitleParagraph(theme, 'Historique des versions', { pageBreakBefore: true }));
   body.push(historyTable(theme, versions));
 
   const doc = new Document({

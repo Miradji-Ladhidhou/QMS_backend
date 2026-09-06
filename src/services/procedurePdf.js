@@ -36,12 +36,13 @@ function formatDateTime(dateStr) {
 function drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor) {
   const titleText = `${procedure.number} — ${procedure.title}`;
   const titleWidth = CONTENT_WIDTH - 72;
-  doc.fontSize(16);
+  doc.font('Body-Bold').fontSize(18);
   const titleHeight = doc.heightOfString(titleText, { width: titleWidth });
   const bandHeight = Math.max(86, 22 + titleHeight + 34);
 
   doc.rect(0, 0, PAGE_WIDTH, bandHeight).fill(accentColor);
-  doc.fillColor('#ffffff').fontSize(16).text(titleText, PAGE_MARGIN, 22, { width: titleWidth });
+  doc.fillColor('#ffffff').text(titleText, PAGE_MARGIN, 22, { width: titleWidth });
+  doc.font('Body');
   const subtitleY = 22 + titleHeight + 8;
   doc.fontSize(9).fillColor(NAVY_LIGHT);
   doc.text(tenantName || 'Entreprise', PAGE_MARGIN, subtitleY);
@@ -79,31 +80,33 @@ function drawImportantBox(doc, { color, background, label, text }) {
 
   const boxTop = doc.y;
   doc.rect(PAGE_MARGIN, boxTop, CONTENT_WIDTH, height).fill(background);
-  doc.fontSize(9).fillColor(color).text(label, PAGE_MARGIN + 8, boxTop + 8, { width: CONTENT_WIDTH - 16 });
-  doc.fontSize(9).fillColor(INK).text(text, PAGE_MARGIN + 8, doc.y + 2, { width: CONTENT_WIDTH - 16 });
+  doc.font('Body-Bold').fontSize(9).fillColor(color).text(label, PAGE_MARGIN + 8, boxTop + 8, { width: CONTENT_WIDTH - 16 });
+  doc.font('Body').fontSize(9).fillColor(INK).text(text, PAGE_MARGIN + 8, doc.y + 2, { width: CONTENT_WIDTH - 16 });
   doc.y = boxTop + height + 10;
 }
 
 function drawNumberedSection(doc, number, title, body, accentColor) {
-  doc.fontSize(11).fillColor(accentColor).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.moveDown(0.2);
+  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
+  doc.moveDown(0.3);
   if (body) {
-    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
   } else {
     doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   }
-  doc.moveDown(0.7);
+  doc.moveDown(0.8);
 }
 
 function drawSubSection(doc, number, title, body, accentColor) {
-  doc.fontSize(10.5).fillColor(accentColor).text(`${number} ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.moveDown(0.2);
+  doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(`${number} ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
+  doc.moveDown(0.3);
   if (body) {
-    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
   } else {
     doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   }
-  doc.moveDown(0.7);
+  doc.moveDown(0.8);
 }
 
 // Le modèle préfixe parfois lui-même action.text par une numérotation malgré la consigne du
@@ -153,15 +156,18 @@ function drawPhotoPlaceholder(doc, caption) {
 // texte plat de section.content.
 function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, accentColor, infoBoxStyle) {
   const styles = calloutStyles(infoBoxStyle);
-  doc.fontSize(11).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.moveDown(0.4);
+  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
+  doc.moveDown(0.5);
 
   subsections.forEach((subsection, index) => {
     doc
-      .fontSize(10.5)
+      .font('Body-Bold')
+      .fontSize(11)
       .fillColor(accentColor)
       .text(`${sectionNumber}.${index + 1} ${subsection.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-    doc.moveDown(0.2);
+    doc.font('Body');
+    doc.moveDown(0.25);
 
     if (subsection.generation_status === 'failed') {
       doc
@@ -175,20 +181,21 @@ function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, acc
     }
 
     if (subsection.intro) {
-      doc.fontSize(10).fillColor(INK).text(subsection.intro, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.moveDown(0.3);
+      doc.fontSize(10).fillColor(INK).text(subsection.intro, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+      doc.moveDown(0.35);
     }
 
     (subsection.actions || []).forEach((action, actionIndex) => {
       doc
         .fontSize(10)
         .fillColor(INK)
-        .text(`${actionIndex + 1}. ${stripLeadingNumbering(action.text)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        .text(`${actionIndex + 1}. ${stripLeadingNumbering(action.text)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
       (action.sub_bullets || []).forEach((bullet) => {
-        doc.fontSize(9.5).fillColor(INK).text(`•  ${bullet}`, PAGE_MARGIN + 14, doc.y, { width: CONTENT_WIDTH - 14 });
+        doc.fontSize(9.5).fillColor(INK).text(`•  ${bullet}`, PAGE_MARGIN + 14, doc.y, { width: CONTENT_WIDTH - 14, lineGap: 1.5 });
       });
+      doc.moveDown(0.15);
     });
-    doc.moveDown(0.3);
+    doc.moveDown(0.2);
 
     if (subsection.callout) {
       const style = styles[subsection.callout.severity] || styles.info;
@@ -302,8 +309,14 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     drawNumberedSection(doc, 3, 'Responsabilités', version.content?.responsabilites, accentColor);
 
     if (sections.length > 0) {
-      doc.fontSize(11).fillColor(accentColor).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.moveDown(0.4);
+      // Saut de page avant le corps de la procédure : c'est de loin la partie la plus longue du
+      // document (toutes les étapes détaillées), la faire démarrer sur une page fraîche évite
+      // qu'elle s'enchaîne directement à la suite d'Objet/Domaine/Responsabilités sans rupture
+      // visuelle nette.
+      doc.addPage();
+      doc.font('Body-Bold').fontSize(13).fillColor(accentColor).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.font('Body');
+      doc.moveDown(0.5);
       sections.forEach((section, index) => {
         tocEntries.push({ label: section.label, page: currentPageNumber });
         if (section.subsections?.length) {
@@ -317,10 +330,12 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     if (documentsAssocies.length > 0) {
       tocEntries.push({ label: 'Documents associés', page: currentPageNumber });
       doc
-        .fontSize(11)
+        .font('Body-Bold')
+        .fontSize(12)
         .fillColor(accentColor)
         .text(`${sections.length > 0 ? 5 : 4}. Documents associés`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.moveDown(0.2);
+      doc.font('Body');
+      doc.moveDown(0.3);
       documentsAssocies.forEach((name) => {
         doc.fontSize(10).fillColor(INK).text(`•  ${name}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
         doc.moveDown(0.15);
@@ -329,19 +344,25 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     }
 
     // Historique des versions en bas de document — traçabilité qualité, même esprit que le
-    // tableau "Historique des versions" déjà affiché sur ProcedureDetail.jsx.
+    // tableau "Historique des versions" déjà affiché sur ProcedureDetail.jsx. Sur sa propre page,
+    // même logique que le corps de la procédure ci-dessus : un tableau de traçabilité mélangé au
+    // texte qui précède se perdait visuellement plutôt que de se lire comme une annexe à part.
+    doc.addPage();
     tocEntries.push({ label: 'Historique des versions', page: currentPageNumber });
-    doc.moveDown(0.3);
-    doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(GRID).lineWidth(0.5).stroke();
-    doc.moveDown(0.6);
-    doc.fontSize(11).fillColor(accentColor).text('Historique des versions', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-    doc.moveDown(0.4);
+    doc.font('Body-Bold').fontSize(13).fillColor(accentColor).text('Historique des versions', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.font('Body');
+    doc.moveDown(0.5);
 
     (versions || []).forEach((v) => {
-      doc.fontSize(9.5).fillColor(INK).text(`v${v.version} — ${VERSION_STATUS_LABELS[v.status] || v.status}`, PAGE_MARGIN, doc.y, {
-        width: CONTENT_WIDTH,
-        continued: false,
-      });
+      doc
+        .font('Body-Bold')
+        .fontSize(9.5)
+        .fillColor(INK)
+        .text(`v${v.version} — ${VERSION_STATUS_LABELS[v.status] || v.status}`, PAGE_MARGIN, doc.y, {
+          width: CONTENT_WIDTH,
+          continued: false,
+        });
+      doc.font('Body');
       const authorLine = `Rédigée par ${v.author?.full_name || 'auteur inconnu'} le ${formatDate(v.created_at)}`;
       const validatorLine = v.validator?.full_name
         ? ` — ${v.status === 'rejected' ? 'Rejetée' : 'Validée'} par ${v.validator.full_name} le ${formatDate(v.validated_at)}`
@@ -358,7 +379,8 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     if (sommairePageIndex !== null) {
       doc.switchToPage(sommairePageIndex);
       doc.y = sommaireStartY;
-      doc.fontSize(13).fillColor(accentColor).text('Sommaire', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.font('Body-Bold').fontSize(14).fillColor(accentColor).text('Sommaire', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.font('Body');
       doc.moveDown(0.8);
       tocEntries.forEach((entry) => {
         const rowY = doc.y;
