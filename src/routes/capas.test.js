@@ -275,6 +275,97 @@ describe('PATCH /api/capas/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.description).toBe('modifié par le manager');
   });
+
+  it('refuse de clôturer une CAPA sans action corrective renseignée', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA sans action corrective' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Impossible de clôturer une CAPA sans action corrective renseignée.');
+  });
+
+  it("refuse de clôturer une CAPA dont l'efficacité n'a pas été vérifiée (même avec une action corrective renseignée)", async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA non vérifiée', corrective_action: 'Action corrective déjà appliquée' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Impossible de clôturer une CAPA dont l'efficacité de l'action corrective n'a pas été vérifiée.");
+  });
+
+  it('refuse de clôturer une CAPA dont la vérification a conclu à une action non efficace', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA inefficace', corrective_action: 'Action corrective appliquée' });
+
+    await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ effectiveness_verified: false });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Impossible de clôturer une CAPA dont l'efficacité de l'action corrective n'a pas été vérifiée.");
+  });
+
+  it('autorise la clôture quand action corrective et efficacité vérifiée sont déjà enregistrées', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA prête à clôturer', corrective_action: 'Action corrective appliquée' });
+
+    await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ effectiveness_verified: true });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+    expect(res.body.closed_at).not.toBeNull();
+  });
+
+  it('autorise la clôture quand action corrective et efficacité vérifiée sont envoyées dans la même requête', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA clôturée en un seul appel' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', corrective_action: 'Action corrective appliquée', effectiveness_verified: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+  });
 });
 
 describe('POST /api/capas/:id/comments', () => {

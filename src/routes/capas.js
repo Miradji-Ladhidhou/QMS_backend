@@ -471,6 +471,41 @@ router.patch(
     }
 
     if (update.status === 'closed') {
+      // Le statut "En vérification" (pending_verification) n'a de sens que si la clôture est
+      // réellement subordonnée à une vérification d'efficacité positive — sinon rien n'empêchait
+      // jusqu'ici de clôturer directement depuis "Ouverte", sans action corrective ni
+      // vérification, ce qui vide de son sens la clause 10.2.1(f) de l'ISO 9001 ("vérifier
+      // l'efficacité de toute action corrective entreprise"). Les deux champs peuvent arriver
+      // soit dans CETTE requête (effectiveness_verified et corrective_action patchés en même
+      // temps que status), soit avoir déjà été enregistrés avant — d'où la relecture de la ligne
+      // existante quand l'un des deux n'est pas fourni ici.
+      let effectivenessVerified = update.effectiveness_verified;
+      let correctiveAction = update.corrective_action;
+
+      if (effectivenessVerified === undefined || correctiveAction === undefined) {
+        const { data: existing, error: fetchError } = await supabase
+          .from('capas')
+          .select('effectiveness_verified, corrective_action')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', req.params.id)
+          .single();
+
+        if (fetchError || !existing) {
+          return res.status(404).json({ error: 'CAPA introuvable.' });
+        }
+        if (effectivenessVerified === undefined) effectivenessVerified = existing.effectiveness_verified;
+        if (correctiveAction === undefined) correctiveAction = existing.corrective_action;
+      }
+
+      if (!correctiveAction) {
+        return res.status(400).json({ error: 'Impossible de clôturer une CAPA sans action corrective renseignée.' });
+      }
+      if (effectivenessVerified !== true) {
+        return res
+          .status(400)
+          .json({ error: "Impossible de clôturer une CAPA dont l'efficacité de l'action corrective n'a pas été vérifiée." });
+      }
+
       update.closed_at = new Date().toISOString();
     }
 
