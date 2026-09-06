@@ -14,7 +14,17 @@ import {
   WidthType,
   ShadingType,
   VerticalAlign,
+  TableLayoutType,
 } from 'docx';
+
+// Sans columnWidths + layout FIXED explicites, Word recalcule les colonnes selon le contenu de
+// CHAQUE ligne indépendamment (layout "autofit" par défaut) — une valeur longue (ex. le titre
+// complet d'une procédure dans identityTable) pouvait alors écraser la largeur du reste du
+// tableau, provoquant des colonnes décalées d'une ligne à l'autre et des cellules qui
+// s'étirent sur plusieurs lignes de texte, gonflant le tableau sur 2-3 pages. Largeur calquée
+// sur la page A4 par défaut de docx.js avec ses marges par défaut (1 pouce) — ce fichier ne
+// redéfinit ni l'une ni l'autre.
+const TABLE_WIDTH_DXA = 9026;
 
 // Un moteur de rendu commun paramétré par un "thème" par preset, plutôt que 4 fichiers
 // dupliqués : les 4 styles diffèrent par des CHOIX (police, bandeau vs texte plat, puce "o" vs
@@ -262,8 +272,9 @@ function titleBlockParagraphs(theme, { procedureNumber, procedureTitle, tenantNa
   ];
 }
 
-function tableCellText(text, { header, theme } = {}) {
+function tableCellText(text, { header, theme, width } = {}) {
   return new TableCell({
+    width: width ? { size: width, type: WidthType.DXA } : undefined,
     shading: header ? { type: ShadingType.CLEAR, fill: theme.tableHeader.background } : undefined,
     verticalAlign: VerticalAlign.CENTER,
     margins: { top: 60, bottom: 60, left: 100, right: 100 },
@@ -282,34 +293,48 @@ function identityTable(theme, { procedure, version }) {
     ['Validée par', version.validator?.full_name || (version.status === 'approved' ? '—' : 'en attente')],
     ['Prochaine révision', formatDate(procedure.next_review_date)],
   ];
+  const columnWidths = [Math.round(TABLE_WIDTH_DXA * 0.25), Math.round(TABLE_WIDTH_DXA * 0.75)];
   return new Table({
-    width: { size: 100, type: WidthType.PERCENTAGE },
+    width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA },
+    columnWidths,
+    layout: TableLayoutType.FIXED,
     rows: rows.map(
       ([label, value]) =>
         new TableRow({
-          children: [tableCellText(label, { header: true, theme }), tableCellText(String(value), { theme })],
+          children: [
+            tableCellText(label, { header: true, theme, width: columnWidths[0] }),
+            tableCellText(String(value), { theme, width: columnWidths[1] }),
+          ],
         })
     ),
   });
 }
 
 function historyTable(theme, versions) {
+  const columnWidths = [0.1, 0.16, 0.28, 0.16, 0.3].map((fraction) => Math.round(TABLE_WIDTH_DXA * fraction));
   const headerRow = new TableRow({
-    children: ['Version', 'Statut', 'Rédigée par', 'Date', 'Validée par'].map((text) => tableCellText(text, { header: true, theme })),
+    children: ['Version', 'Statut', 'Rédigée par', 'Date', 'Validée par'].map((text, i) =>
+      tableCellText(text, { header: true, theme, width: columnWidths[i] })
+    ),
   });
   const rows = (versions || []).map(
     (v) =>
       new TableRow({
         children: [
-          tableCellText(`v${v.version}`, { theme }),
-          tableCellText(VERSION_STATUS_LABELS[v.status] || v.status, { theme }),
-          tableCellText(v.author?.full_name || 'auteur inconnu', { theme }),
-          tableCellText(formatDate(v.created_at), { theme }),
-          tableCellText(v.validator?.full_name || '—', { theme }),
+          tableCellText(`v${v.version}`, { theme, width: columnWidths[0] }),
+          tableCellText(VERSION_STATUS_LABELS[v.status] || v.status, { theme, width: columnWidths[1] }),
+          tableCellText(v.author?.full_name || 'auteur inconnu', { theme, width: columnWidths[2] }),
+          tableCellText(formatDate(v.created_at), { theme, width: columnWidths[3] }),
+          tableCellText(v.validator?.full_name || '—', { theme, width: columnWidths[4] }),
         ],
       })
   );
-  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...rows] });
+  return new Table({
+    width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA },
+    columnWidths,
+    layout: TableLayoutType.FIXED,
+    rows: [headerRow, ...rows],
+  });
 }
 
 function documentsAssociesParagraphs(documentsAssocies) {
