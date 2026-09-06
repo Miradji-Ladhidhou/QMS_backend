@@ -288,6 +288,32 @@ describe('POST /api/kpis/:id/create-capa — lien bidirectionnel', () => {
     expect(kpiDetail.body.linked_capa.id).toBe(res.body.id);
   });
 
+  it('assigned_to explicite prime sur le responsable du KPI ; reste null si aucun des deux', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [owner, assignee] = tenant.users;
+    const kpiWithOwner = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI avec responsable', owner: owner.id });
+
+    const withExplicitAssignee = await request(app)
+      .post(`/api/kpis/${kpiWithOwner.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA', assigned_to: assignee.id });
+    expect(withExplicitAssignee.body.assigned_to).toBe(assignee.id);
+
+    const kpiWithoutOwner = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI sans responsable' });
+
+    const withoutOwnerOrAssignee = await request(app)
+      .post(`/api/kpis/${kpiWithoutOwner.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA' });
+    expect(withoutOwnerOrAssignee.body.assigned_to).toBeNull();
+  });
+
   it('refuse un member, 404 sur un KPI d’un autre tenant, et exige un titre', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
