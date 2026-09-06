@@ -357,7 +357,7 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     await request(app)
       .patch(`/api/complaints/${complaint.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'resolved' });
+      .send({ status: 'resolved', resolution: 'Réclamation traitée.' });
     const afterResolved = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterResolved.body.overdue.total).toBe(0);
   });

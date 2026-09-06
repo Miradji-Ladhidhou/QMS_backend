@@ -98,7 +98,7 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/complaints/${willBeResolved.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'resolved' });
+      .send({ status: 'resolved', resolution: 'Réclamation traitée.' });
 
     const snapshot = await buildQmsSnapshot(tenant.tenantId, { periodStart, periodEnd });
     expect(snapshot.complaints_period.received).toBe(2);

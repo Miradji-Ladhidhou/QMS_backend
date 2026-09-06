@@ -89,6 +89,61 @@ describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA',
     expect(managerUpdate.body.status).toBe('resolved');
     expect(managerUpdate.body.customer_satisfied).toBe(true);
   });
+
+  it('refuse de passer en "Résolue" ou "Clôturée" sans résolution renseignée', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+
+    const resolvedAttempt = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved' });
+    expect(resolvedAttempt.status).toBe(400);
+    expect(resolvedAttempt.body.error).toBe(
+      'Impossible de marquer cette réclamation comme résolue sans description de la résolution.'
+    );
+
+    const closedAttempt = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    expect(closedAttempt.status).toBe(400);
+    expect(closedAttempt.body.error).toBe(
+      'Impossible de marquer cette réclamation comme résolue sans description de la résolution.'
+    );
+  });
+
+  it('refuse de clôturer sans avoir renseigné la satisfaction du client, même avec une résolution', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+
+    await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved', resolution: 'Produit remplacé.' });
+
+    const res = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Impossible de clôturer une réclamation sans avoir renseigné la satisfaction du client.');
+  });
+
+  it('autorise la clôture même quand le client se dit insatisfait (customer_satisfied: false n’est pas bloquant)', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', resolution: 'Produit remplacé.', customer_satisfied: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+    expect(res.body.customer_satisfied).toBe(false);
+  });
 });
 
 describe('POST /api/complaints/:id/create-capa — lien bidirectionnel', () => {

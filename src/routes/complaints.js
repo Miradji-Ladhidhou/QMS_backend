@@ -243,6 +243,45 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    if (update.status === 'resolved' || update.status === 'closed') {
+      // "Résolue" exige d'avoir décrit COMMENT le problème a été traité ; "Clôturée" exige en
+      // plus d'avoir interrogé le client (customer_satisfied renseigné, peu importe la valeur).
+      // Contrairement à l'efficacité d'une CAPA (un verdict interne entièrement sous notre
+      // contrôle), la satisfaction du client dépend d'un facteur externe — on n'exige donc pas
+      // customer_satisfied === true, seulement qu'il ait été DEMANDÉ : bloquer la clôture sur une
+      // réponse négative laisserait des dossiers ouverts indéfiniment pour une raison hors de
+      // notre portée (voir plutôt le bandeau "envisagez une CAPA" côté écran pour ce cas).
+      let resolution = update.resolution;
+      let customerSatisfied = update.customer_satisfied;
+
+      if (resolution === undefined || customerSatisfied === undefined) {
+        const { data: existing, error: fetchError } = await supabase
+          .from('complaints')
+          .select('resolution, customer_satisfied')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', req.params.id)
+          .single();
+
+        if (fetchError || !existing) {
+          return res.status(404).json({ error: 'Réclamation introuvable.' });
+        }
+        if (resolution === undefined) resolution = existing.resolution;
+        if (customerSatisfied === undefined) customerSatisfied = existing.customer_satisfied;
+      }
+
+      if (!resolution) {
+        return res
+          .status(400)
+          .json({ error: 'Impossible de marquer cette réclamation comme résolue sans description de la résolution.' });
+      }
+
+      if (update.status === 'closed' && customerSatisfied === null) {
+        return res
+          .status(400)
+          .json({ error: 'Impossible de clôturer une réclamation sans avoir renseigné la satisfaction du client.' });
+      }
+    }
+
     const { data, error } = await supabase
       .from('complaints')
       .update(update)

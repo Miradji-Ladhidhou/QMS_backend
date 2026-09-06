@@ -207,7 +207,7 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     await request(app)
       .patch(`/api/complaints/${complaint.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'resolved' });
+      .send({ status: 'resolved', resolution: 'Livraison renvoyée en express.' });
     const afterResolved = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterResolved.body.items.some((i) => i.type === 'complaint' && i.id === complaint.body.id)).toBe(false);
   });
