@@ -12,6 +12,7 @@ const GOOD = '#059669';
 const WARN = '#d97706';
 const BAD = '#dc2626';
 const NEVER = '#94a3b8';
+const NOT_APPLICABLE = '#e2e8f0';
 
 const PAGE_MARGIN = 40;
 // Paysage : une matrice personnel × formations est presque toujours plus large que haute.
@@ -29,6 +30,7 @@ const STATUS_STYLES = {
   due_soon: { color: WARN, label: 'Bientôt' },
   expired: { color: BAD, label: 'Expiré' },
   never_done: { color: NEVER, label: 'Jamais' },
+  not_applicable: { color: NOT_APPLICABLE, label: 'Non concerné' },
 };
 
 function formatDateTime(dateStr) {

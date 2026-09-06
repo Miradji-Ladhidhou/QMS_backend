@@ -17,6 +17,9 @@ const STATUS = {
   DUE_SOON: 'due_soon',
   EXPIRED: 'expired',
   NEVER_DONE: 'never_done',
+  // Poste non concerné par cette formation (voir required_job_titles) — distinct de
+  // NEVER_DONE, qui doit rester réservé à un vrai manque pour un poste qui en a besoin.
+  NOT_APPLICABLE: 'not_applicable',
 };
 
 router.use(requireAuth);
@@ -26,6 +29,33 @@ function addMonths(dateStr, months) {
   const date = new Date(dateStr);
   date.setMonth(date.getMonth() + months);
   return date.toISOString().slice(0, 10);
+}
+
+function isValidJobTitlesArray(value) {
+  return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && entry.trim().length > 0);
+}
+
+function normalizeJobTitles(value) {
+  const seen = new Set();
+  const result = [];
+  for (const raw of value) {
+    const trimmed = raw.trim();
+    const key = trimmed.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(trimmed);
+    }
+  }
+  return result;
+}
+
+// Comparaison insensible à la casse/espaces : job_title est un champ texte libre (saisi sur la
+// fiche utilisateur/salarié), une formation exigée pour "Opérateur" doit aussi matcher
+// " opérateur " ou "OPÉRATEUR" plutôt que de rater une correspondance sur un détail de saisie.
+function matchesJobTitle(personJobTitle, requiredJobTitles) {
+  if (!personJobTitle) return false;
+  const normalized = personJobTitle.trim().toLowerCase();
+  return requiredJobTitles.some((title) => title.trim().toLowerCase() === normalized);
 }
 
 function isoDateInDays(days) {
@@ -101,11 +131,16 @@ router.get('/', async (req, res) => {
 async function buildMatrix(tenantId, userId, userRole) {
   const [{ data: users, error: usersError }, { data: employees, error: employeesError }, { data: rawTrainings, error: trainingsError }] =
     await Promise.all([
-      supabase.from('users').select('id, full_name').eq('tenant_id', tenantId).eq('training_exempt', false),
-      supabase.from('employees').select('id, full_name').eq('tenant_id', tenantId).eq('is_active', true).eq('training_exempt', false),
+      supabase.from('users').select('id, full_name, job_title').eq('tenant_id', tenantId).eq('training_exempt', false),
+      supabase
+        .from('employees')
+        .select('id, full_name, job_title')
+        .eq('tenant_id', tenantId)
+        .eq('is_active', true)
+        .eq('training_exempt', false),
       supabase
         .from('trainings')
-        .select('id, title, frequency_months, category_id, category:categories(id, is_restricted)')
+        .select('id, title, frequency_months, required_job_titles, category_id, category:categories(id, is_restricted)')
         .eq('tenant_id', tenantId),
     ]);
 
@@ -124,42 +159,49 @@ async function buildMatrix(tenantId, userId, userRole) {
   const soonThreshold = isoDateInDays(RENEWAL_WINDOW_DAYS);
 
   const people = [
-    ...users.map((user) => ({ id: user.id, full_name: user.full_name, kind: 'user' })),
-    ...employees.map((employee) => ({ id: employee.id, full_name: employee.full_name, kind: 'employee' })),
+    ...users.map((user) => ({ id: user.id, full_name: user.full_name, job_title: user.job_title, kind: 'user' })),
+    ...employees.map((employee) => ({ id: employee.id, full_name: employee.full_name, job_title: employee.job_title, kind: 'employee' })),
   ];
 
-  return trainings.map((training) => ({
-    training: { id: training.id, title: training.title },
-    people: people.map((person) => {
-      const key = `${training.id}:${person.kind === 'user' ? 'u' : 'e'}:${person.id}`;
-      const record = latestByPair.get(key);
+  return trainings.map((training) => {
+    const requiredJobTitles = training.required_job_titles || [];
+    return {
+      training: { id: training.id, title: training.title, required_job_titles: requiredJobTitles },
+      people: people.map((person) => {
+        const key = `${training.id}:${person.kind === 'user' ? 'u' : 'e'}:${person.id}`;
+        const record = latestByPair.get(key);
 
-      if (!record) {
+        if (!record) {
+          // Un poste non concerné (required_job_titles non vide et n'incluant pas ce poste)
+          // reste distinct d'un vrai manque — jamais l'inverse : si la personne a malgré tout
+          // une réalisation, son statut réel (branche ci-dessous) prime toujours sur cette règle.
+          const notApplicable = requiredJobTitles.length > 0 && !matchesJobTitle(person.job_title, requiredJobTitles);
+          return {
+            person,
+            status: notApplicable ? STATUS.NOT_APPLICABLE : STATUS.NEVER_DONE,
+            last_completed_at: null,
+            next_due_date: null,
+          };
+        }
+
+        let status = STATUS.UP_TO_DATE;
+        if (record.next_due_date) {
+          if (record.next_due_date < today) {
+            status = STATUS.EXPIRED;
+          } else if (record.next_due_date <= soonThreshold) {
+            status = STATUS.DUE_SOON;
+          }
+        }
+
         return {
           person,
-          status: STATUS.NEVER_DONE,
-          last_completed_at: null,
-          next_due_date: null,
+          status,
+          last_completed_at: record.completed_at,
+          next_due_date: record.next_due_date,
         };
-      }
-
-      let status = STATUS.UP_TO_DATE;
-      if (record.next_due_date) {
-        if (record.next_due_date < today) {
-          status = STATUS.EXPIRED;
-        } else if (record.next_due_date <= soonThreshold) {
-          status = STATUS.DUE_SOON;
-        }
-      }
-
-      return {
-        person,
-        status,
-        last_completed_at: record.completed_at,
-        next_due_date: record.next_due_date,
-      };
-    }),
-  }));
+      }),
+    };
+  });
 }
 
 router.get('/matrix', async (req, res) => {
@@ -274,6 +316,7 @@ router.post(
     body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
   requireValidCategoryId('training'),
   async (req, res) => {
@@ -291,6 +334,7 @@ router.post(
       duration,
       description,
       category_id: categoryId,
+      required_job_titles: requiredJobTitles,
     } = req.body;
 
     const { data, error } = await supabase
@@ -305,6 +349,7 @@ router.post(
         duration: duration || null,
         description: description || null,
         category_id: categoryId || null,
+        required_job_titles: requiredJobTitles ? normalizeJobTitles(requiredJobTitles) : [],
       })
       .select()
       .single();
@@ -363,6 +408,7 @@ router.patch(
     body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
   requireValidCategoryId('training'),
   async (req, res) => {
@@ -376,6 +422,9 @@ router.patch(
       if (field in req.body) {
         update[field] = req.body[field] || null;
       }
+    }
+    if ('required_job_titles' in req.body) {
+      update.required_job_titles = normalizeJobTitles(req.body.required_job_titles);
     }
 
     if (Object.keys(update).length === 0) {
@@ -616,6 +665,8 @@ router.patch(
   [
     body('completed_at').optional({ values: 'falsy' }).isISO8601().withMessage('Date invalide.'),
     body('certificate_url').optional({ values: 'falsy' }).trim(),
+    body('evaluation_result').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
+    body('evaluation_notes').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -623,7 +674,12 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    if (!('completed_at' in req.body) && !('certificate_url' in req.body)) {
+    if (
+      !('completed_at' in req.body) &&
+      !('certificate_url' in req.body) &&
+      !('evaluation_result' in req.body) &&
+      !('evaluation_notes' in req.body)
+    ) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
@@ -647,6 +703,34 @@ router.patch(
       update.next_due_date = training.frequency_months
         ? addMonths(req.body.completed_at, training.frequency_months)
         : null;
+    }
+    if ('evaluation_result' in req.body) update.evaluation_result = req.body.evaluation_result;
+    if ('evaluation_notes' in req.body) update.evaluation_notes = req.body.evaluation_notes || null;
+
+    if ('evaluation_result' in update && update.evaluation_result !== null) {
+      // Même règle que CAPA/Réclamations : un verdict d'efficacité (true ou false) sans
+      // justification écrite ne tient pas en audit — voir routes/capas.js#PATCH pour le modèle.
+      let evaluationNotes = update.evaluation_notes;
+      if (evaluationNotes === undefined) {
+        const { data: existing, error: fetchError } = await supabase
+          .from('training_records')
+          .select('evaluation_notes')
+          .eq('tenant_id', req.tenantId)
+          .eq('training_id', req.params.id)
+          .eq('id', req.params.recordId)
+          .single();
+
+        if (fetchError || !existing) {
+          return res.status(404).json({ error: 'Réalisation introuvable.' });
+        }
+        evaluationNotes = existing.evaluation_notes;
+      }
+
+      if (!evaluationNotes) {
+        return res
+          .status(400)
+          .json({ error: "Merci de justifier le résultat de l'évaluation par un commentaire." });
+      }
     }
 
     const { data, error } = await supabase

@@ -695,6 +695,19 @@ create unique index training_records_employee_unique
   on training_records (tenant_id, training_id, employee_id, completed_at)
   where employee_id is not null;
 
+-- null = non évaluée (voir routes/trainings.js#/:id/records/:recordId) — même sémantique
+-- tri-état que capas.effectiveness_verified : jusqu'ici une réalisation ne traçait que la
+-- présence (completed_at), jamais si la formation a réellement été efficace (ISO 9001 7.2 d).
+alter table training_records add column evaluation_result boolean;
+alter table training_records add column evaluation_notes text;
+
+-- Intitulés de poste (job_title, déjà libre sur users/employees) concernés par cette formation
+-- — voir buildMatrix dans routes/trainings.js. Tableau vide (défaut) = s'applique à tout le
+-- monde, comportement identique à avant cette colonne : jusqu'ici TOUTE formation croisait
+-- TOUTE personne non exemptée dans la matrice, sans distinction de poste (ISO 9001 7.2 a/b —
+-- impossible de définir un besoin de compétence propre à un poste).
+alter table trainings add column required_job_titles jsonb not null default '[]';
+
 -- Classement arborescent des KPI (ex : "Contrôle commande" > "Contrôle 2026" > les KPI de
 -- 2026) — parent_id nul = dossier racine. on delete cascade sur parent_id : supprimer un
 -- dossier supprime ses sous-dossiers, mais pas les KPI qu'il contenait (voir kpis.folder_id

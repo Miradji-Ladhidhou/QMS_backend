@@ -90,3 +90,109 @@ describe('GET /api/trainings/matrix et /upcoming-renewals — catégorie restrei
     expect(after.body.some((entry) => entry.training?.id === training.id)).toBe(true);
   });
 });
+
+describe("PATCH /api/trainings/:id/records/:recordId — évaluation d'efficacité", () => {
+  it('refuse un résultat (true ou false) sans commentaire de justification', async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token);
+    const record = await request(app)
+      .post(`/api/trainings/${training.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: tenant.admin.id });
+
+    const resTrue = await request(app)
+      .patch(`/api/trainings/${training.id}/records/${record.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ evaluation_result: true });
+    expect(resTrue.status).toBe(400);
+    expect(resTrue.body.error).toBe("Merci de justifier le résultat de l'évaluation par un commentaire.");
+
+    const resFalse = await request(app)
+      .patch(`/api/trainings/${training.id}/records/${record.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ evaluation_result: false });
+    expect(resFalse.status).toBe(400);
+    expect(resFalse.body.error).toBe("Merci de justifier le résultat de l'évaluation par un commentaire.");
+  });
+
+  it('autorise un résultat avec commentaire, dans la même requête ou après coup', async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token);
+    const record = await request(app)
+      .post(`/api/trainings/${training.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: tenant.admin.id });
+
+    const res = await request(app)
+      .patch(`/api/trainings/${training.id}/records/${record.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ evaluation_result: true, evaluation_notes: 'Quiz réussi à 90%.' });
+    expect(res.status).toBe(200);
+    expect(res.body.evaluation_result).toBe(true);
+
+    // Renseigné après coup (déjà en base) : re-sélectionner le même résultat sans renvoyer les
+    // notes doit rester accepté (relecture en base, voir routes/trainings.js).
+    const resAgain = await request(app)
+      .patch(`/api/trainings/${training.id}/records/${record.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ evaluation_result: true });
+    expect(resAgain.status).toBe(200);
+  });
+});
+
+describe('GET /api/trainings/matrix — exigences de formation par poste (required_job_titles)', () => {
+  it('sans exigence (tableau vide), tout le monde apparaît en "never_done" — comportement inchangé', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const training = await createTraining(tenant.admin.token);
+
+    const matrix = await request(app).get('/api/trainings/matrix').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const row = matrix.body.find((r) => r.training.id === training.id);
+    const entry = row.people.find((p) => p.person.id === manager.id);
+    expect(entry.status).toBe('never_done');
+  });
+
+  it('avec une exigence, seul le poste concerné apparaît en "never_done" — les autres en "not_applicable"', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [operateur, administratif] = tenant.users;
+    await request(app)
+      .patch(`/api/users/${operateur.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ job_title: 'Opérateur' })
+      .expect(200);
+    await request(app)
+      .patch(`/api/users/${administratif.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ job_title: 'Assistant administratif' })
+      .expect(200);
+
+    const training = await createTraining(tenant.admin.token, { required_job_titles: ['Opérateur'] });
+
+    const matrix = await request(app).get('/api/trainings/matrix').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const row = matrix.body.find((r) => r.training.id === training.id);
+    expect(row.training.required_job_titles).toEqual(['Opérateur']);
+    expect(row.people.find((p) => p.person.id === operateur.id).status).toBe('never_done');
+    expect(row.people.find((p) => p.person.id === administratif.id).status).toBe('not_applicable');
+  });
+
+  it('une réalisation existante reste affichée même si le poste ne correspond plus à l’exigence', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const person = tenant.users[0];
+    await request(app)
+      .patch(`/api/users/${person.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ job_title: 'Assistant administratif' })
+      .expect(200);
+
+    const training = await createTraining(tenant.admin.token, { required_job_titles: ['Opérateur'] });
+    await request(app)
+      .post(`/api/trainings/${training.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: person.id })
+      .expect(201);
+
+    const matrix = await request(app).get('/api/trainings/matrix').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const row = matrix.body.find((r) => r.training.id === training.id);
+    expect(row.people.find((p) => p.person.id === person.id).status).toBe('up_to_date');
+  });
+});
