@@ -140,6 +140,51 @@ describe("PATCH /api/trainings/:id/records/:recordId — évaluation d'efficacit
   });
 });
 
+describe('POST/PATCH /api/trainings — required_job_titles : normalisation et validation', () => {
+  it('dédoublonne en ignorant la casse/espaces, en gardant la première graphie rencontrée', async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token, {
+      required_job_titles: ['Opérateur', ' opérateur ', 'OPÉRATEUR', 'Chef d’équipe'],
+    });
+    expect(training.required_job_titles).toEqual(['Opérateur', 'Chef d’équipe']);
+  });
+
+  it('refuse un tableau contenant une valeur non-chaîne ou une chaîne vide', async () => {
+    tenant = await createTenant();
+    const badType = await request(app)
+      .post('/api/trainings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Formation test', required_job_titles: ['Opérateur', 42] });
+    expect(badType.status).toBe(400);
+
+    const emptyString = await request(app)
+      .post('/api/trainings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Formation test', required_job_titles: ['   '] });
+    expect(emptyString.status).toBe(400);
+
+    const notArray = await request(app)
+      .post('/api/trainings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Formation test', required_job_titles: 'Opérateur' });
+    expect(notArray.status).toBe(400);
+  });
+
+  it('PATCH /:id met à jour et normalise required_job_titles sur une formation existante', async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token);
+    expect(training.required_job_titles).toEqual([]);
+
+    const res = await request(app)
+      .patch(`/api/trainings/${training.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ required_job_titles: ['Opérateur', 'opérateur'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.required_job_titles).toEqual(['Opérateur']);
+  });
+});
+
 describe('GET /api/trainings/matrix — exigences de formation par poste (required_job_titles)', () => {
   it('sans exigence (tableau vide), tout le monde apparaît en "never_done" — comportement inchangé', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
