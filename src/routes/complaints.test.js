@@ -144,6 +144,20 @@ describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA',
     expect(res.body.status).toBe('closed');
     expect(res.body.customer_satisfied).toBe(false);
   });
+
+  it('autorise la clôture en un seul appel quand résolution et satisfaction client sont fournies ensemble', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', resolution: 'Produit remplacé.', customer_satisfied: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+    expect(res.body.customer_satisfied).toBe(true);
+  });
 });
 
 describe('POST /api/complaints/:id/create-capa — lien bidirectionnel', () => {
