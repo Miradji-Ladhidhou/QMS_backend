@@ -1364,6 +1364,31 @@ create table google_drive_connections (
   updated_at           timestamptz not null default now()
 );
 
+-- Politique qualité (ISO 9001 §5.2). Un texte par tenant, versionné dans le temps : la
+-- version "en vigueur" est simplement la plus récente par created_at, pas de pointeur séparé
+-- (contrairement à procedures.current_version_id) — inutile ici car il n'y a jamais de version
+-- "en attente" à distinguer de la version courante, la direction publie directement (pas de
+-- workflow soumis/validé/rejeté séparé comme pour une procédure).
+create table quality_policy_versions (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  content     text not null,
+  created_by  uuid references users (id) on delete set null,
+  created_at  timestamptz not null default now()
+);
+
+-- Accusé de lecture de la version en vigueur — même principe que procedure_acknowledgments :
+-- une nouvelle version remet tout le monde à "pas encore lu" sans purge ni job, simplement
+-- parce que quality_policy_version_id change.
+create table quality_policy_acknowledgments (
+  id                        uuid primary key default gen_random_uuid(),
+  tenant_id                 uuid not null references tenants (id) on delete cascade,
+  quality_policy_version_id uuid not null references quality_policy_versions (id) on delete cascade,
+  user_id                   uuid not null references users (id) on delete cascade,
+  acknowledged_at           timestamptz not null default now(),
+  unique (quality_policy_version_id, user_id)
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1570,6 +1595,10 @@ create index idx_super_admin_audit_log_created_at on super_admin_audit_log (crea
 create index idx_super_admin_audit_log_target on super_admin_audit_log (target_type, target_id);
 
 create index idx_dashboard_metric_snapshots_tenant_date on dashboard_metric_snapshots (tenant_id, snapshot_date desc);
+
+create index idx_quality_policy_versions_tenant_created on quality_policy_versions (tenant_id, created_at desc);
+create index idx_quality_policy_acknowledgments_tenant_id on quality_policy_acknowledgments (tenant_id);
+create index idx_quality_policy_acknowledgments_version_id on quality_policy_acknowledgments (quality_policy_version_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -1928,6 +1957,8 @@ alter table generic_category_permissions enable row level security;
 alter table tenant_menu_settings enable row level security;
 alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
+alter table quality_policy_versions enable row level security;
+alter table quality_policy_acknowledgments enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2249,6 +2280,16 @@ create policy tenant_storage_settings_isolation on tenant_storage_settings
   with check (tenant_id = auth_tenant_id());
 
 create policy google_drive_connections_isolation on google_drive_connections
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy quality_policy_versions_isolation on quality_policy_versions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy quality_policy_acknowledgments_isolation on quality_policy_acknowledgments
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
