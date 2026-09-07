@@ -392,7 +392,7 @@ router.post(
   async (req, res) => {
     const { data: analysis, error: fetchError } = await supabase
       .from('qqoqccp_analyses')
-      .select('id, title')
+      .select('*')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -404,6 +404,13 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    // Même garde que POST /:id/generate : sans elle, une CAPA pouvait naître d'une analyse
+    // totalement vide, contournant complètement la méthode structurée que l'outil impose.
+    const filledCount = QQOQCCP_FIELDS.filter((field) => analysis[field]).length;
+    if (filledCount < 3) {
+      return res.status(400).json({ error: 'Remplissez au moins 3 des 7 questions avant de créer une CAPA depuis cette analyse.' });
     }
 
     const {
@@ -471,6 +478,63 @@ router.post(
     }
 
     res.status(201).json(capa);
+  }
+);
+
+// POST /api/qqoqccp/:id/close — clôture une analyse en concluant qu'aucune CAPA n'est
+// nécessaire. Jusqu'ici "validated" ne pouvait signifier qu'"a une CAPA liée" (create-capa
+// ci-dessus) : une analyse honnêtement conclue "rien à faire" restait bloquée en draft/
+// ai_generated indéfiniment, indiscernable d'une analyse abandonnée. Réservé admin/manager,
+// comme la vérification d'efficacité d'une CAPA (routes/capas.js) : conclure qu'il n'y a rien à
+// faire est un jugement qui mérite la même rigueur qu'un jugement d'efficacité.
+router.post(
+  '/:id/close',
+  requireRole('admin', 'manager'),
+  [body('closure_reason').trim().notEmpty().withMessage('Merci de justifier la clôture sans action par un commentaire.')],
+  async (req, res) => {
+    const { data: analysis, error: fetchError } = await supabase
+      .from('qqoqccp_analyses')
+      .select('*')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !analysis) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    if (analysis.status === 'validated') {
+      return res.status(409).json({ error: 'Cette analyse a déjà donné lieu à une CAPA — impossible de la clôturer sans action.' });
+    }
+    if (analysis.status === 'closed') {
+      return res.status(409).json({ error: 'Cette analyse est déjà clôturée.' });
+    }
+
+    // Même garde que POST /:id/generate et POST /:id/create-capa : conclure "rien à faire" sur
+    // une analyse quasiment vide ne serait pas une vraie conclusion.
+    const filledCount = QQOQCCP_FIELDS.filter((field) => analysis[field]).length;
+    if (filledCount < 3) {
+      return res.status(400).json({ error: 'Remplissez au moins 3 des 7 questions avant de clôturer cette analyse.' });
+    }
+
+    const { data, error } = await supabase
+      .from('qqoqccp_analyses')
+      .update({ status: 'closed', closure_reason: req.body.closure_reason })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (error || !data) {
+      return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+    }
+
+    res.json(data);
   }
 );
 

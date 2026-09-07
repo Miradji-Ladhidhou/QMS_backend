@@ -335,6 +335,16 @@ create table qqoqccp_analyses (
 -- qqoqccp_analyses est définie plus bas dans ce fichier, donc pas encore créée à ce stade.
 alter table capas add column qqoqccp_analysis_id uuid references qqoqccp_analyses (id) on delete set null;
 
+-- Clôture sans action corrective (voir routes/qqoqccp.js#/:id/close) : une analyse peut
+-- légitimement conclure qu'aucune CAPA n'est nécessaire — jusqu'ici "validated" ne pouvait
+-- signifier qu'"a une CAPA liée" (create-capa ci-dessus), laissant une analyse honnêtement
+-- conclue "rien à faire" bloquée indéfiniment en draft/ai_generated, indiscernable d'une
+-- analyse simplement abandonnée.
+alter table qqoqccp_analyses drop constraint qqoqccp_analyses_status_check;
+alter table qqoqccp_analyses add constraint qqoqccp_analyses_status_check
+  check (status in ('draft', 'ai_generated', 'validated', 'closed'));
+alter table qqoqccp_analyses add column closure_reason text;
+
 -- Audits internes (ISO 9001) : planifier un audit, le mener, conclure. service_id désigne le
 -- service audité (métadonnée/filtre, pas une restriction d'accès — un audit concerne le SMQ
 -- dans son ensemble). lead_auditor est nullable : un audit peut être planifié avant d'avoir
