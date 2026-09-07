@@ -1173,13 +1173,18 @@ router.post('/:id/versions/:versionId/submit', async (req, res) => {
 
 // POST /api/procedures/:id/versions/:versionId/validate — même principe que la vérification
 // d'efficacité CAPA (requireRole admin/manager) : pas d'approbateur désigné à l'avance,
-// n'importe quel admin/manager du tenant peut valider une version en attente.
+// n'importe quel admin/manager du tenant peut valider une version en attente — sauf celui qui
+// l'a rédigée (author_id) : la validation est censée être une revue indépendante (§7.5.2 b),
+// se valider soi-même viderait cette étape de son sens.
 router.post('/:id/versions/:versionId/validate', requireRole(...MANAGER_ROLES), async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
 
   if (version.status !== 'pending') {
     return res.status(409).json({ error: "Cette version n'est pas en attente de validation." });
+  }
+  if (version.author_id === req.user.id) {
+    return res.status(403).json({ error: 'Vous ne pouvez pas valider une version que vous avez rédigée vous-même.' });
   }
 
   const validatedAt = new Date().toISOString();
@@ -1283,7 +1288,7 @@ router.post('/:id/acknowledge', async (req, res) => {
 router.post(
   '/:id/obsolete',
   requireRole(...MANAGER_ROLES),
-  [body('reason').optional({ values: 'falsy' }).trim()],
+  [body('reason').trim().notEmpty().withMessage('Un motif est requis pour mettre une procédure à l’obsolescence.')],
   async (req, res) => {
     const { data: procedure, error: fetchError } = await supabase
       .from('procedures')
@@ -1299,11 +1304,16 @@ router.post(
       return res.status(409).json({ error: 'Cette procédure est déjà obsolète.' });
     }
 
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
     const { data, error } = await supabase
       .from('procedures')
       .update({
         status: 'obsolete',
-        obsolete_reason: req.body.reason || null,
+        obsolete_reason: req.body.reason,
         obsoleted_at: new Date().toISOString(),
         obsoleted_by: req.user.id,
       })

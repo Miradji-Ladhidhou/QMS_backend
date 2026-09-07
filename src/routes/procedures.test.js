@@ -357,7 +357,8 @@ describe('Workflow submit / validate / reject', () => {
   });
 
   it('admin valide : la procédure passe "approved" et current_version_id est mis à jour', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-022');
     const version = await createVersion(tenant.admin.token, procedure.id);
     await request(app)
@@ -367,16 +368,31 @@ describe('Workflow submit / validate / reject', () => {
 
     const res = await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`);
+      .set('Authorization', `Bearer ${validator.token}`);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('approved');
-    expect(res.body.validator_id).toBe(tenant.admin.id);
+    expect(res.body.validator_id).toBe(validator.id);
 
     const procedureAfter = await request(app)
       .get(`/api/procedures/${procedure.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(procedureAfter.body.status).toBe('approved');
     expect(procedureAfter.body.current_version_id).toBe(version.id);
+  });
+
+  it('un admin/manager ne peut pas valider une version qu’il a lui-même rédigée', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-022b');
+    const version = await createVersion(tenant.admin.token, procedure.id);
+    await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/submit`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .expect(200);
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(403);
   });
 
   it('rejet : commentaire obligatoire, la procédure repasse "draft"', async () => {
@@ -409,7 +425,8 @@ describe('Workflow submit / validate / reject', () => {
   });
 
   it('impossible de valider deux fois la même version', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-024');
     const version = await createVersion(tenant.admin.token, procedure.id);
     await request(app)
@@ -418,12 +435,12 @@ describe('Workflow submit / validate / reject', () => {
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
 
     const res = await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`);
+      .set('Authorization', `Bearer ${validator.token}`);
     expect(res.status).toBe(409);
   });
 });
@@ -534,13 +551,15 @@ describe('POST /api/procedures/:id/acknowledge', () => {
       .set('Authorization', `Bearer ${member.token}`);
     expect(tooEarly.status).toBe(400);
 
+    // Rédigée et soumise par le member lui-même (autorisé, voir canActOnVersion) plutôt que
+    // par l'admin : la validation qui suit doit venir de quelqu'un d'autre que l'auteur.
     const version = await request(app)
       .post(`/api/procedures/${procedure.id}/versions`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${member.token}`)
       .send({});
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/submit`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${member.token}`)
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/validate`)
@@ -564,11 +583,11 @@ describe('POST /api/procedures/:id/acknowledge', () => {
     const procedure = await createProcedure(tenant.admin.token, 'PROC-031');
     const version = await request(app)
       .post(`/api/procedures/${procedure.id}/versions`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${reader.token}`)
       .send({});
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/submit`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${reader.token}`)
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/validate`)
@@ -600,7 +619,8 @@ describe('POST /api/procedures/:id/acknowledge', () => {
 
 describe('GET /api/procedures/:id — historique des versions', () => {
   it('renvoie les versions avec auteur/validateur résolus', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-050');
     const version = await request(app)
       .post(`/api/procedures/${procedure.id}/versions`)
@@ -612,14 +632,14 @@ describe('GET /api/procedures/:id — historique des versions', () => {
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
 
     const res = await request(app).get(`/api/procedures/${procedure.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.status).toBe(200);
     expect(res.body.versions).toHaveLength(1);
     expect(res.body.versions[0].author.id).toBe(tenant.admin.id);
-    expect(res.body.versions[0].validator.id).toBe(tenant.admin.id);
+    expect(res.body.versions[0].validator.id).toBe(validator.id);
     expect(res.body.current_version.id).toBe(version.body.id);
   });
 });
@@ -678,7 +698,8 @@ describe('GET /api/procedures — filtres', () => {
   });
 
   it('search trouve aussi une procédure par le contenu de sa version courante, pas seulement numéro/titre', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const withMatch = await createProcedure(tenant.admin.token, 'PROC-044', { title: 'Maîtrise des enregistrements' });
     const withoutMatch = await createProcedure(tenant.admin.token, 'PROC-045', { title: 'Nettoyage des locaux' });
 
@@ -697,7 +718,7 @@ describe('GET /api/procedures — filtres', () => {
       .expect(200);
     await request(app)
       .post(`/api/procedures/${withMatch.id}/versions/${version.body.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
 
     const res = await request(app)
@@ -1009,7 +1030,8 @@ describe('GET /api/procedures/:id/pdf', () => {
   });
 
   it('génère un PDF pour la version courante, avec sections du gabarit, documents associés, et encadré obsolescence', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-091');
     const version = await createVersion(tenant.admin.token, procedure.id, {
       content: {
@@ -1029,7 +1051,7 @@ describe('GET /api/procedures/:id/pdf', () => {
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/obsolete`)

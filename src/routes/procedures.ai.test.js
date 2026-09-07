@@ -205,7 +205,8 @@ describe('POST /api/procedures/:id/versions/:versionId/check-compliance (IA mock
 
 describe('POST /api/procedures/:id/versions/:versionId/distribution-sheet (IA mockée)', () => {
   it('refusée sur un brouillon (409), acceptée sur une version approuvée, persistée et retrouvable via le détail', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-A03');
     const version = await createVersion(tenant.admin.token, procedure.id, { content: { objet: 'Objet' } });
 
@@ -222,7 +223,7 @@ describe('POST /api/procedures/:id/versions/:versionId/distribution-sheet (IA mo
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
 
     const mockSheet = {
@@ -256,7 +257,8 @@ describe('POST /api/procedures/:id/versions/:versionId/distribution-sheet (IA mo
 
 describe('POST /api/procedures/:id/suggest-revision-from-capa (IA mockée)', () => {
   it('appelle le service avec les données du CAPA lié et le contenu courant, refuse un CAPA non lié', async () => {
-    tenant = await createTenant();
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const validator = tenant.users[0];
     const procedure = await createProcedure(tenant.admin.token, 'PROC-A04');
     const version = await createVersion(tenant.admin.token, procedure.id, { content: { objet: 'Objet actuel' } });
     await request(app)
@@ -265,7 +267,7 @@ describe('POST /api/procedures/:id/suggest-revision-from-capa (IA mockée)', () 
       .expect(200);
     await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', `Bearer ${validator.token}`)
       .expect(200);
 
     const capaRes = await request(app)
