@@ -163,6 +163,73 @@ describe('PATCH /api/risks/:id — traitement et évaluation résiduelle', () =>
   });
 });
 
+describe('PATCH /api/risks/:id — évaluation résiduelle exigée pour traiter/accepter/clôturer', () => {
+  it('refuse de passer "traité", "accepté" ou "clôturé" sans évaluation résiduelle', async () => {
+    tenant = await createTenant();
+    const risk = await makeRisk(tenant.admin.token);
+
+    for (const status of ['treated', 'accepted', 'closed']) {
+      const res = await request(app)
+        .patch(`/api/risks/${risk.body.id}`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ status });
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it('accepte une évaluation résiduelle déjà posée précédemment, sans avoir à la renvoyer', async () => {
+    tenant = await createTenant();
+    const risk = await makeRisk(tenant.admin.token);
+
+    await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ residual_likelihood: 2, residual_impact: 2 });
+
+    const res = await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'treated' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('treated');
+  });
+
+  it('refuse de clôturer un risque résiduel élevé/critique sans CAPA liée, l’autorise une fois la CAPA créée', async () => {
+    tenant = await createTenant();
+    const risk = await makeRisk(tenant.admin.token, { likelihood: 5, impact: 5 });
+
+    const blocked = await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', residual_likelihood: 4, residual_impact: 3 });
+    expect(blocked.status).toBe(400);
+
+    await request(app)
+      .post(`/api/risks/${risk.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Réduire davantage ce risque' });
+
+    const allowed = await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', residual_likelihood: 4, residual_impact: 3 });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.status).toBe('closed');
+  });
+
+  it('un risque résiduel faible/modéré n’exige jamais de CAPA pour être clôturé', async () => {
+    tenant = await createTenant();
+    const risk = await makeRisk(tenant.admin.token, { likelihood: 5, impact: 5 });
+
+    const res = await request(app)
+      .patch(`/api/risks/${risk.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', residual_likelihood: 2, residual_impact: 2 });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+  });
+});
+
 describe('POST /api/risks/:id/create-capa — lien bidirectionnel', () => {
   it('crée une CAPA liée, visible dans les deux sens, et la CAPA survit à la suppression du risque', async () => {
     tenant = await createTenant();

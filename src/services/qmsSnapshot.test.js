@@ -209,7 +209,7 @@ describe('buildQmsSnapshot — avec période : les 5 groupes agrégés', () => {
     await request(app)
       .patch(`/api/risks/${accepted.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'accepted' });
+      .send({ status: 'accepted', residual_likelihood: 2, residual_impact: 2 });
 
     const snapshot = await buildQmsSnapshot(tenant.tenantId, { periodStart, periodEnd });
     expect(snapshot.risks_open.critical).toBe(1);

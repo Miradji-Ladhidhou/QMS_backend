@@ -232,7 +232,7 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     await request(app)
       .patch(`/api/risks/${risk.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'accepted' });
+      .send({ status: 'accepted', residual_likelihood: 2, residual_impact: 2 });
     const afterAccepted = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterAccepted.body.items.some((i) => i.type === 'risk' && i.id === risk.body.id)).toBe(false);
   });

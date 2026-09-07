@@ -380,7 +380,7 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     await request(app)
       .patch(`/api/risks/${risk.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'accepted' });
+      .send({ status: 'accepted', residual_likelihood: 2, residual_impact: 2 });
     const afterAccepted = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterAccepted.body.overdue.total).toBe(0);
   });
@@ -456,7 +456,7 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     await request(app)
       .patch(`/api/risks/${risk.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed' });
+      .send({ status: 'closed', residual_likelihood: 2, residual_impact: 2 });
     const afterClosed = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterClosed.body.risks).toEqual({ active: 0, overdue: 0 });
   });

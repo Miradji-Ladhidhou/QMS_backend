@@ -11,6 +11,11 @@ const router = Router();
 
 const RISK_TYPES = ['risk', 'opportunity'];
 const RISK_STATUSES = ['identified', 'treating', 'treated', 'accepted', 'closed'];
+// Statuts qui affirment qu'une décision a été prise sur ce risque (traité/accepté/clôturé) et
+// exigent donc une évaluation résiduelle à l'appui — voir le gate dans PATCH /:id.
+const RISK_DECISION_STATUSES = ['treated', 'accepted', 'closed'];
+// Même seuil que riskLevel() côté frontend (lib/riskStatus.js) : score >= 10 = élevé/critique.
+const HIGH_RESIDUAL_SCORE_THRESHOLD = 10;
 // Même niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans audits.js/complaints.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
@@ -238,6 +243,41 @@ router.patch(
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    // Passer à "traité"/"accepté"/"clôturé" affirme qu'une décision a été prise sur ce risque —
+    // ça n'a de sens que si le risque résiduel a réellement été évalué (ISO 9001 §6.1.2 c :
+    // évaluer l'efficacité des actions). On relit l'existant pour couvrir le cas où les champs
+    // résiduels ne sont pas dans CETTE requête (même idiome que routes/audits.js PATCH /:id).
+    if (RISK_DECISION_STATUSES.includes(update.status)) {
+      const { data: current, error: fetchError } = await supabase
+        .from('risks')
+        .select('residual_likelihood, residual_impact, linked_capa_id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .single();
+
+      if (fetchError || !current) {
+        return res.status(404).json({ error: 'Risque introuvable.' });
+      }
+
+      const residualLikelihood = 'residual_likelihood' in update ? update.residual_likelihood : current.residual_likelihood;
+      const residualImpact = 'residual_impact' in update ? update.residual_impact : current.residual_impact;
+
+      if (!residualLikelihood || !residualImpact) {
+        return res.status(400).json({
+          error: "Renseignez l'évaluation résiduelle (probabilité et gravité) avant de faire évoluer ce statut.",
+        });
+      }
+
+      // Un risque résiduel encore élevé/critique ne doit pas quitter le pilotage SMQ sans
+      // action associée (même logique que la clôture d'un audit avec NC majeure non traitée).
+      const residualScore = residualLikelihood * residualImpact;
+      if (residualScore >= HIGH_RESIDUAL_SCORE_THRESHOLD && !current.linked_capa_id) {
+        return res.status(400).json({
+          error: 'Le risque résiduel reste élevé ou critique : liez une CAPA avant de faire évoluer ce statut.',
+        });
+      }
     }
 
     const { data, error } = await supabase
