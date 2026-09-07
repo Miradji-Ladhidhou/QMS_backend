@@ -992,11 +992,25 @@ router.post(
           .json({ error: `Aucun utilisateur avec le rôle "${category.required_approver_role}" pour approuver ce document.` });
       }
 
-      approverIds = roleUsers.map((user) => user.id);
+      // Le soumetteur ne peut pas être son propre approbateur (§7.5.2 b : la revue doit être
+      // indépendante) — exclu silencieusement ici puisque la liste est déduite automatiquement,
+      // pas choisie ; voir le rejet explicite ci-dessous pour une liste fournie à la main.
+      const eligibleRoleUsers = roleUsers.filter((user) => user.id !== req.user.id);
+      if (eligibleRoleUsers.length === 0) {
+        return res.status(400).json({
+          error: `Vous êtes le seul utilisateur avec le rôle "${category.required_approver_role}" : désignez un approbateur explicitement.`,
+        });
+      }
+
+      approverIds = eligibleRoleUsers.map((user) => user.id);
     } else {
       // Liste explicite : contrairement à la déduction par rôle ci-dessus (déjà un choix
       // d'admin délibéré sur la catégorie), rien ne garantissait jusqu'ici que les personnes
       // choisies ici étaient réellement habilitées à approuver — voir isQualifiedApprover.
+      if (approverIds.includes(req.user.id)) {
+        return res.status(400).json({ error: 'Vous ne pouvez pas vous désigner comme votre propre approbateur.' });
+      }
+
       const { data: matchedUsers, error: usersError } = await supabase
         .from('users')
         .select('id, role')

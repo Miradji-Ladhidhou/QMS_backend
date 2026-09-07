@@ -1095,6 +1095,44 @@ describe('POST /api/documents/:id/submit-for-approval — habilitation des appro
       .send({ approver_ids: [approver.id] });
     expect(res.status).toBe(201);
   });
+
+  it('refuse une liste d’approbateurs explicite qui contient le soumetteur lui-même', async () => {
+    tenant = await createTenant();
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-006');
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ approver_ids: [tenant.admin.id] });
+    expect(res.status).toBe(400);
+  });
+
+  it('la déduction par rôle exclut le soumetteur des approbateurs déduits', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [managerA, managerB] = tenant.users;
+    const categoryId = await createCategory(tenant.tenantId, 'Cat manager-approver', { required_approver_role: 'manager' });
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-007', { category_id: categoryId });
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({});
+    expect(res.status).toBe(201);
+    expect(res.body.workflow.required_approvers).toEqual([managerB.id]);
+  });
+
+  it('échoue proprement quand le soumetteur est le seul utilisateur qualifié par déduction de rôle', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const soleManager = tenant.users[0];
+    const categoryId = await createCategory(tenant.tenantId, 'Cat manager-seul', { required_approver_role: 'manager' });
+    const doc = await createDocument(tenant.admin.token, 'DOC-APPR-008', { category_id: categoryId });
+
+    const res = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${soleManager.token}`)
+      .send({});
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('GET /api/documents/:id/certificate', () => {
