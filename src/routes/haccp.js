@@ -238,6 +238,63 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    // Principe 2 de la méthode HACCP : un plan "actif" est censé être appliqué sur le terrain,
+    // donc chaque danger significatif doit avoir son CCP défini — sinon "actif" ne veut rien
+    // dire opérationnellement. Même logique que le verrou posé sur la clôture d'un audit avec
+    // NC majeure non traitée.
+    if (update.status === 'active') {
+      const { data: steps, error: stepsError } = await supabase
+        .from('haccp_process_steps')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('plan_id', req.params.id);
+
+      if (stepsError) {
+        return res.status(500).json({ error: 'Impossible de vérifier les étapes du plan.' });
+      }
+
+      const stepIds = steps.map((step) => step.id);
+      let significantHazards = [];
+      if (stepIds.length > 0) {
+        const { data: hazards, error: hazardsError } = await supabase
+          .from('haccp_hazards')
+          .select('id')
+          .eq('tenant_id', req.tenantId)
+          .in('step_id', stepIds)
+          .eq('is_significant', true);
+
+        if (hazardsError) {
+          return res.status(500).json({ error: "Impossible de vérifier l'analyse des dangers." });
+        }
+        significantHazards = hazards;
+      }
+
+      if (significantHazards.length === 0) {
+        return res.status(400).json({
+          error: "Ce plan n'a aucun danger significatif rattaché à un point critique (CCP) : complétez l'analyse avant de l'activer.",
+        });
+      }
+
+      const significantHazardIds = significantHazards.map((hazard) => hazard.id);
+      const { data: ccps, error: ccpsError } = await supabase
+        .from('haccp_ccps')
+        .select('hazard_id')
+        .eq('tenant_id', req.tenantId)
+        .in('hazard_id', significantHazardIds);
+
+      if (ccpsError) {
+        return res.status(500).json({ error: 'Impossible de vérifier les points critiques.' });
+      }
+
+      const hazardIdsWithCcp = new Set(ccps.map((ccp) => ccp.hazard_id));
+      const hasUncoveredHazard = significantHazardIds.some((hazardId) => !hazardIdsWithCcp.has(hazardId));
+      if (hasUncoveredHazard) {
+        return res.status(400).json({
+          error: "Au moins un danger significatif n'a pas encore de point critique (CCP) défini : complétez l'analyse avant d'activer ce plan.",
+        });
+      }
+    }
+
     const { data, error } = await supabase
       .from('haccp_plans')
       .update(update)
@@ -747,6 +804,14 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    // Principe 5 de la méthode HACCP : une dérive constatée (within_limits = false) doit être
+    // accompagnée d'une action corrective — sinon le relevé n'a aucune valeur de preuve.
+    if (req.body.within_limits === false && !req.body.corrective_action_taken) {
+      return res.status(400).json({
+        error: 'Une dérive hors limites doit être accompagnée de l’action corrective immédiate prise.',
+      });
     }
 
     const { data, error } = await supabase

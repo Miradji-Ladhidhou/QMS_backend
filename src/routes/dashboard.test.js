@@ -261,6 +261,20 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
       .post('/api/haccp/plans')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ title: 'Plan actif', service_id: serviceA });
+    // Activer un plan exige un danger significatif rattaché à un CCP (voir routes/haccp.js
+    // PATCH /plans/:id) : on construit la chaîne minimale avant de tenter le passage à "active".
+    const step = await request(app)
+      .post(`/api/haccp/plans/${planActive.body.id}/steps`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Pasteurisation' });
+    const hazard = await request(app)
+      .post(`/api/haccp/steps/${step.body.id}/hazards`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ hazard_type: 'biological', description: 'Survie de Listeria', likelihood: 2, severity: 5, is_significant: true });
+    await request(app)
+      .post(`/api/haccp/hazards/${hazard.body.id}/ccps`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ critical_limits: '≥ 85°C pendant 15 secondes', monitoring_procedure: 'Sonde de température en continu' });
     await request(app)
       .patch(`/api/haccp/plans/${planActive.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
