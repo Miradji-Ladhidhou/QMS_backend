@@ -5,6 +5,26 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
+// Toutes les tables qui portent service_id en on delete set null (voir schema.sql) — la CAPA
+// n'est qu'une des 8. DELETE /:id doit vérifier chacune, sinon supprimer un service qui a
+// encore des audits/risques/... actifs les détache silencieusement (service_id -> null) sans
+// jamais prévenir l'admin.
+const SERVICE_REFERENCES = [
+  { table: 'capas', singular: 'CAPA', plural: 'CAPA' },
+  { table: 'accidents', singular: 'accident du travail', plural: 'accidents du travail' },
+  { table: 'pdca_projects', singular: 'projet PDCA', plural: 'projets PDCA' },
+  { table: 'audits', singular: 'audit', plural: 'audits' },
+  { table: 'complaints', singular: 'réclamation', plural: 'réclamations' },
+  { table: 'risks', singular: 'risque/opportunité', plural: 'risques/opportunités' },
+  { table: 'haccp_plans', singular: 'plan HACCP', plural: 'plans HACCP' },
+  { table: 'suppliers', singular: 'fournisseur', plural: 'fournisseurs' },
+];
+
+function formatFrenchList(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} et ${items[items.length - 1]}`;
+}
+
 router.use(requireAuth);
 
 // GET /api/services/my-services — services auxquels l'utilisateur connecté est rattaché
@@ -132,7 +152,8 @@ router.patch(
   }
 );
 
-// DELETE /api/services/:id — refuse si des CAPA sont rattachées (admin uniquement)
+// DELETE /api/services/:id — refuse si des éléments d'un des 8 modules qui référencent
+// service_id y sont encore rattachés (admin uniquement)
 router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { data: service, error: serviceError } = await supabase
     .from('services')
@@ -145,19 +166,24 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
     return res.status(404).json({ error: 'Service introuvable.' });
   }
 
-  const { count, error: countError } = await supabase
-    .from('capas')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', req.tenantId)
-    .eq('service_id', req.params.id);
+  const results = await Promise.all(
+    SERVICE_REFERENCES.map(({ table }) =>
+      supabase.from(table).select('id', { count: 'exact', head: true }).eq('tenant_id', req.tenantId).eq('service_id', req.params.id)
+    )
+  );
 
+  const countError = results.find((result) => result.error);
   if (countError) {
-    return res.status(500).json({ error: 'Impossible de vérifier les CAPA rattachées.' });
+    return res.status(500).json({ error: 'Impossible de vérifier les éléments rattachés à ce service.' });
   }
 
-  if (count > 0) {
+  const parts = SERVICE_REFERENCES.map(({ singular, plural }, index) => ({ count: results[index].count || 0, singular, plural }))
+    .filter(({ count }) => count > 0)
+    .map(({ count, singular, plural }) => `${count} ${count > 1 ? plural : singular}`);
+
+  if (parts.length > 0) {
     return res.status(409).json({
-      error: `${count} CAPA sont rattachées à ce service. Désactivez-le plutôt que de le supprimer.`,
+      error: `${formatFrenchList(parts)} sont rattaché(s) à ce service. Désactivez-le plutôt que de le supprimer.`,
     });
   }
 

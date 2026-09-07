@@ -81,6 +81,43 @@ describe('Services CRUD — admin only, read open to all roles', () => {
     expect(ok.status).toBe(204);
   });
 
+  it('refuse aussi la suppression pour les 7 autres modules qui référencent service_id (pas seulement les CAPA)', async () => {
+    tenant = await createTenant();
+    const service = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Service audité et à risque' });
+    const serviceId = service.body.id;
+
+    const audit = await request(app)
+      .post('/api/audits')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Audit du service', planned_date: '2026-09-01', service_id: serviceId });
+    expect(audit.body.service_id).toBe(serviceId);
+
+    const risk = await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque du service', likelihood: 2, impact: 2, service_id: serviceId });
+    expect(risk.body.service_id).toBe(serviceId);
+
+    const blocked = await request(app)
+      .delete(`/api/services/${serviceId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 audit');
+    expect(blocked.body.error).toContain('1 risque/opportunité');
+    expect(blocked.body.error).toMatch(/désactiv/i);
+
+    await admin.from('audits').delete().eq('id', audit.body.id);
+    await admin.from('risks').delete().eq('id', risk.body.id);
+
+    const ok = await request(app)
+      .delete(`/api/services/${serviceId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+
   it('assign-user / unassign / my-services fonctionnent ensemble', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
     const manager = tenant.users[0];
