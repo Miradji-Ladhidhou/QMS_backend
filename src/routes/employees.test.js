@@ -67,6 +67,43 @@ describe('Employees CRUD — admin only, read open to all roles', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(ok.status).toBe(204);
   });
+
+  it('refuse aussi la suppression pour un accident ou une tâche rattachés (pas seulement les réalisations de formation)', async () => {
+    tenant = await createTenant();
+    const employee = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Paul Chantier' });
+    const employeeId = employee.body.id;
+
+    const accident = await request(app)
+      .post('/api/accidents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Chute sur chantier', occurred_at: '2026-01-15', injured_employee_id: employeeId });
+    expect(accident.body.injured_employee_id).toBe(employeeId);
+
+    const task = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Refaire l’habilitation', due_date: '2026-02-01', assigned_employee_id: employeeId });
+    expect(task.body.assigned_employee_id).toBe(employeeId);
+
+    const blocked = await request(app)
+      .delete(`/api/employees/${employeeId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 accident du travail');
+    expect(blocked.body.error).toContain('1 tâche assignée');
+    expect(blocked.body.error).toMatch(/désactiv/i);
+
+    await admin.from('accidents').delete().eq('id', accident.body.id);
+    await admin.from('tasks').delete().eq('id', task.body.id);
+
+    const ok = await request(app)
+      .delete(`/api/employees/${employeeId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
 });
 
 describe('Enregistrement de formation pour du personnel sans compte', () => {

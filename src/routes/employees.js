@@ -5,6 +5,21 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
+// Toutes les tables qui référencent une entrée personnel (voir schema.sql) — le nom de colonne
+// varie selon le module, contrairement à service_id sur services.js. training_records est en
+// on delete cascade (l'historique de formation disparaîtrait sans ce garde-fou) ; les deux
+// autres en on delete set null (la trace serait juste détachée en silence).
+const EMPLOYEE_REFERENCES = [
+  { table: 'training_records', column: 'employee_id', singular: 'réalisation de formation', plural: 'réalisations de formation' },
+  { table: 'accidents', column: 'injured_employee_id', singular: 'accident du travail', plural: 'accidents du travail' },
+  { table: 'tasks', column: 'assigned_employee_id', singular: 'tâche assignée', plural: 'tâches assignées' },
+];
+
+function formatFrenchList(items) {
+  if (items.length <= 1) return items.join('');
+  return `${items.slice(0, -1).join(', ')} et ${items[items.length - 1]}`;
+}
+
 router.use(requireAuth);
 
 // GET /api/employees — liste de tout le personnel du tenant, actif et inactif (tous les
@@ -105,7 +120,8 @@ router.patch(
   }
 );
 
-// DELETE /api/employees/:id — refuse si des réalisations de formation existent (admin uniquement)
+// DELETE /api/employees/:id — refuse si des éléments d'un des 3 modules qui référencent cette
+// personne y sont encore rattachés (admin uniquement)
 router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { data: employee, error: employeeError } = await supabase
     .from('employees')
@@ -118,19 +134,24 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
     return res.status(404).json({ error: 'Entrée personnel introuvable.' });
   }
 
-  const { count, error: countError } = await supabase
-    .from('training_records')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', req.tenantId)
-    .eq('employee_id', req.params.id);
+  const results = await Promise.all(
+    EMPLOYEE_REFERENCES.map(({ table, column }) =>
+      supabase.from(table).select('id', { count: 'exact', head: true }).eq('tenant_id', req.tenantId).eq(column, req.params.id)
+    )
+  );
 
+  const countError = results.find((result) => result.error);
   if (countError) {
-    return res.status(500).json({ error: 'Impossible de vérifier les réalisations rattachées.' });
+    return res.status(500).json({ error: 'Impossible de vérifier les éléments rattachés à cette personne.' });
   }
 
-  if (count > 0) {
+  const parts = EMPLOYEE_REFERENCES.map(({ singular, plural }, index) => ({ count: results[index].count || 0, singular, plural }))
+    .filter(({ count }) => count > 0)
+    .map(({ count, singular, plural }) => `${count} ${count > 1 ? plural : singular}`);
+
+  if (parts.length > 0) {
     return res.status(409).json({
-      error: `${count} réalisation(s) de formation sont rattachées à cette personne. Désactivez-la plutôt que de la supprimer.`,
+      error: `${formatFrenchList(parts)} sont rattaché(s) à cette personne. Désactivez-la plutôt que de la supprimer.`,
     });
   }
 
