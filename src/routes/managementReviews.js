@@ -210,7 +210,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('management_reviews')
-      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status')
+      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status, review_date')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -252,14 +252,19 @@ router.patch(
       }
 
       // §9.3.2 a) : le statut des actions de la/des revue(s) précédente(s) est un élément
-      // d'entrée obligatoire — sauf s'il n'existe encore aucune revue précédente clôturée pour
-      // ce tenant (rien à rapporter pour la toute première revue).
+      // d'entrée obligatoire — sauf s'il n'existe encore aucune revue *chronologiquement*
+      // antérieure déjà clôturée pour ce tenant (rien à rapporter pour la toute première revue).
+      // Scopé sur review_date, pas seulement "une autre revue complétée existe quelque part" :
+      // clôturer une revue de janvier après avoir déjà clôturé celle de juin ne doit pas exiger
+      // un rapport sur une revue qui, chronologiquement, n'a rien de "précédent".
+      const reviewDate = 'review_date' in update ? update.review_date : existing.review_date;
       const { count: priorCompletedCount, error: priorError } = await supabase
         .from('management_reviews')
         .select('id', { count: 'exact', head: true })
         .eq('tenant_id', req.tenantId)
         .eq('status', 'completed')
-        .neq('id', req.params.id);
+        .neq('id', req.params.id)
+        .lt('review_date', reviewDate);
 
       if (priorError) {
         return res.status(500).json({ error: 'Impossible de vérifier les revues précédentes.' });

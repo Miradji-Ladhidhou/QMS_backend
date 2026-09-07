@@ -139,6 +139,24 @@ describe('PATCH /api/management-reviews/:id — clôture : conclusions et suivi 
       });
     expect(withPreviousStatus.status).toBe(200);
   });
+
+  it('clôturer une revue plus ancienne après une plus récente ne demande pas de statut précédent (ordre chronologique, pas ordre de clôture)', async () => {
+    tenant = await createTenant();
+    const later = await makeReview(tenant.admin.token, { title: 'Revue S2 2026', review_date: '2026-12-01' });
+    await request(app)
+      .patch(`/api/management-reviews/${later.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
+
+    // Revue antérieure (janvier), clôturée après coup : aucune revue n'est chronologiquement
+    // "précédente" pour elle, même si une autre revue (postérieure) est déjà clôturée.
+    const earlier = await makeReview(tenant.admin.token, { title: 'Revue S1 2026 (saisie tardive)', review_date: '2026-01-15' });
+    const res = await request(app)
+      .patch(`/api/management-reviews/${earlier.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
+    expect(res.status).toBe(200);
+  });
 });
 
 function isoDate(daysFromToday) {
