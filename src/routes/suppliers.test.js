@@ -70,6 +70,59 @@ describe('Évaluations fournisseur — score calculé par la base, CRUD réserv�
   });
 });
 
+describe('POST /api/suppliers/:supplierId/evaluations — décision justifiée par un commentaire', () => {
+  it('refuse "sous surveillance" ou "à remplacer" sans commentaire, l’accepte avec', async () => {
+    tenant = await createTenant();
+    const supplier = await makeSupplier(tenant.admin.token);
+
+    for (const decision of ['under_watch', 'to_replace']) {
+      const withoutComment = await request(app)
+        .post(`/api/suppliers/${supplier.body.id}/evaluations`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ evaluation_date: '2026-08-01', quality_score: 2, delivery_score: 2, price_score: 2, responsiveness_score: 2, decision });
+      expect(withoutComment.status).toBe(400);
+
+      const withComment = await request(app)
+        .post(`/api/suppliers/${supplier.body.id}/evaluations`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({
+          evaluation_date: '2026-08-01',
+          quality_score: 2,
+          delivery_score: 2,
+          price_score: 2,
+          responsiveness_score: 2,
+          decision,
+          comment: 'Retards répétés sur les trois derniers mois.',
+        });
+      expect(withComment.status).toBe(201);
+    }
+  });
+
+  it('"maintenu" (par défaut ou explicite) n’exige jamais de commentaire', async () => {
+    tenant = await createTenant();
+    const supplier = await makeSupplier(tenant.admin.token);
+
+    const implicit = await request(app)
+      .post(`/api/suppliers/${supplier.body.id}/evaluations`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ evaluation_date: '2026-08-01', quality_score: 4, delivery_score: 4, price_score: 4, responsiveness_score: 4 });
+    expect(implicit.status).toBe(201);
+
+    const explicit = await request(app)
+      .post(`/api/suppliers/${supplier.body.id}/evaluations`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        evaluation_date: '2026-08-02',
+        quality_score: 4,
+        delivery_score: 4,
+        price_score: 4,
+        responsiveness_score: 4,
+        decision: 'maintained',
+      });
+    expect(explicit.status).toBe(201);
+  });
+});
+
 describe('POST /api/suppliers/:supplierId/evaluations/:id/create-capa — lien bidirectionnel', () => {
   it('crée une CAPA liée, visible dans les deux sens, et la CAPA survit à la suppression du fournisseur', async () => {
     tenant = await createTenant();
@@ -84,6 +137,7 @@ describe('POST /api/suppliers/:supplierId/evaluations/:id/create-capa — lien b
         price_score: 2,
         responsiveness_score: 1,
         decision: 'to_replace',
+        comment: 'Retards répétés non résolus malgré plusieurs relances.',
       });
 
     const capa = await request(app)

@@ -325,6 +325,13 @@ router.post(
       comment,
     } = req.body;
 
+    // Une décision qui s'écarte de "maintenu" (sous surveillance / à remplacer) doit être
+    // justifiée — sinon l'évaluation n'a aucune valeur de preuve pour la revue fournisseur
+    // suivante. Même famille que le couple effectiveness_verified/notes sur les CAPA.
+    if ((decision || 'maintained') !== 'maintained' && !comment) {
+      return res.status(400).json({ error: 'Justifiez cette décision par un commentaire.' });
+    }
+
     const { data, error } = await supabase
       .from('supplier_evaluations')
       .insert({
