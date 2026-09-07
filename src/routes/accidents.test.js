@@ -109,6 +109,70 @@ describe('PATCH /api/accidents/:id — réservé admin/manager', () => {
   });
 });
 
+describe('PATCH /api/accidents/:id — clôture : cause racine et CAPA sur accident grave exigées', () => {
+  it('refuse la clôture sans cause racine', async () => {
+    tenant = await createTenant();
+    const accident = await makeAccident(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    expect(res.status).toBe(400);
+  });
+
+  it('accepte une cause racine déjà posée précédemment, sans avoir à la renvoyer', async () => {
+    tenant = await createTenant();
+    const accident = await makeAccident(tenant.admin.token);
+
+    await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ root_cause: 'Sol glissant non signalé' });
+
+    const res = await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('closed');
+  });
+
+  it('refuse de clôturer un accident grave ou mortel sans CAPA liée, l’autorise une fois la CAPA créée', async () => {
+    tenant = await createTenant();
+    const accident = await makeAccident(tenant.admin.token, { severity: 'severe' });
+
+    const blocked = await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', root_cause: 'Garde-corps manquant.' });
+    expect(blocked.status).toBe(400);
+
+    await request(app)
+      .post(`/api/accidents/${accident.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Installer les garde-corps manquants' });
+
+    const allowed = await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', root_cause: 'Garde-corps manquant.' });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.status).toBe('closed');
+  });
+
+  it('un accident mineur ou modéré n’exige jamais de CAPA pour être clôturé', async () => {
+    tenant = await createTenant();
+    const accident = await makeAccident(tenant.admin.token, { severity: 'moderate' });
+
+    const res = await request(app)
+      .patch(`/api/accidents/${accident.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', root_cause: 'Chariot mal entretenu.' });
+    expect(res.status).toBe(200);
+  });
+});
+
 describe('PATCH /api/accidents/bulk-category — réservé admin/manager', () => {
   it('403 pour un member, 200 pour un admin', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });

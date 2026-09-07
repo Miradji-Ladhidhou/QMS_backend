@@ -206,7 +206,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('accidents')
-      .select('id, status')
+      .select('id, status, root_cause, severity, linked_capa_id')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -234,6 +234,27 @@ router.patch(
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    // Clôturer un accident sans en avoir déterminé la cause racine viderait l'investigation de
+    // son sens (ISO 9001 §10.2.1 : déterminer les causes de la non-conformité). On relit
+    // l'existant pour couvrir le cas où root_cause n'est pas dans CETTE requête (même idiome
+    // que routes/audits.js PATCH /:id).
+    if (update.status === 'closed') {
+      const rootCause = 'root_cause' in update ? update.root_cause : existing.root_cause;
+      if (!rootCause) {
+        return res.status(400).json({ error: 'Renseignez la cause racine avant de clôturer cet accident.' });
+      }
+
+      // Même logique que le verrou posé sur les audits (NC majeure) et les risques (résiduel
+      // élevé/critique) : un accident grave ou mortel ne doit pas quitter le suivi SMQ sans
+      // action corrective associée.
+      const severity = 'severity' in update ? update.severity : existing.severity;
+      if ((severity === 'severe' || severity === 'fatal') && !existing.linked_capa_id) {
+        return res
+          .status(400)
+          .json({ error: 'Un accident grave ou mortel doit être lié à une CAPA avant d’être clôturé.' });
+      }
     }
 
     // Clôture : horodatage posé une seule fois, à la transition vers 'closed' (mirroring
