@@ -132,4 +132,26 @@ describe('POST /api/qqoqccp/:id/close — clôture sans action', () => {
       .send({ closure_reason: 'Deuxième tentative, devrait être refusée.' });
     expect(onAlreadyClosed.status).toBe(409);
   });
+
+  it('404 sur une analyse d’un autre tenant, pour create-capa comme pour close', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const foreignAnalysis = await createAnalysis(otherTenant.admin.token, THREE_FIELDS);
+
+      const createCapaAttempt = await request(app)
+        .post(`/api/qqoqccp/${foreignAnalysis.id}/create-capa`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ title: 'CAPA' });
+      expect(createCapaAttempt.status).toBe(404);
+
+      const closeAttempt = await request(app)
+        .post(`/api/qqoqccp/${foreignAnalysis.id}/close`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ closure_reason: 'Ne devrait jamais atteindre cette analyse.' });
+      expect(closeAttempt.status).toBe(404);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
 });
