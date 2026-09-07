@@ -176,7 +176,7 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     await request(app)
       .patch(`/api/audits/${audit.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed' });
+      .send({ status: 'closed', conclusion: 'Audit clôturé.' });
     const afterClose = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterClose.body.items.some((i) => i.type === 'audit' && i.id === audit.body.id)).toBe(false);
   });

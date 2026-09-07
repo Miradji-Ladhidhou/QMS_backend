@@ -65,7 +65,7 @@ describe('GET /api/audits — visible à tous les rôles', () => {
     await request(app)
       .patch(`/api/audits/${inService.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'completed' });
+      .send({ status: 'completed', conclusion: 'Audit réalisé, aucune non-conformité.' });
 
     const byStatus = await request(app)
       .get('/api/audits?status=completed')
@@ -93,6 +93,92 @@ describe('PATCH /api/audits/:id — réservé à admin/manager', () => {
     expect(managerUpdate.status).toBe(200);
     expect(managerUpdate.body.status).toBe('closed');
     expect(managerUpdate.body.conclusion).toBe('SMQ conforme, 2 non-conformités mineures.');
+  });
+});
+
+describe('PATCH /api/audits/:id — clôture d’un audit : preuve documentée et NC majeures traitées', () => {
+  it('refuse de passer "terminé" ou "clôturé" sans conclusion', async () => {
+    tenant = await createTenant();
+    const audit = await makeAudit(tenant.admin.token);
+
+    const noConclusion = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed' });
+    expect(noConclusion.status).toBe(400);
+
+    const closedNoConclusion = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    expect(closedNoConclusion.status).toBe(400);
+  });
+
+  it('renseigne automatiquement completed_date si absente, sans écraser une date déjà posée', async () => {
+    tenant = await createTenant();
+    const audit = await makeAudit(tenant.admin.token);
+
+    const completed = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusion: 'Audit réalisé.' });
+    expect(completed.status).toBe(200);
+    expect(completed.body.completed_date).toBe(new Date().toISOString().slice(0, 10));
+
+    const reopened = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'in_progress' });
+    expect(reopened.status).toBe(200);
+
+    const closed = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed' });
+    expect(closed.status).toBe(200);
+    expect(closed.body.completed_date).toBe(completed.body.completed_date);
+  });
+
+  it('refuse la clôture avec une non-conformité majeure sans CAPA liée, l’autorise une fois la CAPA créée', async () => {
+    tenant = await createTenant();
+    const audit = await makeAudit(tenant.admin.token);
+    const finding = await request(app)
+      .post(`/api/audits/${audit.body.id}/findings`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ type: 'major_nc', description: 'Non-conformité majeure non traitée' });
+
+    const blocked = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', conclusion: 'À clôturer.' });
+    expect(blocked.status).toBe(400);
+
+    await request(app)
+      .post(`/api/audits/${audit.body.id}/findings/${finding.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Traiter la non-conformité majeure' });
+
+    const allowed = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', conclusion: 'CAPA ouverte sur la NC majeure.' });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.status).toBe('closed');
+  });
+
+  it('une non-conformité mineure ou une remarque ne bloquent jamais la clôture', async () => {
+    tenant = await createTenant();
+    const audit = await makeAudit(tenant.admin.token);
+    await request(app)
+      .post(`/api/audits/${audit.body.id}/findings`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ type: 'minor_nc', description: 'Non-conformité mineure' });
+
+    const closed = await request(app)
+      .patch(`/api/audits/${audit.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', conclusion: 'NC mineure notée, pas de CAPA nécessaire.' });
+    expect(closed.status).toBe(200);
   });
 });
 

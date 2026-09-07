@@ -218,6 +218,57 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    // Marquer un audit "terminé" ou "clôturé" est une preuve documentée (ISO 9001 §9.2.2 f) :
+    // ça n'a de sens que si on sait ce que l'audit a donné. On relit l'existant pour couvrir
+    // le cas où conclusion/completed_date ne sont pas dans CETTE requête (même idiome que
+    // routes/capas.js PATCH /:id pour effectiveness_verified).
+    if (update.status === 'completed' || update.status === 'closed') {
+      const { data: current, error: fetchError } = await supabase
+        .from('audits')
+        .select('conclusion, completed_date')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .single();
+
+      if (fetchError || !current) {
+        return res.status(404).json({ error: 'Audit introuvable.' });
+      }
+
+      const conclusion = 'conclusion' in update ? update.conclusion : current.conclusion;
+      if (!conclusion) {
+        return res
+          .status(400)
+          .json({ error: "Renseignez la conclusion de l'audit avant de le marquer terminé ou clôturé." });
+      }
+
+      const completedDate = update.completed_date !== undefined ? update.completed_date : current.completed_date;
+      if (!completedDate) {
+        update.completed_date = new Date().toISOString().slice(0, 10);
+      }
+    }
+
+    // Clôturer sans CAPA sur une non-conformité majeure viderait le statut de son sens :
+    // "clôturé" doit garantir que les non-conformités majeures ont au moins été prises en
+    // charge (ISO 9001 §10.2.1), pas seulement constatées.
+    if (update.status === 'closed') {
+      const { data: openMajors, error: findingsError } = await supabase
+        .from('audit_findings')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('audit_id', req.params.id)
+        .eq('type', 'major_nc')
+        .is('linked_capa_id', null);
+
+      if (findingsError) {
+        return res.status(500).json({ error: 'Impossible de vérifier les constats de cet audit.' });
+      }
+      if (openMajors.length > 0) {
+        return res
+          .status(400)
+          .json({ error: "Une non-conformité majeure sans CAPA associée empêche la clôture de cet audit." });
+      }
+    }
+
     const { data, error } = await supabase
       .from('audits')
       .update(update)

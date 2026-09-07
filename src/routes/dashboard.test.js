@@ -328,7 +328,7 @@ describe('GET /api/dashboard/stats — filtrage par rôle', () => {
     await request(app)
       .patch(`/api/audits/${audit.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'closed' });
+      .send({ status: 'closed', conclusion: 'Audit clôturé.' });
     const afterClose = await request(app).get('/api/dashboard/stats').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(afterClose.body.overdue.total).toBe(0);
   });
