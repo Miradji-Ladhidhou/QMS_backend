@@ -210,7 +210,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('management_reviews')
-      .select('id, status, snapshot, period_start, period_end')
+      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -240,6 +240,40 @@ router.patch(
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
     if ('period_start' in req.body) update.period_start = req.body.period_start || null;
     if ('period_end' in req.body) update.period_end = req.body.period_end || null;
+
+    // Clôturer une revue est sa sortie formelle (§9.3.3) : la performance chiffrée vient du
+    // snapshot automatique, mais la synthèse elle-même doit être écrite. On relit l'existant
+    // pour couvrir le cas où conclusions n'est pas dans CETTE requête (même idiome que
+    // routes/audits.js PATCH /:id).
+    if (update.status === 'completed') {
+      const conclusions = 'conclusions' in update ? update.conclusions : existing.conclusions;
+      if (!conclusions) {
+        return res.status(400).json({ error: 'Renseignez les conclusions de la revue avant de la clôturer.' });
+      }
+
+      // §9.3.2 a) : le statut des actions de la/des revue(s) précédente(s) est un élément
+      // d'entrée obligatoire — sauf s'il n'existe encore aucune revue précédente clôturée pour
+      // ce tenant (rien à rapporter pour la toute première revue).
+      const { count: priorCompletedCount, error: priorError } = await supabase
+        .from('management_reviews')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', req.tenantId)
+        .eq('status', 'completed')
+        .neq('id', req.params.id);
+
+      if (priorError) {
+        return res.status(500).json({ error: 'Impossible de vérifier les revues précédentes.' });
+      }
+
+      if (priorCompletedCount > 0) {
+        const previousActionsStatus = 'previous_actions_status' in update ? update.previous_actions_status : existing.previous_actions_status;
+        if (!previousActionsStatus) {
+          return res
+            .status(400)
+            .json({ error: 'Renseignez le statut des actions de la revue précédente avant de clôturer celle-ci.' });
+        }
+      }
+    }
 
     if (update.status === 'completed' && !existing.snapshot) {
       update.snapshot = await buildQmsSnapshot(req.tenantId);

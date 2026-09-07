@@ -90,6 +90,57 @@ describe('PATCH /api/management-reviews/:id — clôture et snapshot', () => {
   });
 });
 
+describe('PATCH /api/management-reviews/:id — clôture : conclusions et suivi de la revue précédente exigés', () => {
+  it('refuse la clôture sans conclusions', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed' });
+    expect(res.status).toBe(400);
+  });
+
+  it('la toute première revue d’un tenant ne nécessite pas de statut sur des actions précédentes', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
+    expect(res.status).toBe(200);
+  });
+
+  it('une revue suivante exige le statut des actions de la revue précédente pour être clôturée', async () => {
+    tenant = await createTenant();
+    const first = await makeReview(tenant.admin.token, { title: 'Revue S1 2026' });
+    await request(app)
+      .patch(`/api/management-reviews/${first.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
+
+    const second = await makeReview(tenant.admin.token, { title: 'Revue S2 2026', review_date: '2026-12-01' });
+
+    const withoutPreviousStatus = await request(app)
+      .patch(`/api/management-reviews/${second.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'completed', conclusions: 'SMQ toujours conforme.' });
+    expect(withoutPreviousStatus.status).toBe(400);
+
+    const withPreviousStatus = await request(app)
+      .patch(`/api/management-reviews/${second.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        status: 'completed',
+        conclusions: 'SMQ toujours conforme.',
+        previous_actions_status: 'Toutes les actions de la revue S1 ont été soldées.',
+      });
+    expect(withPreviousStatus.status).toBe(200);
+  });
+});
+
 function isoDate(daysFromToday) {
   const date = new Date();
   date.setDate(date.getDate() + daysFromToday);
@@ -156,7 +207,7 @@ describe('POST /api/management-reviews/:id/refresh-snapshot', () => {
     await request(app)
       .patch(`/api/management-reviews/${review.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'completed' });
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
 
     const afterCompletion = await request(app)
       .post(`/api/management-reviews/${review.body.id}/refresh-snapshot`)
@@ -174,7 +225,7 @@ describe('POST /api/management-reviews/:id/refresh-snapshot', () => {
     await request(app)
       .patch(`/api/management-reviews/${review.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ status: 'completed' });
+      .send({ status: 'completed', conclusions: 'SMQ conforme.' });
 
     const attempt = await request(app)
       .patch(`/api/management-reviews/${review.body.id}`)
