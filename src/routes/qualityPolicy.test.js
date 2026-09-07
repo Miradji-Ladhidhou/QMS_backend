@@ -143,3 +143,25 @@ describe('POST /api/quality-policy/acknowledge', () => {
     expect(summaryAfterRepublish.body.acknowledgment_summary).toEqual({ acknowledged_count: 0, total_users: 2 });
   });
 });
+
+describe('Isolation multi-tenant', () => {
+  it('la politique qualité d’un tenant n’est jamais visible depuis un autre', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      await request(app)
+        .post('/api/quality-policy')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ content: 'Politique du tenant A, ne doit jamais fuiter.' });
+
+      const res = await request(app)
+        .get('/api/quality-policy')
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.current).toBeNull();
+      expect(res.body.versions).toEqual([]);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
