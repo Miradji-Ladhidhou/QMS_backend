@@ -27,6 +27,25 @@ const RESOURCE_TYPES = [
   'pdca',
 ];
 
+// Table réellement porteuse de category_id pour chaque resource_type — voir schema.sql.
+// Utilisé uniquement par DELETE /:id pour vérifier qu'aucun élément n'y est encore rattaché.
+const RESOURCE_TABLE_INFO = {
+  capa: { table: 'capas', singular: 'CAPA', plural: 'CAPA' },
+  complaint: { table: 'complaints', singular: 'réclamation', plural: 'réclamations' },
+  qqoqccp: { table: 'qqoqccp_analyses', singular: 'analyse QQOQCCP', plural: 'analyses QQOQCCP' },
+  supplier: { table: 'suppliers', singular: 'fournisseur', plural: 'fournisseurs' },
+  training: { table: 'trainings', singular: 'formation', plural: 'formations' },
+  management_review: { table: 'management_reviews', singular: 'revue de direction', plural: 'revues de direction' },
+  audit: { table: 'audits', singular: 'audit', plural: 'audits' },
+  risk: { table: 'risks', singular: 'risque/opportunité', plural: 'risques/opportunités' },
+  haccp_plan: { table: 'haccp_plans', singular: 'plan HACCP', plural: 'plans HACCP' },
+  task: { table: 'tasks', singular: 'tâche', plural: 'tâches' },
+  kpi: { table: 'kpis', singular: 'KPI', plural: 'KPI' },
+  procedure: { table: 'procedures', singular: 'procédure', plural: 'procédures' },
+  accident: { table: 'accidents', singular: 'accident du travail', plural: 'accidents du travail' },
+  pdca: { table: 'pdca_projects', singular: 'projet PDCA', plural: 'projets PDCA' },
+};
+
 router.use(requireAuth);
 
 // GET /api/module-categories?resource_type=capa — liste des catégories de ce type pour le
@@ -165,10 +184,44 @@ router.put(
   }
 );
 
-// DELETE /api/module-categories/:id — suppression (admin uniquement). Les éléments qui y
-// étaient rattachés retombent à category_id=null (on delete set null) plutôt que d'être
-// bloqués ou supprimés en cascade.
+// DELETE /api/module-categories/:id — suppression (admin uniquement). Bloquée tant que des
+// éléments y sont encore rattachés : les laisser retomber à category_id=null (on delete set
+// null) semblait anodin, mais pour une catégorie restreinte ça lève SILENCIEUSEMENT la
+// restriction d'accès sur tout ce qu'elle contenait (un élément sans catégorie est visible par
+// tout le tenant par défaut) — le même risque que le garde-fou déjà posé sur
+// categories.js (documents), ici avec 14 modules concernés au lieu d'un seul.
 router.delete('/:id', requireRole('admin'), async (req, res) => {
+  const { data: category, error: categoryError } = await supabase
+    .from('categories')
+    .select('id, resource_type')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (categoryError || !category) {
+    return res.status(404).json({ error: 'Catégorie introuvable.' });
+  }
+
+  const referenceInfo = RESOURCE_TABLE_INFO[category.resource_type];
+  if (referenceInfo) {
+    const { count: referenceCount, error: countError } = await supabase
+      .from(referenceInfo.table)
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', req.tenantId)
+      .eq('category_id', req.params.id);
+
+    if (countError) {
+      return res.status(500).json({ error: 'Impossible de vérifier les éléments rattachés à cette catégorie.' });
+    }
+
+    if (referenceCount > 0) {
+      const label = referenceCount > 1 ? referenceInfo.plural : referenceInfo.singular;
+      return res.status(409).json({
+        error: `${referenceCount} ${label} sont rattaché(s) à cette catégorie. Déplacez-les avant de la supprimer.`,
+      });
+    }
+  }
+
   const { error, count } = await supabase
     .from('categories')
     .delete({ count: 'exact' })

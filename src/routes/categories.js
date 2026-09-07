@@ -105,7 +105,28 @@ router.put(
 );
 
 // DELETE /api/categories/:id — suppression (admin uniquement)
+// Supprimer une catégorie remet category_id à null sur tout ce qu'elle contenait (voir
+// schema.sql, on delete set null) — pour une catégorie restreinte, ça lève silencieusement la
+// restriction d'accès sur ses documents (un document sans catégorie est visible par tout le
+// tenant par défaut). Bloquer tant que des documents y sont encore rattachés plutôt que de
+// laisser filer cette perte d'accès silencieuse.
 router.delete('/:id', requireRole('admin'), async (req, res) => {
+  const { count: documentCount, error: countError } = await supabase
+    .from('documents')
+    .select('id', { count: 'exact', head: true })
+    .eq('tenant_id', req.tenantId)
+    .eq('category_id', req.params.id);
+
+  if (countError) {
+    return res.status(500).json({ error: 'Impossible de vérifier les documents rattachés à cette catégorie.' });
+  }
+
+  if (documentCount > 0) {
+    return res.status(409).json({
+      error: `${documentCount} document(s) sont rattachés à cette catégorie. Déplacez-les avant de la supprimer.`,
+    });
+  }
+
   const { error, count } = await supabase
     .from('document_categories')
     .delete({ count: 'exact' })

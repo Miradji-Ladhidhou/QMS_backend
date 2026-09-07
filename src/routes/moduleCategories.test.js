@@ -750,3 +750,41 @@ describe('Validation du category_id à l\'écriture (tenant + resource_type)', (
     }
   });
 });
+
+describe('DELETE /api/module-categories/:id — refuse si des éléments y sont encore rattachés', () => {
+  it('lever la restriction d’accès en silence serait dangereux : bloqué avec un message clair, puis autorisé une fois vidée', async () => {
+    tenant = await createTenant();
+    const category = await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Catégorie CAPA restreinte', isRestricted: true });
+
+    const capa = await createCapa(tenant.admin.token, { category_id: category.id });
+    expect(capa.category_id).toBe(category.id);
+
+    const blocked = await request(app)
+      .delete(`/api/module-categories/${category.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 CAPA');
+
+    await admin.from('capas').delete().eq('id', capa.id);
+
+    const ok = await request(app)
+      .delete(`/api/module-categories/${category.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+
+  it('404 sur une catégorie inexistante, aucun blocage sur une catégorie vide', async () => {
+    tenant = await createTenant();
+
+    const notFound = await request(app)
+      .delete('/api/module-categories/00000000-0000-0000-0000-000000000000')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(notFound.status).toBe(404);
+
+    const category = await createCategory(tenant.admin.token, { resourceType: 'audit', name: 'Catégorie audit vide' });
+    const ok = await request(app)
+      .delete(`/api/module-categories/${category.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+});

@@ -74,6 +74,38 @@ describe('Catégories de documents — écriture réservée à admin', () => {
     expect(del.status).toBe(204);
   });
 
+  it('refuse la suppression si des documents sont rattachés (lever la restriction d’accès en silence serait dangereux), message clair', async () => {
+    tenant = await createTenant();
+
+    const category = await request(app)
+      .post('/api/categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Catégorie restreinte', is_restricted: true });
+    expect(category.status).toBe(201);
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-CAT-001')
+      .field('title', 'Document catégorisé')
+      .field('category_id', category.body.id);
+    expect(doc.status).toBe(201);
+    expect(doc.body.category_id).toBe(category.body.id);
+
+    const blocked = await request(app)
+      .delete(`/api/categories/${category.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 document');
+
+    await request(app).delete(`/api/documents/${doc.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    const ok = await request(app)
+      .delete(`/api/categories/${category.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+
   it('la lecture reste ouverte à tous les rôles', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
