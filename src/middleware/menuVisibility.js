@@ -22,6 +22,7 @@ export const MENU_ITEM_KEYS = [
   'procedures',
   'accidents',
   'pdca',
+  'quality-objectives',
   'my-approvals',
   'services',
   'employees',

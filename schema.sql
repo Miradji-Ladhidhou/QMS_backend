@@ -1196,7 +1196,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure', 'accident', 'pdca'
+      'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective'
     )
   ),
   name          text not null,
@@ -1388,6 +1388,41 @@ create table quality_policy_acknowledgments (
   acknowledged_at           timestamptz not null default now(),
   unique (quality_policy_version_id, user_id)
 );
+
+-- Objectifs qualité (ISO 9001 §6.2). Chaque colonne correspond à un des 5 éléments de
+-- planification exigés par §6.2.2 (quoi/ressources/qui/quand/comment évalué), plus le suivi
+-- de résultat. linked_kpi_id réutilise le module KPI comme preuve de mesure plutôt que de
+-- dupliquer un mécanisme de suivi de valeurs — un objectif est la décision de viser une
+-- cible, le KPI est l'outil de mesure. linked_capa_id suit le même principe bidirectionnel
+-- que kpis.linked_capa_id : un objectif manqué peut donner lieu à une CAPA, jamais
+-- automatique (voir routes/qualityObjectives.js#create-capa), même logique que kpis.js
+-- (suggestion, pas obligation — contrairement aux NC majeures d'audit ou aux accidents
+-- graves, qui eux bloquent la clôture sans CAPA).
+create table quality_objectives (
+  id                 uuid primary key default gen_random_uuid(),
+  tenant_id          uuid not null references tenants (id) on delete cascade,
+  title              text not null,
+  description        text,
+  resources_needed   text,
+  owner              uuid references users (id) on delete set null,
+  target_date        date,
+  evaluation_method  text,
+  status             text not null default 'in_progress'
+                       check (status in ('in_progress', 'achieved', 'not_achieved', 'abandoned')),
+  -- Justification obligatoire uniquement pour une issue négative (voir PATCH /:id) :
+  -- contrairement à "achieved" où le KPI/la valeur cible sert déjà de preuve, "not_achieved"/
+  -- "abandoned" doivent être expliqués pour rester exploitables en revue de direction
+  -- (§9.3.2 c, performance du SMQ).
+  status_comment     text,
+  achieved_at        date,
+  linked_kpi_id      uuid references kpis (id) on delete set null,
+  linked_capa_id     uuid references capas (id) on delete set null,
+  category_id        uuid references categories (id) on delete set null,
+  created_by         uuid references users (id) on delete set null,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+alter table capas add column quality_objective_id uuid references quality_objectives (id) on delete set null;
 
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
@@ -1600,6 +1635,8 @@ create index idx_quality_policy_versions_tenant_created on quality_policy_versio
 create index idx_quality_policy_acknowledgments_tenant_id on quality_policy_acknowledgments (tenant_id);
 create index idx_quality_policy_acknowledgments_version_id on quality_policy_acknowledgments (quality_policy_version_id);
 
+create index idx_quality_objectives_tenant_id on quality_objectives (tenant_id);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -1792,6 +1829,9 @@ create trigger trg_procedure_templates_updated_at before update on procedure_tem
 create trigger trg_procedure_generation_jobs_updated_at before update on procedure_generation_jobs
   for each row execute function set_updated_at();
 
+create trigger trg_quality_objectives_updated_at before update on quality_objectives
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -1959,6 +1999,7 @@ alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
 alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
+alter table quality_objectives enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2290,6 +2331,11 @@ create policy quality_policy_versions_isolation on quality_policy_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy quality_policy_acknowledgments_isolation on quality_policy_acknowledgments
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy quality_objectives_isolation on quality_objectives
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
