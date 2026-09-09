@@ -1196,7 +1196,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment'
+      'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output'
     )
   ),
   name          text not null,
@@ -1484,6 +1484,36 @@ create table equipment_calibrations (
 );
 alter table capas add column equipment_calibration_id uuid references equipment_calibrations (id) on delete set null;
 
+-- Maîtrise des éléments de sortie non conformes (ISO 9001 §8.7). disposition couvre les
+-- traitements listés par §8.7.1 d) ; concession_reference documente la dérogation obtenue
+-- (§8.7.2 c) quand disposition = 'concession' — obligatoire dans ce cas (voir routes/
+-- nonconformingOutputs.js PATCH /:id). decided_by identifie "l'autorité ayant décidé de
+-- l'action" (§8.7.2 d), distinct de created_by qui n'est que celui qui a signalé la
+-- non-conformité (souvent une autre personne, n'importe quel rôle pouvant déclarer — même
+-- principe que accidents.js).
+create table nonconforming_outputs (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants (id) on delete cascade,
+  title                 text not null,
+  description           text not null,
+  detected_at           date not null,
+  service_id            uuid references services (id) on delete set null,
+  disposition           text not null default 'correction'
+                          check (disposition in ('correction', 'segregation', 'return_to_supplier', 'concession', 'scrap', 'other')),
+  action_taken          text,
+  concession_reference  text,
+  customer_informed     boolean not null default false,
+  decided_by            uuid references users (id) on delete set null,
+  status                text not null default 'open' check (status in ('open', 'closed')),
+  closed_at             timestamptz,
+  linked_capa_id        uuid references capas (id) on delete set null,
+  category_id           uuid references categories (id) on delete set null,
+  created_by            uuid references users (id) on delete set null,
+  created_at            timestamptz not null default now(),
+  updated_at            timestamptz not null default now()
+);
+alter table capas add column nonconforming_output_id uuid references nonconforming_outputs (id) on delete set null;
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1703,6 +1733,8 @@ create index idx_measuring_equipment_tenant_id on measuring_equipment (tenant_id
 create index idx_equipment_calibrations_tenant_id on equipment_calibrations (tenant_id);
 create index idx_equipment_calibrations_equipment_id on equipment_calibrations (equipment_id);
 
+create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
+
 -- =============================================================================
 -- TRIGGERS
 -- =============================================================================
@@ -1901,6 +1933,9 @@ create trigger trg_quality_objectives_updated_at before update on quality_object
 create trigger trg_measuring_equipment_updated_at before update on measuring_equipment
   for each row execute function set_updated_at();
 
+create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -2072,6 +2107,7 @@ alter table quality_objectives enable row level security;
 alter table qms_context_versions enable row level security;
 alter table measuring_equipment enable row level security;
 alter table equipment_calibrations enable row level security;
+alter table nonconforming_outputs enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2423,6 +2459,11 @@ create policy measuring_equipment_isolation on measuring_equipment
   with check (tenant_id = auth_tenant_id());
 
 create policy equipment_calibrations_isolation on equipment_calibrations
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy nonconforming_outputs_isolation on nonconforming_outputs
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

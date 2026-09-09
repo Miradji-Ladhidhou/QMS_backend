@@ -24,6 +24,7 @@ export const MENU_ITEM_KEYS = [
   'pdca',
   'quality-objectives',
   'measuring-equipment',
+  'nonconforming-outputs',
   'my-approvals',
   'services',
   'employees',

@@ -27,6 +27,7 @@ const RESOURCE_TYPES = [
   'pdca',
   'quality_objective',
   'measuring_equipment',
+  'nonconforming_output',
 ];
 
 // Table réellement porteuse de category_id pour chaque resource_type — voir schema.sql.
@@ -48,6 +49,7 @@ const RESOURCE_TABLE_INFO = {
   pdca: { table: 'pdca_projects', singular: 'projet PDCA', plural: 'projets PDCA' },
   quality_objective: { table: 'quality_objectives', singular: 'objectif qualité', plural: 'objectifs qualité' },
   measuring_equipment: { table: 'measuring_equipment', singular: 'équipement de mesure', plural: 'équipements de mesure' },
+  nonconforming_output: { table: 'nonconforming_outputs', singular: 'non-conformité produit/service', plural: 'non-conformités produit/service' },
 };
 
 router.use(requireAuth);

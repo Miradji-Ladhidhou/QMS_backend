@@ -47,6 +47,7 @@ import qualityPolicyRoutes from './routes/qualityPolicy.js';
 import qualityObjectivesRoutes from './routes/qualityObjectives.js';
 import qmsContextRoutes from './routes/qmsContext.js';
 import measuringEquipmentRoutes from './routes/measuringEquipment.js';
+import nonconformingOutputsRoutes from './routes/nonconformingOutputs.js';
 
 // Échoue au démarrage plutôt qu'en silence — même principe que services/supabase.js pour
 // SUPABASE_URL/SUPABASE_SERVICE_KEY. Sans ça, un FRONTEND_URL absent en production ferait
@@ -134,6 +135,7 @@ app.use('/api/quality-policy', qualityPolicyRoutes);
 app.use('/api/quality-objectives', qualityObjectivesRoutes);
 app.use('/api/qms-context', qmsContextRoutes);
 app.use('/api/measuring-equipment', measuringEquipmentRoutes);
+app.use('/api/nonconforming-outputs', nonconformingOutputsRoutes);
 
 // Filet de sécurité final : toute erreur qui atteint ce point (throw synchrone, rejet async
 // grâce à express-async-errors ci-dessus, ou next(err) explicite) est loguée côté serveur
