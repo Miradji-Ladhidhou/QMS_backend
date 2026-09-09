@@ -192,6 +192,19 @@ describe('PATCH /api/nonconforming-outputs/:id — decided_by retombe sur l’au
     expect(closedExplicit.status).toBe(200);
     expect(closedExplicit.body.decided_by).toBe(tenant.admin.id);
   });
+
+  it('retombe aussi sur le clôturant si decided_by est explicitement envoyé à null (comme le fait le formulaire d’édition du frontend)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const output = await makeOutput(tenant.admin.token);
+
+    const closed = await request(app)
+      .patch(`/api/nonconforming-outputs/${output.body.id}`)
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ status: 'closed', action_taken: 'Tri et retouche du lot.', decided_by: null });
+    expect(closed.status).toBe(200);
+    expect(closed.body.decided_by).toBe(manager.id);
+  });
 });
 
 describe('PATCH /api/nonconforming-outputs/bulk-category — réservé admin/manager', () => {

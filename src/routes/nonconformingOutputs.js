@@ -182,7 +182,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('nonconforming_outputs')
-      .select('id, status, disposition, action_taken, concession_reference')
+      .select('id, status, disposition, action_taken, concession_reference, decided_by')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -226,8 +226,13 @@ router.patch(
       }
 
       // decided_by identifie l'autorité ayant décidé de l'action (§8.7.2 d) — par défaut celle
-      // qui clôture, sauf précision explicite d'une autre personne dans cette même requête.
-      if (!('decided_by' in update)) {
+      // qui clôture, sauf précision explicite d'une autre personne. On relit la valeur EFFECTIVE
+      // (déjà en base si absente de cette requête) plutôt que juste "la clé est-elle présente" :
+      // le formulaire d'édition du frontend envoie toujours `decided_by` (null si rien n'est
+      // sélectionné), donc un simple `'decided_by' in update` laisserait passer un decided_by
+      // explicitement effacé à la clôture, perdant la traçabilité exigée par §8.7.2 d).
+      const decidedBy = 'decided_by' in update ? update.decided_by : existing.decided_by;
+      if (!decidedBy) {
         update.decided_by = req.user.id;
       }
     }
