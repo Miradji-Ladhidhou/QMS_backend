@@ -1424,6 +1424,27 @@ create table quality_objectives (
 );
 alter table capas add column quality_objective_id uuid references quality_objectives (id) on delete set null;
 
+-- Contexte de l'organisme et parties intéressées (ISO 9001 §4.1-4.3). Même principe que
+-- quality_policy_versions : la version en vigueur est la plus récente par created_at, un
+-- nouvel enregistrement admin devient directement la version courante. Pas d'accusé de
+-- lecture ici (contrairement à la politique qualité) : c'est un exercice de direction, pas
+-- une communication descendante à tout le tenant. interested_parties en jsonb : §4.2 exige
+-- plusieurs parties intéressées, chacune avec ses propres exigences — un tableau structuré
+-- plutôt qu'un champ texte libre unique, même raisonnement que
+-- procedure_templates.section_structure pour une liste répétable sans table enfant dédiée.
+create table qms_context_versions (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants (id) on delete cascade,
+  external_issues       text,
+  internal_issues       text,
+  interested_parties    jsonb not null default '[]',
+  products_services     text,
+  scope_description     text,
+  excluded_requirements text,
+  created_by            uuid references users (id) on delete set null,
+  created_at            timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1636,6 +1657,8 @@ create index idx_quality_policy_acknowledgments_tenant_id on quality_policy_ackn
 create index idx_quality_policy_acknowledgments_version_id on quality_policy_acknowledgments (quality_policy_version_id);
 
 create index idx_quality_objectives_tenant_id on quality_objectives (tenant_id);
+
+create index idx_qms_context_versions_tenant_created on qms_context_versions (tenant_id, created_at desc);
 
 -- =============================================================================
 -- TRIGGERS
@@ -2000,6 +2023,7 @@ alter table google_drive_connections enable row level security;
 alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
 alter table quality_objectives enable row level security;
+alter table qms_context_versions enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2336,6 +2360,11 @@ create policy quality_policy_acknowledgments_isolation on quality_policy_acknowl
   with check (tenant_id = auth_tenant_id());
 
 create policy quality_objectives_isolation on quality_objectives
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy qms_context_versions_isolation on qms_context_versions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
