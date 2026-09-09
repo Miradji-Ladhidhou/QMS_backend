@@ -23,6 +23,7 @@ export const MENU_ITEM_KEYS = [
   'accidents',
   'pdca',
   'quality-objectives',
+  'measuring-equipment',
   'my-approvals',
   'services',
   'employees',
