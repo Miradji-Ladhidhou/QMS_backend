@@ -74,6 +74,21 @@ describe('POST /api/qms-context — publication réservée admin', () => {
     expect(res.status).toBe(400);
   });
 
+  it('refuse proprement (400, jamais un crash) un interested_parties qui n’est pas un tableau', async () => {
+    tenant = await createTenant();
+
+    // Le validateur .custom() appelle parties.every(...) : si express-validator l'exécutait
+    // malgré l'échec de .isArray() sans capturer l'exception, une chaîne ou un objet ferait
+    // planter la requête (TypeError: parties.every is not a function) au lieu d'un 400 propre.
+    for (const invalidValue of ['not-an-array', { name: 'oops' }]) {
+      const res = await request(app)
+        .post('/api/qms-context')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ interested_parties: invalidValue });
+      expect(res.status).toBe(400);
+    }
+  });
+
   it('republier crée une nouvelle version courante, l’ancienne reste dans l’historique', async () => {
     tenant = await createTenant();
 
