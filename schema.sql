@@ -1196,7 +1196,8 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output'
+      'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output',
+      'order_review'
     )
   ),
   name          text not null,
@@ -1514,6 +1515,40 @@ create table nonconforming_outputs (
 );
 alter table capas add column nonconforming_output_id uuid references nonconforming_outputs (id) on delete set null;
 
+-- Revue des exigences avant engagement (ISO 9001 §8.2.3). Un enregistrement par commande/
+-- contrat/appel d'offres revu avant acceptation. specified_requirements couvre §8.2.3.1 a)
+-- (exigences client, livraison et après-livraison incluses) ; implicit_requirements couvre
+-- §8.2.2 b) (non énoncées mais nécessaires à l'usage prévu) ; regulatory_requirements couvre
+-- §8.2.2 c)/§8.2.3.1 d). discrepancies documente les écarts avec ce qui avait été précédemment
+-- exprimé (ex. devis) — §8.2.3.1 e), qui doivent être résolus (discrepancies_resolved) avant
+-- acceptation. capability_confirmed matérialise l'exigence d'introduction de §8.2.3.1 (capacité
+-- à répondre aux exigences confirmée avant engagement). Pas de lien CAPA : refuser une commande
+-- est une décision commerciale, pas une non-conformité (voir routes/orderReviews.js).
+create table order_reviews (
+  id                       uuid primary key default gen_random_uuid(),
+  tenant_id                uuid not null references tenants (id) on delete cascade,
+  title                    text not null,
+  customer_name            text not null,
+  customer_contact         text,
+  reference                text,
+  received_at              date not null,
+  specified_requirements   text not null,
+  implicit_requirements    text,
+  regulatory_requirements  text,
+  discrepancies            text,
+  discrepancies_resolved   boolean not null default false,
+  capability_confirmed     boolean not null default false,
+  status                   text not null default 'pending' check (status in ('pending', 'accepted', 'rejected')),
+  decision_comment         text,
+  reviewed_by              uuid references users (id) on delete set null,
+  reviewed_at              timestamptz,
+  service_id               uuid references services (id) on delete set null,
+  category_id              uuid references categories (id) on delete set null,
+  created_by               uuid references users (id) on delete set null,
+  created_at               timestamptz not null default now(),
+  updated_at               timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1734,6 +1769,7 @@ create index idx_equipment_calibrations_tenant_id on equipment_calibrations (ten
 create index idx_equipment_calibrations_equipment_id on equipment_calibrations (equipment_id);
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
+create index idx_order_reviews_tenant_id on order_reviews (tenant_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -1936,6 +1972,9 @@ create trigger trg_measuring_equipment_updated_at before update on measuring_equ
 create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
   for each row execute function set_updated_at();
 
+create trigger trg_order_reviews_updated_at before update on order_reviews
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -2108,6 +2147,7 @@ alter table qms_context_versions enable row level security;
 alter table measuring_equipment enable row level security;
 alter table equipment_calibrations enable row level security;
 alter table nonconforming_outputs enable row level security;
+alter table order_reviews enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2464,6 +2504,11 @@ create policy equipment_calibrations_isolation on equipment_calibrations
   with check (tenant_id = auth_tenant_id());
 
 create policy nonconforming_outputs_isolation on nonconforming_outputs
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy order_reviews_isolation on order_reviews
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

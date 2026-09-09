@@ -28,6 +28,7 @@ const RESOURCE_TYPES = [
   'quality_objective',
   'measuring_equipment',
   'nonconforming_output',
+  'order_review',
 ];
 
 // Table réellement porteuse de category_id pour chaque resource_type — voir schema.sql.
@@ -50,6 +51,7 @@ const RESOURCE_TABLE_INFO = {
   quality_objective: { table: 'quality_objectives', singular: 'objectif qualité', plural: 'objectifs qualité' },
   measuring_equipment: { table: 'measuring_equipment', singular: 'équipement de mesure', plural: 'équipements de mesure' },
   nonconforming_output: { table: 'nonconforming_outputs', singular: 'non-conformité produit/service', plural: 'non-conformités produit/service' },
+  order_review: { table: 'order_reviews', singular: 'revue de commande', plural: 'revues de commande' },
 };
 
 router.use(requireAuth);

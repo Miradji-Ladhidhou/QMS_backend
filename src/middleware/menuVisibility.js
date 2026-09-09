@@ -25,6 +25,7 @@ export const MENU_ITEM_KEYS = [
   'quality-objectives',
   'measuring-equipment',
   'nonconforming-outputs',
+  'order-reviews',
   'my-approvals',
   'services',
   'employees',
