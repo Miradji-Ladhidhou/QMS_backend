@@ -273,10 +273,14 @@ router.patch(
       }
     }
 
-    // Décision : horodatage posé une seule fois, à la première transition hors de 'pending'
-    // (mirroring accidents.js/nonconforming_outputs.js#closed_at) — jamais réécrit si la revue
-    // avait déjà été décidée.
-    if ((update.status === 'accepted' || update.status === 'rejected') && existing.status === 'pending') {
+    // Décision : horodatage rafraîchi à chaque changement RÉEL de décision — pas seulement à la
+    // première sortie de 'pending' comme closed_at sur accidents.js/nonconforming_outputs.js :
+    // ces modules n'ont qu'un seul état terminal, alors qu'ici une revue peut basculer
+    // directement de 'rejected' à 'accepted' (ou l'inverse) sans repasser par 'pending' — un
+    // reviewed_at qui ne bougerait pas dans ce cas figerait la date de la PREMIÈRE décision,
+    // rendant la trace documentée (§8.2.3.2) fausse dès qu'une décision est révisée. On ne le
+    // réécrit que si le statut change réellement (pas sur un PATCH qui répète le même statut).
+    if ((update.status === 'accepted' || update.status === 'rejected') && existing.status !== update.status) {
       update.reviewed_at = new Date().toISOString();
     }
 

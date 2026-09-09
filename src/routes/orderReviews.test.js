@@ -141,6 +141,29 @@ describe('PATCH /api/order-reviews/:id — acceptation : capacité confirmée ex
     expect(secondPatch.status).toBe(200);
     expect(secondPatch.body.reviewed_at).toBe(firstReviewedAt);
   });
+
+  it('rafraîchit reviewed_at sur un basculement direct rejected → accepted (sans repasser par pending)', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token);
+
+    const rejected = await request(app)
+      .patch(`/api/order-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'rejected', decision_comment: 'Capacité insuffisante à cette date.' });
+    expect(rejected.status).toBe(200);
+    const rejectedAt = rejected.body.reviewed_at;
+
+    // Petit délai pour garantir un horodatage distinct du précédent (résolution de la seconde).
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    const accepted = await request(app)
+      .patch(`/api/order-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'accepted', capability_confirmed: true });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.status).toBe('accepted');
+    expect(accepted.body.reviewed_at).not.toBe(rejectedAt);
+  });
 });
 
 describe('PATCH /api/order-reviews/:id — acceptation : écart non résolu bloque', () => {
