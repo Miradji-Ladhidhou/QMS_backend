@@ -47,11 +47,7 @@ export const MODULE_KPI_SOURCES = {
     table: 'capas',
     label: 'CAPA',
     async fetchRows(tenantId) {
-      const rows = await selectAll(
-        'capas',
-        'id, status, priority, severity, due_date, closed_at, created_at, preventive_action',
-        tenantId
-      );
+      const rows = await selectAll('capas', 'id, status, due_date, closed_at, created_at, root_cause', tenantId);
       const now = new Date();
       const past = (d) => {
         if (!d) return false;
@@ -60,23 +56,19 @@ export const MODULE_KPI_SOURCES = {
       };
       return rowsFrom(rows, (r) => {
         const isOpen = r.status !== 'closed';
-        const missed = !r.due_date
-          ? ''
-          : bool01(r.closed_at ? onTime(r.closed_at, r.due_date) === '0' : past(r.due_date));
         return {
-          _is_closed: bool01(r.status === 'closed'),
           _resolution_days: daysBetween(r.created_at, r.closed_at),
           _on_time: onTime(r.closed_at, r.due_date),
           _is_open: bool01(isOpen),
           _is_overdue: bool01(isOpen && r.due_date && past(r.due_date)),
           _open_age_days: isOpen ? daysBetween(r.created_at, now) : '',
-          _missed_deadline: missed,
           // CAPA rouverte : elle a une date de clôture mais son statut est repassé en cours.
-          // C'est le seul signal automatique qu'une action corrective n'a pas tenu (§10.2).
+          // C'est le seul signal automatique qu'une action corrective n'a pas tenu (§10.2.1 f).
           // (Une CAPA n'est jamais clôturée sans effectiveness_verified === true — un « échec »
-          // de vérification la laisse ouverte, sans closed_at : inutile de suivre ce champ ici.)
+          // de vérification la laisse ouverte, sans closed_at.)
           _reopened: bool01(r.closed_at && r.status !== 'closed'),
-          _has_preventive: bool01(r.preventive_action && String(r.preventive_action).trim() !== ''),
+          // CAPA ouverte sans analyse de cause consignée — check direct du §10.2.1 b).
+          _no_root_cause: bool01(isOpen && (!r.root_cause || String(r.root_cause).trim() === '')),
         };
       });
     },
@@ -170,34 +162,69 @@ export const MODULE_KPI_SOURCES = {
 // bucketing par fréquence est fait par moduleKpiRecompute.js.
 export const MODULE_KPI_PRESETS = [
   // --- CAPA ---
+  // Jeu orienté audit (§10.2 / §9.1) : une question d'auditeur = un indicateur = une courbe.
+  // Pas de cible « maison » sauf la ligne à 0 là où tout écart est une non-conformité.
+
+  // Maîtrise du stock (photo à date).
   {
-    id: 'capa_closed_count',
+    id: 'capa_overdue_backlog',
     module: 'capa',
-    label: 'CAPA clôturées',
-    description: 'Nombre de CAPA passées au statut « clôturé » sur la période.',
+    label: 'CAPA en retard à ce jour',
+    description: 'Nombre de CAPA non clôturées dont l’échéance est dépassée au moment du calcul.',
     unit: 'CAPA',
-    target_direction: 'max',
+    target: 0,
+    target_direction: 'min',
     frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: 'status', operator: 'equals', value: 'closed' }] },
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
   },
   {
-    id: 'capa_on_time_rate',
+    id: 'capa_oldest_open_age',
     module: 'capa',
-    label: 'CAPA clôturées dans les délais',
-    description: 'Part des CAPA clôturées dont la date de clôture respecte l’échéance.',
-    unit: '%',
-    target: 90,
-    target_direction: 'max',
+    label: 'Ancienneté de la plus ancienne CAPA ouverte',
+    description: 'Nombre de jours écoulés depuis la création de la plus vieille CAPA encore ouverte.',
+    unit: 'jours',
+    target_direction: 'min',
     frequency: 'monthly',
-    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
+    recipe: {
+      calc_type: 'max',
+      source_column: '_open_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
   },
+  {
+    id: 'capa_open_backlog',
+    module: 'capa',
+    label: 'CAPA ouvertes à ce jour',
+    description: 'Nombre de CAPA non clôturées au moment du calcul — suit la résorption du stock.',
+    unit: 'CAPA',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_open_age_days',
+    module: 'capa',
+    label: 'Âge moyen des CAPA ouvertes',
+    description: 'Ancienneté moyenne (jours) des CAPA non clôturées au moment du calcul.',
+    unit: 'jours',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'average',
+      source_column: '_open_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
+  },
+
+  // Délais de traitement (par mois de clôture).
   {
     id: 'capa_resolution_days',
     module: 'capa',
     label: 'Délai moyen de traitement des CAPA',
     description: 'Nombre de jours moyen entre la création et la clôture d’une CAPA.',
     unit: 'jours',
-    target: 30,
     target_direction: 'min',
     frequency: 'monthly',
     recipe: {
@@ -208,85 +235,58 @@ export const MODULE_KPI_PRESETS = [
     },
   },
   {
+    id: 'capa_on_time_rate',
+    module: 'capa',
+    label: 'CAPA clôturées dans les délais',
+    description: 'Part des CAPA clôturées dont la date de clôture respecte l’échéance (CAPA sans échéance incluses au dénominateur).',
+    unit: '%',
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
+  },
+
+  // Efficacité / rigueur (photo à date, toute valeur > 0 est une non-conformité).
+  {
+    id: 'capa_reopened_backlog',
+    module: 'capa',
+    label: 'CAPA rouvertes',
+    description: 'Nombre de CAPA actuellement dans un état rouvert (date de clôture posée, statut repassé en cours) — §10.2.1 f).',
+    unit: 'CAPA',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_reopened', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_no_root_cause_backlog',
+    module: 'capa',
+    label: 'CAPA ouvertes sans analyse de cause',
+    description: 'Nombre de CAPA non clôturées dont le champ « cause racine » est vide — §10.2.1 b).',
+    unit: 'CAPA',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_root_cause', operator: 'equals', value: '1' }] },
+  },
+
+  // Activité (par mois).
+  {
     id: 'capa_opened_count',
     module: 'capa',
-    label: 'CAPA ouvertes',
+    label: 'Nouvelles CAPA',
     description: 'Nombre de CAPA créées sur la période.',
     unit: 'CAPA',
-    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'created_at' },
   },
   {
-    id: 'capa_reopened_count',
+    id: 'capa_closed_count',
     module: 'capa',
-    label: 'CAPA rouvertes',
-    description:
-      'Nombre de CAPA clôturées sur la période qui ont depuis été rouvertes — signal qu’une action corrective n’a pas tenu (§10.2).',
+    label: 'CAPA clôturées',
+    description: 'Nombre de CAPA passées au statut « clôturé » sur la période.',
     unit: 'CAPA',
-    target: 0,
-    target_direction: 'min',
     frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: '_reopened', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_preventive_rate',
-    module: 'capa',
-    label: 'CAPA assorties d’une action préventive',
-    description: 'Part des CAPA clôturées comportant une action préventive renseignée.',
-    unit: '%',
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_has_preventive', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_missed_deadline_count',
-    module: 'capa',
-    label: 'Échéances de CAPA manquées',
-    description: 'Nombre de CAPA dont l’échéance tombe sur la période sans avoir été traitées à temps.',
-    unit: 'CAPA',
-    target: 0,
-    target_direction: 'min',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: 'due_date', filters: [{ column: '_missed_deadline', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_open_backlog',
-    module: 'capa',
-    label: 'CAPA ouvertes à ce jour',
-    description: 'Nombre de CAPA non clôturées au moment du calcul (photo à date).',
-    unit: 'CAPA',
-    target: 15,
-    target_direction: 'min',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_overdue_backlog',
-    module: 'capa',
-    label: 'CAPA en retard à ce jour',
-    description: 'Nombre de CAPA non clôturées dont l’échéance est dépassée au moment du calcul (photo à date).',
-    unit: 'CAPA',
-    target: 0,
-    target_direction: 'min',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_open_age_days',
-    module: 'capa',
-    label: 'Âge moyen des CAPA ouvertes',
-    description: 'Ancienneté moyenne (jours) des CAPA non clôturées au moment du calcul (photo à date).',
-    unit: 'jours',
-    target: 45,
-    target_direction: 'min',
-    frequency: 'monthly',
-    recipe: {
-      calc_type: 'average',
-      source_column: '_open_age_days',
-      period_column: '__snapshot__',
-      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
-    },
+    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: 'status', operator: 'equals', value: 'closed' }] },
   },
 
   // --- Non-conformités produit/service ---

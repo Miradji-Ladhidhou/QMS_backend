@@ -208,7 +208,7 @@ describe('KPI de module — photo à date (snapshot)', () => {
     expect(Number(records[0].value)).toBe(2);
     expect(records[0].period_date).toBe(currentMonthBucket());
     expect(records[0].source).toBe('module');
-    expect(created.body.target).toBe(15);
+    expect(created.body.target).toBeNull(); // pas de cible « maison » sur le stock
   });
 
   it('« CAPA en retard à ce jour » ne compte que les CAPA ouvertes hors délai', async () => {
@@ -242,8 +242,8 @@ describe('KPI de module — photo à date (snapshot)', () => {
   });
 });
 
-describe('KPI de module — efficacité CAPA', () => {
-  it('« CAPA rouvertes » compte les CAPA clôturées puis repassées en cours', async () => {
+describe('KPI de module — efficacité / rigueur CAPA', () => {
+  it('« CAPA rouvertes » compte l’état rouvert courant, pas le mois de clôture', async () => {
     tenant = await createTenant();
     const t = tenant.admin.token;
 
@@ -259,11 +259,42 @@ describe('KPI de module — efficacité CAPA', () => {
     expect(reopen.status).toBe(200);
     expect(reopen.body.closed_at).toBeTruthy();
 
-    const created = await fromPreset(t, 'capa_reopened_count');
+    const created = await fromPreset(t, 'capa_reopened_backlog');
     expect(created.status).toBe(201);
     const rec = (created.body.records || []).find((r) => r.value !== null);
     expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
     expect(created.body.target).toBe(0);
+  });
+
+  it('« CAPA ouvertes sans analyse de cause » ne compte que les ouvertes au champ cause vide', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeCapa(t); // ouverte, pas de cause
+    await makeCapa(t); // ouverte, pas de cause
+    await makeCapa(t, { root_cause: 'Défaut de réglage machine' }); // ouverte mais cause renseignée
+
+    const created = await fromPreset(t, 'capa_no_root_cause_backlog');
+    expect(created.status).toBe(201);
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2);
+    expect(created.body.target).toBe(0);
+  });
+
+  it('« Ancienneté de la plus ancienne CAPA ouverte » renvoie le maximum, pas la moyenne', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeCapa(t);
+    await makeCapa(t);
+
+    const created = await fromPreset(t, 'capa_oldest_open_age');
+    expect(created.status).toBe(201);
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(rec).toBeTruthy();
+    expect(Number(rec.value)).toBeGreaterThanOrEqual(0);
+    expect(rec.period_date).toBe(currentMonthBucket());
   });
 });
 
