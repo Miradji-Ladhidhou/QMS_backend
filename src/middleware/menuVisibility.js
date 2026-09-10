@@ -27,6 +27,7 @@ export const MENU_ITEM_KEYS = [
   'nonconforming-outputs',
   'order-reviews',
   'qms-changes',
+  'customer-satisfaction',
   'my-approvals',
   'services',
   'employees',

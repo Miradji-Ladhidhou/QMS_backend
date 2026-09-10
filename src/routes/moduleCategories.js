@@ -30,6 +30,7 @@ const RESOURCE_TYPES = [
   'nonconforming_output',
   'order_review',
   'qms_change',
+  'customer_satisfaction',
 ];
 
 // Table réellement porteuse de category_id pour chaque resource_type — voir schema.sql.
@@ -54,6 +55,7 @@ const RESOURCE_TABLE_INFO = {
   nonconforming_output: { table: 'nonconforming_outputs', singular: 'non-conformité produit/service', plural: 'non-conformités produit/service' },
   order_review: { table: 'order_reviews', singular: 'revue de commande', plural: 'revues de commande' },
   qms_change: { table: 'qms_changes', singular: 'modification planifiée', plural: 'modifications planifiées' },
+  customer_satisfaction: { table: 'customer_satisfaction_surveys', singular: 'enquête de satisfaction', plural: 'enquêtes de satisfaction' },
 };
 
 router.use(requireAuth);

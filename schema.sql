@@ -1197,7 +1197,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output',
-      'order_review', 'qms_change'
+      'order_review', 'qms_change', 'customer_satisfaction'
     )
   ),
   name          text not null,
@@ -1583,6 +1583,29 @@ create table qms_changes (
   updated_at                     timestamptz not null default now()
 );
 
+-- Mesure proactive de la satisfaction client (ISO 9001 §9.1.2) — complète le suivi réactif
+-- déjà couvert par complaints.customer_satisfied. Un enregistrement par enquête/mesure
+-- effectuée, indépendamment de toute réclamation. Échelle 1-5, même convention que
+-- supplier_evaluations (quality_score, etc.) pour rester cohérent avec l'existant. method
+-- documente comment la mesure a été obtenue (§9.1.1).
+create table customer_satisfaction_surveys (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  customer_name  text not null,
+  survey_date    date not null,
+  method         text not null default 'questionnaire'
+                  check (method in ('questionnaire', 'phone', 'email', 'in_person', 'other')),
+  score          integer not null check (score between 1 and 5),
+  comments       text,
+  linked_capa_id uuid references capas (id) on delete set null,
+  service_id     uuid references services (id) on delete set null,
+  category_id    uuid references categories (id) on delete set null,
+  created_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+alter table capas add column customer_satisfaction_survey_id uuid references customer_satisfaction_surveys (id) on delete set null;
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1805,6 +1828,7 @@ create index idx_equipment_calibrations_equipment_id on equipment_calibrations (
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
 create index idx_order_reviews_tenant_id on order_reviews (tenant_id);
 create index idx_qms_changes_tenant_id on qms_changes (tenant_id);
+create index idx_customer_satisfaction_surveys_tenant_id on customer_satisfaction_surveys (tenant_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -2013,6 +2037,9 @@ create trigger trg_order_reviews_updated_at before update on order_reviews
 create trigger trg_qms_changes_updated_at before update on qms_changes
   for each row execute function set_updated_at();
 
+create trigger trg_customer_satisfaction_surveys_updated_at before update on customer_satisfaction_surveys
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -2187,6 +2214,7 @@ alter table equipment_calibrations enable row level security;
 alter table nonconforming_outputs enable row level security;
 alter table order_reviews enable row level security;
 alter table qms_changes enable row level security;
+alter table customer_satisfaction_surveys enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2553,6 +2581,11 @@ create policy order_reviews_isolation on order_reviews
   with check (tenant_id = auth_tenant_id());
 
 create policy qms_changes_isolation on qms_changes
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy customer_satisfaction_surveys_isolation on customer_satisfaction_surveys
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
