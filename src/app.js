@@ -51,6 +51,7 @@ import nonconformingOutputsRoutes from './routes/nonconformingOutputs.js';
 import orderReviewsRoutes from './routes/orderReviews.js';
 import qmsChangesRoutes from './routes/qmsChanges.js';
 import customerSatisfactionRoutes from './routes/customerSatisfaction.js';
+import communicationPlanRoutes from './routes/communicationPlan.js';
 
 // Échoue au démarrage plutôt qu'en silence — même principe que services/supabase.js pour
 // SUPABASE_URL/SUPABASE_SERVICE_KEY. Sans ça, un FRONTEND_URL absent en production ferait
@@ -142,6 +143,7 @@ app.use('/api/nonconforming-outputs', nonconformingOutputsRoutes);
 app.use('/api/order-reviews', orderReviewsRoutes);
 app.use('/api/qms-changes', qmsChangesRoutes);
 app.use('/api/customer-satisfaction', customerSatisfactionRoutes);
+app.use('/api/communication-plan', communicationPlanRoutes);
 
 // Filet de sécurité final : toute erreur qui atteint ce point (throw synchrone, rejet async
 // grâce à express-async-errors ci-dessus, ou next(err) explicite) est loguée côté serveur

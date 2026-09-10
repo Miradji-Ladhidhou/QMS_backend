@@ -28,6 +28,7 @@ export const MENU_ITEM_KEYS = [
   'order-reviews',
   'qms-changes',
   'customer-satisfaction',
+  'communication-plan',
   'my-approvals',
   'services',
   'employees',
