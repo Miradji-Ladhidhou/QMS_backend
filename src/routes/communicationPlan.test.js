@@ -131,15 +131,20 @@ describe('PATCH /api/communication-plan/:id — réservé admin', () => {
 });
 
 describe('DELETE /api/communication-plan/:id — réservé admin', () => {
-  it('403 pour un member, 204 pour un admin, 404 ensuite', async () => {
-    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
-    const member = tenant.users[0];
+  it('403 pour un member et un manager, 204 pour un admin, 404 ensuite', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
+    const [member, manager] = tenant.users;
     const item = await makeItem(tenant.admin.token);
 
     const memberDelete = await request(app)
       .delete(`/api/communication-plan/${item.body.id}`)
       .set('Authorization', `Bearer ${member.token}`);
     expect(memberDelete.status).toBe(403);
+
+    const managerDelete = await request(app)
+      .delete(`/api/communication-plan/${item.body.id}`)
+      .set('Authorization', `Bearer ${manager.token}`);
+    expect(managerDelete.status).toBe(403);
 
     const adminDelete = await request(app)
       .delete(`/api/communication-plan/${item.body.id}`)
