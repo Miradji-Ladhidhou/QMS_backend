@@ -125,6 +125,98 @@ async function buildCompetenceCells(tenantId) {
   return cells;
 }
 
+function todayStr() {
+  return new Date().toISOString().slice(0, 10);
+}
+function inDaysStr(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+// Une ligne par fournisseur ACTIF, enrichie de sa dernière évaluation (§8.4). Modèle
+// buildCompetenceCells : pas de filtre de catégorie, un KPI fournisseur couvre le panel.
+async function buildSupplierRows(tenantId) {
+  const today = todayStr();
+  const [supRes, evalRes] = await Promise.all([
+    supabase.from('suppliers').select('id, name, criticality, status, next_evaluation_date').eq('tenant_id', tenantId).limit(50000),
+    supabase
+      .from('supplier_evaluations')
+      .select('supplier_id, evaluation_date, overall_score, decision')
+      .eq('tenant_id', tenantId)
+      .limit(50000),
+  ]);
+  const err = supRes.error || evalRes.error;
+  if (err) throw new Error(`Fournisseurs : ${err.message}`);
+
+  const latest = new Map();
+  for (const e of evalRes.data || []) {
+    const cur = latest.get(e.supplier_id);
+    if (!cur || e.evaluation_date > cur.evaluation_date) latest.set(e.supplier_id, e);
+  }
+
+  return (supRes.data || [])
+    .filter((s) => s.status === 'active')
+    .map((s) => {
+      const ev = latest.get(s.id);
+      const critical = s.criticality === 'high' || s.criticality === 'critical';
+      const score = ev ? Number(ev.overall_score) : '';
+      return {
+        row_index: s.id,
+        row_data: {
+          name: s.name,
+          criticality: s.criticality,
+          _is_critical: bool01(critical),
+          _eval_overdue: bool01(s.next_evaluation_date && s.next_evaluation_date < today),
+          _never_evaluated: bool01(critical && !ev),
+          _latest_score: score === '' || Number.isNaN(score) ? '' : score,
+          _below_threshold: score !== '' && !Number.isNaN(score) && score < 3 ? '1' : '0',
+          _to_replace: bool01(ev && ev.decision === 'to_replace'),
+        },
+      };
+    });
+}
+
+// Une ligne par équipement de mesure ACTIF, enrichie de son dernier étalonnage (§7.1.5).
+// next_calibration_date est manuel (comme suppliers.next_evaluation_date) — mêmes règles
+// d'échéance que la matrice compétences, fenêtre RENEWAL_WINDOW_DAYS.
+async function buildEquipmentRows(tenantId) {
+  const today = todayStr();
+  const soon = inDaysStr(RENEWAL_WINDOW_DAYS);
+  const [eqRes, calRes] = await Promise.all([
+    supabase.from('measuring_equipment').select('id, name, is_active, next_calibration_date').eq('tenant_id', tenantId).limit(50000),
+    supabase.from('equipment_calibrations').select('equipment_id, calibration_date, result').eq('tenant_id', tenantId).limit(50000),
+  ]);
+  const err = eqRes.error || calRes.error;
+  if (err) throw new Error(`Étalonnage : ${err.message}`);
+
+  const latest = new Map();
+  for (const c of calRes.data || []) {
+    const cur = latest.get(c.equipment_id);
+    if (!cur || c.calibration_date > cur.calibration_date) latest.set(c.equipment_id, c);
+  }
+
+  return (eqRes.data || [])
+    .filter((e) => e.is_active)
+    .map((e) => {
+      const cal = latest.get(e.id);
+      const due = e.next_calibration_date;
+      const overdue = Boolean(due && due < today);
+      return {
+        row_index: e.id,
+        row_data: {
+          name: e.name,
+          _overdue: bool01(overdue),
+          _due_soon: bool01(due && due >= today && due <= soon),
+          _no_schedule: bool01(!due),
+          _up_to_date: bool01(due && due >= today),
+          _days_overdue: overdue ? daysBetween(due, today) : '',
+          _last_non_conform: bool01(cal && cal.result === 'non_conform'),
+        },
+      };
+    });
+}
+
 // Clés = valeur stockée dans kpis.source_module.
 export const MODULE_KPI_SOURCES = {
   capa: {
@@ -304,6 +396,61 @@ export const MODULE_KPI_SOURCES = {
           _fully_covered: bool01(!p.gap),
         },
       }));
+    },
+  },
+
+  // Risques & opportunités (§6.1). risk_score est généré (probabilité × gravité, 1-25) ;
+  // bandes alignées sur frontend/src/lib/riskStatus.js : ≥ 10 = élevé/critique.
+  risk: {
+    table: 'risks',
+    label: 'Risques',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const rows = await selectAll('risks', 'id, status, risk_score, treatment_plan, review_date, created_at', tenantId);
+      return rowsFrom(rows, (r) => {
+        const isOpen = r.status === 'identified' || r.status === 'treating';
+        const score = Number(r.risk_score);
+        return {
+          _is_open: bool01(isOpen),
+          _high_untreated: bool01(isOpen && score >= 10),
+          _no_plan: bool01(isOpen && (!r.treatment_plan || String(r.treatment_plan).trim() === '')),
+          _review_overdue: bool01(r.status !== 'closed' && r.review_date && r.review_date < today),
+          // Risque « maîtrisé » : traité, accepté en connaissance de cause, ou clôturé.
+          _handled: bool01(r.status === 'treated' || r.status === 'accepted' || r.status === 'closed'),
+        };
+      });
+    },
+  },
+
+  // Fournisseurs (§8.4) — une ligne par fournisseur actif + sa dernière évaluation.
+  supplier: {
+    table: 'suppliers',
+    label: 'Fournisseurs',
+    fetchRows: buildSupplierRows,
+  },
+  // Évaluations fournisseurs, brut — volume mensuel.
+  supplier_evaluation: {
+    table: 'supplier_evaluations',
+    label: 'Fournisseurs',
+    async fetchRows(tenantId) {
+      const rows = await selectAll('supplier_evaluations', 'id, evaluation_date, overall_score, decision', tenantId);
+      return rowsFrom(rows, () => ({}));
+    },
+  },
+
+  // Étalonnage (§7.1.5) — une ligne par équipement de mesure actif + son dernier étalonnage.
+  equipment: {
+    table: 'measuring_equipment',
+    label: 'Étalonnage',
+    fetchRows: buildEquipmentRows,
+  },
+  // Étalonnages réalisés, brut — volume mensuel.
+  equipment_calibration: {
+    table: 'equipment_calibrations',
+    label: 'Étalonnage',
+    async fetchRows(tenantId) {
+      const rows = await selectAll('equipment_calibrations', 'id, calibration_date, result', tenantId);
+      return rowsFrom(rows, () => ({}));
     },
   },
 };
@@ -858,6 +1005,250 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'completed_at' },
+  },
+
+  // --- Risques & opportunités ---
+  // Jeu orienté audit (§6.1). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'risk_high_untreated_backlog',
+    module: 'risk',
+    label: 'Risques élevés non traités à ce jour',
+    description: 'Nombre de risques de criticité élevée ou critique (score ≥ 10) encore au statut « identifié » ou « en traitement ».',
+    unit: 'risques',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_high_untreated', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'risk_no_plan_backlog',
+    module: 'risk',
+    label: 'Risques actifs sans plan de traitement',
+    description: 'Nombre de risques non traités dont le champ « plan de traitement » est vide.',
+    unit: 'risques',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_plan', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'risk_review_overdue_backlog',
+    module: 'risk',
+    label: 'Risques dont la revue est en retard',
+    description: 'Nombre de risques non clôturés dont la date de revue est dépassée.',
+    unit: 'risques',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_review_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'risk_open_backlog',
+    module: 'risk',
+    label: 'Risques actifs à ce jour',
+    description: 'Nombre de risques au statut « identifié » ou « en traitement » au moment du calcul.',
+    unit: 'risques',
+    target: 20,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'risk_avg_score',
+    module: 'risk',
+    label: 'Criticité moyenne des risques actifs',
+    description: 'Score moyen (probabilité × gravité) des risques non traités.',
+    unit: 'points',
+    target: 8,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'average',
+      source_column: 'risk_score',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'risk_treatment_coverage',
+    module: 'risk',
+    label: 'Taux de risques maîtrisés',
+    description: 'Part des risques qui sont traités, acceptés ou clôturés (par rapport à l’ensemble du registre).',
+    unit: '%',
+    target: 80,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_handled', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'risk_opened_count',
+    module: 'risk',
+    label: 'Nouveaux risques identifiés',
+    description: 'Nombre de risques créés sur la période.',
+    unit: 'risques',
+    target: 5,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'created_at' },
+  },
+
+  // --- Fournisseurs ---
+  // Jeu orienté audit (§8.4). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'supplier_eval_overdue_backlog',
+    module: 'supplier',
+    label: 'Fournisseurs à réévaluer en retard',
+    description: 'Nombre de fournisseurs actifs dont la date de prochaine évaluation est dépassée.',
+    unit: 'fournisseurs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_eval_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'supplier_critical_unevaluated_backlog',
+    module: 'supplier',
+    label: 'Fournisseurs critiques jamais évalués',
+    description: 'Nombre de fournisseurs de criticité élevée ou critique sans aucune évaluation enregistrée.',
+    unit: 'fournisseurs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_never_evaluated', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'supplier_below_threshold_backlog',
+    module: 'supplier',
+    label: 'Fournisseurs sous le seuil (note < 3/5)',
+    description: 'Nombre de fournisseurs actifs dont la dernière note globale est inférieure à 3 sur 5.',
+    unit: 'fournisseurs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_below_threshold', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'supplier_to_replace_backlog',
+    module: 'supplier',
+    label: 'Fournisseurs « à remplacer » encore actifs',
+    description: 'Nombre de fournisseurs dont la dernière évaluation conclut « à remplacer » mais qui restent au statut actif.',
+    unit: 'fournisseurs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_to_replace', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'supplier_avg_score',
+    module: 'supplier',
+    label: 'Note moyenne des fournisseurs évalués',
+    description: 'Moyenne de la dernière note globale (sur 5) des fournisseurs actifs qui ont été évalués.',
+    unit: '/5',
+    target: 4,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'average',
+      source_column: '_latest_score',
+      period_column: '__snapshot__',
+      filters: [{ column: '_latest_score', operator: 'is_not_empty' }],
+    },
+  },
+  {
+    id: 'supplier_evaluations_count',
+    module: 'supplier_evaluation',
+    label: 'Évaluations fournisseurs réalisées',
+    description: 'Nombre d’évaluations de fournisseurs consignées sur la période.',
+    unit: 'évaluations',
+    target: 1,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'evaluation_date' },
+  },
+
+  // --- Étalonnage ---
+  // Jeu orienté audit (§7.1.5). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'calibration_overdue_backlog',
+    module: 'equipment',
+    label: 'Équipements avec étalonnage dépassé',
+    description: 'Nombre d’équipements de mesure actifs dont la date de prochain étalonnage est dépassée.',
+    unit: 'équipements',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'calibration_no_schedule_backlog',
+    module: 'equipment',
+    label: 'Équipements actifs sans échéance d’étalonnage',
+    description: 'Nombre d’équipements de mesure actifs pour lesquels aucune date de prochain étalonnage n’est planifiée.',
+    unit: 'équipements',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_schedule', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'calibration_non_conform_backlog',
+    module: 'equipment',
+    label: 'Équipements au dernier étalonnage non conforme',
+    description: 'Nombre d’équipements actifs dont le dernier étalonnage a été déclaré non conforme.',
+    unit: 'équipements',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_last_non_conform', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'calibration_oldest_overdue_days',
+    module: 'equipment',
+    label: 'Retard de l’étalonnage le plus en retard',
+    description: 'Nombre de jours écoulés depuis l’échéance d’étalonnage la plus ancienne non traitée.',
+    unit: 'jours',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'max',
+      source_column: '_days_overdue',
+      period_column: '__snapshot__',
+      filters: [{ column: '_overdue', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'calibration_due_soon_backlog',
+    module: 'equipment',
+    label: 'Étalonnages à faire sous 60 jours',
+    description: 'Nombre d’équipements dont l’étalonnage arrive à échéance dans les 60 jours — anticipation.',
+    unit: 'équipements',
+    target: 10,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_due_soon', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'calibration_coverage_rate',
+    module: 'equipment',
+    label: 'Taux d’équipements à jour d’étalonnage',
+    description: 'Part des équipements de mesure actifs dont l’étalonnage est valide (échéance non dépassée).',
+    unit: '%',
+    target: 95,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_up_to_date', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'calibration_done_count',
+    module: 'equipment_calibration',
+    label: 'Étalonnages réalisés',
+    description: 'Nombre d’étalonnages ou vérifications consignés sur la période.',
+    unit: 'étalonnages',
+    target: 1,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'calibration_date' },
   },
 ];
 

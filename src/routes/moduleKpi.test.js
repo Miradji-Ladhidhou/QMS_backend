@@ -461,6 +461,159 @@ describe('KPI de module — compétences (matrice)', () => {
   });
 });
 
+describe('KPI de module — risques', () => {
+  async function makeRisk(token, body) {
+    const res = await request(app).post('/api/risks').set('Authorization', `Bearer ${token}`).send({ title: 'Risque', ...body });
+    if (res.status !== 201) throw new Error(`makeRisk a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('« Risques élevés non traités » + « sans plan » + « revue en retard »', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeRisk(t, { likelihood: 4, impact: 3 }); // score 12, statut identified, pas de plan
+    await makeRisk(t, { likelihood: 1, impact: 2, review_date: '2020-01-01' }); // score 2, revue dépassée
+
+    const high = await fromPreset(t, 'risk_high_untreated_backlog');
+    expect(high.status).toBe(201);
+    let rec = (high.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+    expect(high.body.target).toBe(0);
+    expect(high.body.target_direction).toBe('max');
+
+    const noPlan = await fromPreset(t, 'risk_no_plan_backlog');
+    rec = (noPlan.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2); // les deux risques sont ouverts sans plan
+
+    const review = await fromPreset(t, 'risk_review_overdue_backlog');
+    rec = (review.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+  });
+
+  it('« Taux de risques maîtrisés » = part des risques traités/acceptés/clôturés', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const r1 = await makeRisk(t, { likelihood: 3, impact: 3 });
+    await makeRisk(t, { likelihood: 2, impact: 2 });
+    // Passer à « accepté » exige l'évaluation résiduelle (gate risks.js).
+    const patch = await request(app)
+      .patch(`/api/risks/${r1.id}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ status: 'accepted', residual_likelihood: 1, residual_impact: 1 });
+    expect(patch.status).toBe(200);
+
+    const coverage = await fromPreset(t, 'risk_treatment_coverage');
+    const rec = (coverage.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(50);
+  });
+});
+
+describe('KPI de module — fournisseurs', () => {
+  async function makeSupplier(token, body) {
+    const res = await request(app).post('/api/suppliers').set('Authorization', `Bearer ${token}`).send({ name: 'Fournisseur', ...body });
+    if (res.status !== 201) throw new Error(`makeSupplier a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+  async function addEvaluation(token, supplierId, body) {
+    const res = await request(app)
+      .post(`/api/suppliers/${supplierId}/evaluations`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        evaluation_date: '2026-01-15',
+        quality_score: 4,
+        delivery_score: 4,
+        price_score: 4,
+        responsiveness_score: 4,
+        ...body,
+      });
+    if (res.status !== 201) throw new Error(`addEvaluation a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('critiques non évalués, évaluations en retard, note sous le seuil', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeSupplier(t, { criticality: 'critical' }); // critique, jamais évalué
+    await makeSupplier(t, { criticality: 'low', next_evaluation_date: '2020-01-01' }); // éval en retard
+    const s3 = await makeSupplier(t, { criticality: 'medium' });
+    await addEvaluation(t, s3.id, { quality_score: 2, delivery_score: 2, price_score: 2, responsiveness_score: 2 }); // note 2/5
+
+    const unev = await fromPreset(t, 'supplier_critical_unevaluated_backlog');
+    let rec = (unev.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+
+    const overdue = await fromPreset(t, 'supplier_eval_overdue_backlog');
+    rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const below = await fromPreset(t, 'supplier_below_threshold_backlog');
+    rec = (below.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const avg = await fromPreset(t, 'supplier_avg_score');
+    rec = (avg.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2); // seul s3 a une évaluation
+  });
+});
+
+describe('KPI de module — étalonnage', () => {
+  async function makeEquipment(token, body) {
+    const res = await request(app)
+      .post('/api/measuring-equipment')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Équipement', ...body });
+    if (res.status !== 201) throw new Error(`makeEquipment a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+  async function addCalibration(token, equipmentId, body) {
+    const res = await request(app)
+      .post(`/api/measuring-equipment/${equipmentId}/calibrations`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ calibration_date: '2026-01-10', ...body });
+    if (res.status !== 201) throw new Error(`addCalibration a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('dépassés, sans échéance, dernier étalonnage non conforme', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const e1 = await makeEquipment(t, { next_calibration_date: '2020-01-01' }); // dépassé
+    await makeEquipment(t, {}); // sans échéance
+    const e3 = await makeEquipment(t, { next_calibration_date: '2999-01-01' });
+    await addCalibration(t, e3.id, { result: 'non_conform', comment: 'écart de 0,3 mm constaté' });
+
+    const overdue = await fromPreset(t, 'calibration_overdue_backlog');
+    let rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+    expect(overdue.body.target).toBe(0);
+
+    const oldest = await fromPreset(t, 'calibration_oldest_overdue_days');
+    rec = (oldest.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeGreaterThan(0);
+
+    const noSched = await fromPreset(t, 'calibration_no_schedule_backlog');
+    rec = (noSched.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const nc = await fromPreset(t, 'calibration_non_conform_backlog');
+    rec = (nc.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    // 3 équipements actifs : e3 à jour, e1 dépassé, e2 sans échéance → couverture 1/3.
+    const coverage = await fromPreset(t, 'calibration_coverage_rate');
+    rec = (coverage.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeCloseTo(33.33, 1);
+    expect(e1.next_calibration_date).toBe('2020-01-01');
+  });
+});
+
 describe('KPI de module — satisfaction (average)', () => {
   it('« Note moyenne » = moyenne des scores du mois', async () => {
     tenant = await createTenant();
