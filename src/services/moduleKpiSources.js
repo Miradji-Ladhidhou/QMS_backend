@@ -92,15 +92,36 @@ export const MODULE_KPI_SOURCES = {
     async fetchRows(tenantId) {
       const rows = await selectAll(
         'complaints',
-        'id, status, severity, received_date, due_date, resolution_date, customer_satisfied, created_at',
+        'id, status, severity, received_date, due_date, resolution_date, customer_satisfied, root_cause, linked_capa_id, created_at',
         tenantId
       );
-      return rowsFrom(rows, (r) => ({
-        _is_closed: bool01(r.status === 'resolved' || r.status === 'closed'),
-        _resolution_days: daysBetween(r.received_date, r.resolution_date),
-        _on_time: onTime(r.resolution_date, r.due_date),
-        _customer_satisfied: r.customer_satisfied === null || r.customer_satisfied === undefined ? '' : bool01(r.customer_satisfied),
-      }));
+      const now = new Date();
+      const past = (d) => {
+        if (!d) return false;
+        const t = new Date(d);
+        return !Number.isNaN(t.getTime()) && now.getTime() > t.getTime() + DAY_MS - 1;
+      };
+      return rowsFrom(rows, (r) => {
+        const isOpen = r.status === 'received' || r.status === 'investigating';
+        const isResolved = r.status === 'resolved' || r.status === 'closed';
+        const noFeedback = r.customer_satisfied === null || r.customer_satisfied === undefined;
+        const severe = r.severity === 'high' || r.severity === 'critical';
+        return {
+          _resolution_days: daysBetween(r.received_date, r.resolution_date),
+          _on_time: onTime(r.resolution_date, r.due_date),
+          _is_open: bool01(isOpen),
+          _is_overdue: bool01(isOpen && r.due_date && past(r.due_date)),
+          _open_age_days: isOpen ? daysBetween(r.received_date, now) : '',
+          // Client qui s'est explicitement déclaré insatisfait de la résolution.
+          _customer_dissatisfied: bool01(r.customer_satisfied === false),
+          // Réclamation traitée mais dont on n'a jamais recueilli l'avis du client (§9.1.2).
+          _resolved_no_feedback: bool01(isResolved && noFeedback),
+          // Réclamation ouverte sans analyse de cause consignée (§10.2.1 b).
+          _no_root_cause: bool01(isOpen && (!r.root_cause || String(r.root_cause).trim() === '')),
+          // Réclamation grave sans action corrective formalisée (CAPA) (§10.2).
+          _severe_no_capa: bool01(severe && !r.linked_capa_id),
+        };
+      });
     },
   },
 
@@ -322,16 +343,63 @@ export const MODULE_KPI_PRESETS = [
   },
 
   // --- Réclamations ---
+  // Jeu orienté audit (§8.2 / §9.1.2 / §10.2). Une question d'auditeur = un indicateur = une
+  // courbe. Pas de cible « maison » sauf la ligne à 0 là où tout écart est une non-conformité.
+
+  // Réactivité / stock (photo à date).
   {
-    id: 'complaint_received_count',
+    id: 'complaint_overdue_backlog',
     module: 'complaint',
-    label: 'Réclamations reçues',
-    description: 'Nombre de réclamations clients reçues sur la période.',
+    label: 'Réclamations en retard à ce jour',
+    description: 'Nombre de réclamations non résolues dont l’échéance est dépassée au moment du calcul.',
+    unit: 'réclamations',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'complaint_oldest_open_age',
+    module: 'complaint',
+    label: 'Ancienneté de la plus ancienne réclamation ouverte',
+    description: 'Nombre de jours écoulés depuis la réception de la plus vieille réclamation non résolue.',
+    unit: 'jours',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'max',
+      source_column: '_open_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'complaint_open_backlog',
+    module: 'complaint',
+    label: 'Réclamations ouvertes à ce jour',
+    description: 'Nombre de réclamations non résolues au moment du calcul — suit la résorption du stock.',
     unit: 'réclamations',
     target_direction: 'min',
     frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: 'received_date' },
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
   },
+  {
+    id: 'complaint_open_age_days',
+    module: 'complaint',
+    label: 'Âge moyen des réclamations ouvertes',
+    description: 'Ancienneté moyenne (jours) des réclamations non résolues au moment du calcul.',
+    unit: 'jours',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'average',
+      source_column: '_open_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
+  },
+
+  // Délais de traitement (par mois de résolution).
   {
     id: 'complaint_resolution_days',
     module: 'complaint',
@@ -343,18 +411,79 @@ export const MODULE_KPI_PRESETS = [
     recipe: { calc_type: 'average', source_column: '_resolution_days', period_column: 'resolution_date' },
   },
   {
-    id: 'complaint_satisfaction_rate',
+    id: 'complaint_on_time_rate',
     module: 'complaint',
-    label: 'Clients satisfaits après réclamation',
-    description: 'Part des réclamations résolues où le client s’est déclaré satisfait.',
+    label: 'Réclamations résolues dans les délais',
+    description: 'Part des réclamations résolues dont la date de résolution respecte l’échéance (réclamations sans échéance incluses au dénominateur).',
     unit: '%',
     target_direction: 'max',
     frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: 'resolution_date', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
+  },
+
+  // Boucle client & causes (photo à date ou mensuel, toute valeur > 0 est une non-conformité).
+  {
+    id: 'complaint_dissatisfied_count',
+    module: 'complaint',
+    label: 'Clients insatisfaits après résolution',
+    description: 'Nombre de réclamations où le client s’est explicitement déclaré insatisfait de la résolution (§9.1.2).',
+    unit: 'réclamations',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
     recipe: {
-      calc_type: 'ratio',
+      calc_type: 'count',
       period_column: 'resolution_date',
-      filters: [{ column: '_customer_satisfied', operator: 'equals', value: '1' }],
+      filters: [{ column: '_customer_dissatisfied', operator: 'equals', value: '1' }],
     },
+  },
+  {
+    id: 'complaint_no_feedback_backlog',
+    module: 'complaint',
+    label: 'Réclamations résolues sans retour client',
+    description: 'Nombre de réclamations résolues ou clôturées dont l’avis du client n’a jamais été recueilli (§9.1.2).',
+    unit: 'réclamations',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'count',
+      period_column: '__snapshot__',
+      filters: [{ column: '_resolved_no_feedback', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'complaint_no_root_cause_backlog',
+    module: 'complaint',
+    label: 'Réclamations ouvertes sans analyse de cause',
+    description: 'Nombre de réclamations non résolues dont le champ « cause racine » est vide (§10.2.1 b).',
+    unit: 'réclamations',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_root_cause', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'complaint_severe_no_capa_backlog',
+    module: 'complaint',
+    label: 'Réclamations graves sans CAPA',
+    description: 'Nombre de réclamations de gravité élevée ou critique non reliées à une action corrective (§10.2).',
+    unit: 'réclamations',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_severe_no_capa', operator: 'equals', value: '1' }] },
+  },
+
+  // Volume (par mois de réception).
+  {
+    id: 'complaint_received_count',
+    module: 'complaint',
+    label: 'Réclamations reçues',
+    description: 'Nombre de réclamations clients reçues sur la période.',
+    unit: 'réclamations',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'received_date' },
   },
 
   // --- Accidents du travail ---

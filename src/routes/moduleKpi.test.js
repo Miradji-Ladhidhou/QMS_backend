@@ -36,6 +36,24 @@ async function closeCapa(token, id) {
   return res.body;
 }
 
+async function makeComplaint(token, overrides = {}) {
+  const res = await request(app)
+    .post('/api/complaints')
+    .set('Authorization', `Bearer ${token}`)
+    .send({ customer_name: 'Client', description: 'Problème', received_date: '2026-01-05', ...overrides });
+  if (res.status !== 201) throw new Error(`makeComplaint a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+  return res.body;
+}
+
+async function resolveComplaint(token, id, patch = {}) {
+  const res = await request(app)
+    .patch(`/api/complaints/${id}`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({ status: 'resolved', resolution: 'Traité', resolution_date: '2026-01-20', ...patch });
+  if (res.status !== 200) throw new Error(`resolveComplaint a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+  return res.body;
+}
+
 function fromPreset(token, presetId) {
   return request(app).post('/api/kpis/from-module-preset').set('Authorization', `Bearer ${token}`).send({ preset_id: presetId });
 }
@@ -295,6 +313,84 @@ describe('KPI de module — efficacité / rigueur CAPA', () => {
     expect(rec).toBeTruthy();
     expect(Number(rec.value)).toBeGreaterThanOrEqual(0);
     expect(rec.period_date).toBe(currentMonthBucket());
+  });
+});
+
+describe('KPI de module — réclamations clients', () => {
+  it('« Réclamations ouvertes à ce jour » = stock non résolu au moment du calcul', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeComplaint(t);
+    await makeComplaint(t);
+    await makeComplaint(t);
+    await resolveComplaint(t, c1.id);
+
+    const created = await fromPreset(t, 'complaint_open_backlog');
+    expect(created.status).toBe(201);
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2);
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+
+  it('« Réclamations en retard à ce jour » ne compte que les non résolues hors délai', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeComplaint(t, { due_date: '2020-01-01' }); // ouverte + échéance dépassée
+    await makeComplaint(t, { due_date: '2999-01-01' }); // ouverte, dans les délais
+    const done = await makeComplaint(t, { due_date: '2020-01-01' });
+    await resolveComplaint(t, done.id); // résolue → hors backlog
+
+    const created = await fromPreset(t, 'complaint_overdue_backlog');
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(created.body.target).toBe(0);
+  });
+
+  it('« Clients insatisfaits après résolution » compte les avis négatifs par mois de résolution', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeComplaint(t);
+    const c2 = await makeComplaint(t);
+    const c3 = await makeComplaint(t);
+    await resolveComplaint(t, c1.id, { customer_satisfied: false });
+    await resolveComplaint(t, c2.id, { customer_satisfied: true });
+    await resolveComplaint(t, c3.id); // pas d'avis recueilli
+
+    const created = await fromPreset(t, 'complaint_dissatisfied_count');
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+  });
+
+  it('« Réclamations résolues sans retour client » compte les résolues sans avis (§9.1.2)', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeComplaint(t);
+    const c2 = await makeComplaint(t);
+    await resolveComplaint(t, c1.id); // sans avis
+    await resolveComplaint(t, c2.id, { customer_satisfied: true }); // avec avis
+
+    const created = await fromPreset(t, 'complaint_no_feedback_backlog');
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+
+  it('« Réclamations graves sans CAPA » filtre gravité + absence de lien CAPA', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeComplaint(t, { severity: 'critical' });
+    await makeComplaint(t, { severity: 'high' });
+    await makeComplaint(t, { severity: 'low' });
+
+    const created = await fromPreset(t, 'complaint_severe_no_capa_backlog');
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2);
+    expect(created.body.target).toBe(0);
   });
 });
 
