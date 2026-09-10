@@ -312,10 +312,18 @@ export const MODULE_KPI_SOURCES = {
 // kpi_calculation_configs (calc_type / period_column / source_column / group_by_column /
 // filters / filter_logic). period_column est toujours une colonne de date brute : le
 // bucketing par fréquence est fait par moduleKpiRecompute.js.
+//
+// target / target_direction : chaque preset porte une CIBLE par défaut, ajustable ensuite
+// par l'utilisateur (le formulaire d'édition laisse target/target_direction modifiables sur
+// un KPI de module). Convention alignée sur lib/kpiStatus.js :
+//   - target_direction: 'min' → objectif PLANCHER, la réalisation doit rester ≥ cible
+//     (plus la valeur est haute, mieux c'est : taux de couverture, % dans les délais…) ;
+//   - target_direction: 'max' → objectif PLAFOND, la réalisation doit rester ≤ cible
+//     (plus la valeur est basse, mieux c'est : délais, retards, écarts, accidents…).
 export const MODULE_KPI_PRESETS = [
   // --- CAPA ---
   // Jeu orienté audit (§10.2 / §9.1) : une question d'auditeur = un indicateur = une courbe.
-  // Pas de cible « maison » sauf la ligne à 0 là où tout écart est une non-conformité.
+  // Cibles par défaut à ajuster à votre contexte ; 0 là où tout écart est une non-conformité.
 
   // Maîtrise du stock (photo à date).
   {
@@ -325,7 +333,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de CAPA non clôturées dont l’échéance est dépassée au moment du calcul.',
     unit: 'CAPA',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
   },
@@ -335,7 +343,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Ancienneté de la plus ancienne CAPA ouverte',
     description: 'Nombre de jours écoulés depuis la création de la plus vieille CAPA encore ouverte.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 90,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'max',
@@ -350,7 +359,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'CAPA ouvertes à ce jour',
     description: 'Nombre de CAPA non clôturées au moment du calcul — suit la résorption du stock.',
     unit: 'CAPA',
-    target_direction: 'min',
+    target: 10,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
   },
@@ -360,7 +370,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Âge moyen des CAPA ouvertes',
     description: 'Ancienneté moyenne (jours) des CAPA non clôturées au moment du calcul.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 45,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'average',
@@ -377,7 +388,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Délai moyen de traitement des CAPA',
     description: 'Nombre de jours moyen entre la création et la clôture d’une CAPA.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 30,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'average',
@@ -392,7 +404,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'CAPA clôturées dans les délais',
     description: 'Part des CAPA clôturées dont la date de clôture respecte l’échéance (CAPA sans échéance incluses au dénominateur).',
     unit: '%',
-    target_direction: 'max',
+    target: 90,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
   },
@@ -405,7 +418,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de CAPA actuellement dans un état rouvert (date de clôture posée, statut repassé en cours) — §10.2.1 f).',
     unit: 'CAPA',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_reopened', operator: 'equals', value: '1' }] },
   },
@@ -416,7 +429,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de CAPA non clôturées dont le champ « cause racine » est vide — §10.2.1 b).',
     unit: 'CAPA',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_root_cause', operator: 'equals', value: '1' }] },
   },
@@ -428,6 +441,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Nouvelles CAPA',
     description: 'Nombre de CAPA créées sur la période.',
     unit: 'CAPA',
+    target: 5,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'created_at' },
   },
@@ -437,6 +452,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'CAPA clôturées',
     description: 'Nombre de CAPA passées au statut « clôturé » sur la période.',
     unit: 'CAPA',
+    target: 5,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: 'status', operator: 'equals', value: 'closed' }] },
   },
@@ -448,7 +465,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Non-conformités traitées',
     description: 'Nombre de non-conformités clôturées sur la période.',
     unit: 'NC',
-    target_direction: 'max',
+    target: 5,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: 'status', operator: 'equals', value: 'closed' }] },
   },
@@ -458,7 +476,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Taux de clôture des non-conformités',
     description: 'Part des non-conformités détectées qui sont clôturées.',
     unit: '%',
-    target_direction: 'max',
+    target: 90,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'ratio', period_column: 'detected_at', filters: [{ column: '_is_closed', operator: 'equals', value: '1' }] },
   },
@@ -468,14 +487,15 @@ export const MODULE_KPI_PRESETS = [
     label: 'Non-conformités détectées',
     description: 'Nombre de non-conformités produit/service détectées sur la période.',
     unit: 'NC',
-    target_direction: 'min',
+    target: 5,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'detected_at' },
   },
 
   // --- Réclamations ---
   // Jeu orienté audit (§8.2 / §9.1.2 / §10.2). Une question d'auditeur = un indicateur = une
-  // courbe. Pas de cible « maison » sauf la ligne à 0 là où tout écart est une non-conformité.
+  // courbe. Cibles par défaut à ajuster ; 0 là où tout écart est une non-conformité.
 
   // Réactivité / stock (photo à date).
   {
@@ -485,7 +505,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de réclamations non résolues dont l’échéance est dépassée au moment du calcul.',
     unit: 'réclamations',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
   },
@@ -495,7 +515,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Ancienneté de la plus ancienne réclamation ouverte',
     description: 'Nombre de jours écoulés depuis la réception de la plus vieille réclamation non résolue.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 60,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'max',
@@ -510,7 +531,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Réclamations ouvertes à ce jour',
     description: 'Nombre de réclamations non résolues au moment du calcul — suit la résorption du stock.',
     unit: 'réclamations',
-    target_direction: 'min',
+    target: 5,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
   },
@@ -520,7 +542,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Âge moyen des réclamations ouvertes',
     description: 'Ancienneté moyenne (jours) des réclamations non résolues au moment du calcul.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 30,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'average',
@@ -537,7 +560,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Délai moyen de résolution des réclamations',
     description: 'Nombre de jours moyen entre la réception et la résolution.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 30,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'average', source_column: '_resolution_days', period_column: 'resolution_date' },
   },
@@ -547,7 +571,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Réclamations résolues dans les délais',
     description: 'Part des réclamations résolues dont la date de résolution respecte l’échéance (réclamations sans échéance incluses au dénominateur).',
     unit: '%',
-    target_direction: 'max',
+    target: 90,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'ratio', period_column: 'resolution_date', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
   },
@@ -560,7 +585,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de réclamations où le client s’est explicitement déclaré insatisfait de la résolution (§9.1.2).',
     unit: 'réclamations',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'count',
@@ -575,7 +600,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de réclamations résolues ou clôturées dont l’avis du client n’a jamais été recueilli (§9.1.2).',
     unit: 'réclamations',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'count',
@@ -590,7 +615,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de réclamations non résolues dont le champ « cause racine » est vide (§10.2.1 b).',
     unit: 'réclamations',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_root_cause', operator: 'equals', value: '1' }] },
   },
@@ -601,7 +626,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de réclamations de gravité élevée ou critique non reliées à une action corrective (§10.2).',
     unit: 'réclamations',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_severe_no_capa', operator: 'equals', value: '1' }] },
   },
@@ -613,6 +638,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Réclamations reçues',
     description: 'Nombre de réclamations clients reçues sur la période.',
     unit: 'réclamations',
+    target: 3,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'received_date' },
   },
@@ -624,7 +651,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Accidents du travail déclarés',
     description: 'Nombre d’accidents du travail déclarés sur la période.',
     unit: 'accidents',
-    target_direction: 'min',
+    target: 0,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'occurred_at' },
   },
@@ -634,7 +662,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Jours d’arrêt cumulés',
     description: 'Somme des jours d’arrêt de travail liés aux accidents de la période.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 0,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'sum', source_column: 'lost_days', period_column: 'occurred_at' },
   },
@@ -644,7 +673,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Accidents avec arrêt de travail',
     description: 'Part des accidents déclarés ayant entraîné au moins un jour d’arrêt.',
     unit: '%',
-    target_direction: 'min',
+    target: 0,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'ratio',
@@ -660,7 +690,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Note moyenne de satisfaction client',
     description: 'Moyenne des notes (1 à 5) des enquêtes de satisfaction de la période.',
     unit: '/5',
-    target_direction: 'max',
+    target: 4,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'average', source_column: 'score', period_column: 'survey_date' },
   },
@@ -670,7 +701,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Enquêtes de satisfaction réalisées',
     description: 'Nombre d’enquêtes de satisfaction consignées sur la période.',
     unit: 'enquêtes',
-    target_direction: 'max',
+    target: 1,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'survey_date' },
   },
@@ -682,7 +714,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Audits internes réalisés',
     description: 'Nombre d’audits internes terminés sur la période.',
     unit: 'audits',
-    target_direction: 'max',
+    target: 1,
+    target_direction: 'min',
     frequency: 'quarterly',
     recipe: {
       calc_type: 'count',
@@ -696,7 +729,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Écart planifié / réalisé des audits',
     description: 'Nombre de jours moyen entre la date planifiée et la date de réalisation.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 15,
+    target_direction: 'max',
     frequency: 'quarterly',
     recipe: {
       calc_type: 'average',
@@ -711,7 +745,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Constats d’audit',
     description: 'Nombre de constats relevés lors des audits internes sur la période.',
     unit: 'constats',
-    target_direction: 'min',
+    target: 10,
+    target_direction: 'max',
     frequency: 'quarterly',
     recipe: { calc_type: 'count', period_column: 'created_at' },
   },
@@ -721,7 +756,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Non-conformités d’audit (majeures + mineures)',
     description: 'Nombre de constats de type non-conformité relevés sur la période.',
     unit: 'NC',
-    target_direction: 'min',
+    target: 3,
+    target_direction: 'max',
     frequency: 'quarterly',
     recipe: {
       calc_type: 'count',
@@ -736,7 +772,7 @@ export const MODULE_KPI_PRESETS = [
 
   // --- Formations / compétences ---
   // Jeu orienté audit (§7.2 compétence). Une question d'auditeur = un indicateur = une
-  // courbe. Ligne à 0 là où tout écart est une non-conformité de compétence.
+  // courbe. Cibles par défaut à ajuster ; 0 là où tout écart est une non-conformité.
 
   // Écarts de compétence (photo à date, sur la matrice personnel × formations obligatoires).
   {
@@ -746,7 +782,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de compétences requises dont la date de renouvellement est dépassée (§7.2).',
     unit: 'compétences',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_expired', operator: 'equals', value: '1' }] },
   },
@@ -757,7 +793,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de compétences requises pour un poste sans aucune réalisation enregistrée (§7.2).',
     unit: 'compétences',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_missing', operator: 'equals', value: '1' }] },
   },
@@ -768,7 +804,7 @@ export const MODULE_KPI_PRESETS = [
     description: 'Nombre de personnes ayant au moins une formation obligatoire expirée ou jamais suivie (§7.2).',
     unit: 'personnes',
     target: 0,
-    target_direction: 'min',
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_has_gap', operator: 'equals', value: '1' }] },
   },
@@ -778,7 +814,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Taux de couverture des compétences',
     description: 'Part des compétences requises qui sont à jour (valides ou à renouveler prochainement).',
     unit: '%',
-    target_direction: 'max',
+    target: 95,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_up_to_date', operator: 'equals', value: '1' }] },
   },
@@ -788,7 +825,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Retard de la formation la plus en retard',
     description: 'Nombre de jours écoulés depuis l’échéance de renouvellement la plus ancienne non traitée.',
     unit: 'jours',
-    target_direction: 'min',
+    target: 0,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: {
       calc_type: 'max',
@@ -803,7 +841,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Formations à renouveler sous 60 jours',
     description: 'Nombre de compétences requises dont le renouvellement arrive à échéance dans les 60 jours — anticipation.',
     unit: 'compétences',
-    target_direction: 'min',
+    target: 10,
+    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_due_soon', operator: 'equals', value: '1' }] },
   },
@@ -815,6 +854,8 @@ export const MODULE_KPI_PRESETS = [
     label: 'Réalisations de formation',
     description: 'Nombre de formations effectivement suivies (par personne) sur la période.',
     unit: 'réalisations',
+    target: 1,
+    target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'completed_at' },
   },

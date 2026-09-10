@@ -226,7 +226,8 @@ describe('KPI de module — photo à date (snapshot)', () => {
     expect(Number(records[0].value)).toBe(2);
     expect(records[0].period_date).toBe(currentMonthBucket());
     expect(records[0].source).toBe('module');
-    expect(created.body.target).toBeNull(); // pas de cible « maison » sur le stock
+    expect(created.body.target).toBe(10); // cible par défaut du stock ouvert (plafond)
+    expect(created.body.target_direction).toBe('max');
   });
 
   it('« CAPA en retard à ce jour » ne compte que les CAPA ouvertes hors délai', async () => {
