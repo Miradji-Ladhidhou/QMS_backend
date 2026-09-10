@@ -234,11 +234,19 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    // Les 3 blocs "arrivée dans un statut" ci-dessous ne doivent s'exécuter que sur une VRAIE
+    // transition — sinon un PATCH qui renvoie le statut déjà en base (no-op autorisé par le
+    // garde-fou de transition ci-dessus, qui ne bloque que les changements de valeur) re-
+    // déclencherait la validation des champs et surtout réécrirait approved_at/implemented_at/
+    // cancelled_at sur un enregistrement déjà arrivé à cet état — précisément le défaut que le
+    // graphe de transition de ce module a été conçu pour éliminer (voir audit d'order_reviews.js).
+    const statusChanging = 'status' in update && update.status !== existing.status;
+
     // Approuver sans avoir instruit les 4 points de §6.3 (finalité/conséquences, intégrité du
     // SMQ, ressources, responsabilités) viderait la revue de son sens. On relit l'existant pour
     // couvrir le cas où un champ n'est pas dans CETTE requête (même idiome fetch-fallback que
     // routes/order_reviews.js).
-    if (update.status === 'approved') {
+    if (statusChanging && update.status === 'approved') {
       const checks = [
         ['purpose', "la finalité et les conséquences potentielles (§6.3 a)"],
         ['potential_consequences', "les conséquences potentielles (§6.3 a)"],
@@ -265,7 +273,7 @@ router.patch(
       update.approved_at = new Date().toISOString();
     }
 
-    if (update.status === 'implemented') {
+    if (statusChanging && update.status === 'implemented') {
       const implementedBy = 'implemented_by' in update ? update.implemented_by : existing.implemented_by;
       if (!implementedBy) {
         update.implemented_by = req.user.id;
@@ -276,7 +284,7 @@ router.patch(
     // Annuler une modification planifiée sans motif prive la décision de toute valeur de
     // preuve — même idiome "commentaire obligatoire sur verdict négatif" que les autres
     // modules (audits, order_reviews...).
-    if (update.status === 'cancelled') {
+    if (statusChanging && update.status === 'cancelled') {
       const cancellationReason = 'cancellation_reason' in update ? update.cancellation_reason : existing.cancellation_reason;
       if (!cancellationReason) {
         return res.status(400).json({ error: 'Renseignez un motif avant d’annuler cette modification.' });

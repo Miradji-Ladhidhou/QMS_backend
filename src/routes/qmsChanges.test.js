@@ -265,6 +265,43 @@ describe('PATCH /api/qms-changes/:id — approved_by/implemented_by retombent su
       .send({ status: 'implemented' });
     expect(implemented.body.implemented_at).not.toBeNull();
   });
+
+  it('ne réécrit pas approved_at/implemented_at sur un PATCH qui renvoie le statut déjà en base (no-op)', async () => {
+    tenant = await createTenant();
+    const change = await makeChange(tenant.admin.token);
+
+    const approved = await request(app)
+      .patch(`/api/qms-changes/${change.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ ...FULL_REVIEW_FIELDS, status: 'approved' });
+    expect(approved.status).toBe(200);
+    const approvedAt = approved.body.approved_at;
+
+    // Petit délai pour garantir un horodatage distinct si le bug réapparaissait.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    const resent = await request(app)
+      .patch(`/api/qms-changes/${change.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'approved' });
+    expect(resent.status).toBe(200);
+    expect(resent.body.approved_at).toBe(approvedAt);
+
+    const implemented = await request(app)
+      .patch(`/api/qms-changes/${change.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'implemented' });
+    const implementedAt = implemented.body.implemented_at;
+
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    const resentImplemented = await request(app)
+      .patch(`/api/qms-changes/${change.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'implemented' });
+    expect(resentImplemented.status).toBe(200);
+    expect(resentImplemented.body.implemented_at).toBe(implementedAt);
+  });
 });
 
 describe('PATCH /api/qms-changes/bulk-category — réservé admin/manager', () => {
