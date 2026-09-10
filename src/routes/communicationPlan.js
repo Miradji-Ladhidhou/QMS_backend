@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
+import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
 
@@ -11,7 +12,8 @@ const SCOPES = ['internal', 'external'];
 router.use(requireAuth);
 router.use(requireMenuVisible('communication-plan'));
 
-const ITEM_SELECT = '*, responsible:users!communication_plan_items_responsible_user_id_fkey(id, full_name)';
+const ITEM_SELECT =
+  '*, responsible:users!communication_plan_items_responsible_user_id_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/communication-plan — le plan de communication du SMQ (ISO 9001 §7.4). Ouvert à
 // tous les rôles : tout le monde doit pouvoir consulter qui communique quoi à qui — c'est le
@@ -29,7 +31,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer le plan de communication.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // POST /api/communication-plan — admin uniquement (même modèle que services.js : le plan est
@@ -45,7 +48,9 @@ router.post(
     body('channel').trim().notEmpty().withMessage('Le canal est requis.'),
     body('responsible_user_id').optional({ values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
     body('notes').optional({ values: 'falsy' }).trim(),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
   ],
+  requireValidCategoryId('communication_plan'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -60,6 +65,7 @@ router.post(
       channel,
       responsible_user_id: responsibleUserId,
       notes,
+      category_id: categoryId,
     } = req.body;
 
     const { data, error } = await supabase
@@ -73,6 +79,7 @@ router.post(
         channel,
         responsible_user_id: responsibleUserId || null,
         notes: notes || null,
+        category_id: categoryId || null,
         created_by: req.user.id,
       })
       .select(ITEM_SELECT)
@@ -100,7 +107,9 @@ router.patch(
     body('responsible_user_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
     body('notes').optional({ nullable: true, values: 'falsy' }).trim(),
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
   ],
+  requireValidCategoryId('communication_plan'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -112,6 +121,7 @@ router.patch(
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('responsible_user_id' in req.body) update.responsible_user_id = req.body.responsible_user_id || null;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
     if ('is_active' in req.body) update.is_active = req.body.is_active;
 
     if (Object.keys(update).length === 0) {

@@ -171,3 +171,75 @@ describe('Isolation multi-tenant', () => {
     await other.cleanup();
   });
 });
+
+describe('Plan de communication — dossiers (catégories génériques resource_type=communication_plan)', () => {
+  it('création/modification avec category_id, catégorie jointe', async () => {
+    tenant = await createTenant();
+
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'communication_plan', name: 'Communication réglementaire' });
+    expect(cat.status).toBe(201);
+
+    const item = await makeItem(tenant.admin.token, { category_id: cat.body.id });
+    expect(item.status).toBe(201);
+    expect(item.body.category_id).toBe(cat.body.id);
+    expect(item.body.category?.name).toBe('Communication réglementaire');
+
+    const moved = await request(app)
+      .patch(`/api/communication-plan/${item.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: null });
+    expect(moved.status).toBe(200);
+    expect(moved.body.category_id).toBeNull();
+  });
+
+  it('refuse un category_id invalide (autre resource_type)', async () => {
+    tenant = await createTenant();
+    const wrong = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Pas ici' });
+    const res = await makeItem(tenant.admin.token, { category_id: wrong.body.id });
+    expect(res.status).toBe(400);
+  });
+
+  it('un dossier restreint masque ses lignes pour un member sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'communication_plan', name: 'Direction only', is_restricted: true });
+    const item = await makeItem(tenant.admin.token, { category_id: cat.body.id });
+
+    const memberList = await request(app).get('/api/communication-plan').set('Authorization', `Bearer ${member.token}`);
+    expect(memberList.body.map((i) => i.id)).not.toContain(item.body.id);
+
+    const adminList = await request(app).get('/api/communication-plan').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminList.body.map((i) => i.id)).toContain(item.body.id);
+  });
+
+  it('garde-fou : supprimer un dossier contenant une ligne renvoie 409', async () => {
+    tenant = await createTenant();
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'communication_plan', name: 'Thème X' });
+    const item = await makeItem(tenant.admin.token, { category_id: cat.body.id });
+
+    const blocked = await request(app)
+      .delete(`/api/module-categories/${cat.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 ligne de plan de communication');
+
+    await request(app).delete(`/api/communication-plan/${item.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    const ok = await request(app)
+      .delete(`/api/module-categories/${cat.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+});

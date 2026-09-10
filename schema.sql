@@ -1197,7 +1197,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output',
-      'order_review', 'qms_change', 'customer_satisfaction'
+      'order_review', 'qms_change', 'customer_satisfaction', 'communication_plan', 'employee'
     )
   ),
   name          text not null,
@@ -1215,6 +1215,11 @@ create table categories (
 
 create unique index categories_admin_name_unique on categories (tenant_id, resource_type, name) where owner_user_id is null;
 create unique index categories_personal_owner_unique on categories (tenant_id, resource_type, owner_user_id) where owner_user_id is not null;
+
+-- employees est déclarée avant categories (voir plus haut) — le rattachement à un dossier
+-- (resource_type='employee') se fait donc par un alter ici. on delete set null : supprimer un
+-- dossier détache les personnes sans les perdre.
+alter table employees add column category_id uuid references categories (id) on delete set null;
 
 -- Miroir de category_permissions (documents), pour les catégories génériques ci-dessus —
 -- table séparée plutôt que réutiliser category_permissions telle quelle : sa colonne
@@ -1623,6 +1628,7 @@ create table communication_plan_items (
   responsible_user_id uuid references users (id) on delete set null,
   notes               text,
   is_active           boolean not null default true,
+  category_id         uuid references categories (id) on delete set null,
   created_by          uuid references users (id) on delete set null,
   created_at          timestamptz not null default now(),
   updated_at          timestamptz not null default now()

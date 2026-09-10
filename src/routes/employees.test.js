@@ -263,3 +263,102 @@ describe('GET /api/trainings/matrix inclut le personnel sans compte', () => {
     expect(stats.body.trainings.to_renew).toBe(2);
   });
 });
+
+describe('Personnel — dossiers (catégories génériques resource_type=employee)', () => {
+  it('création/modification avec category_id, catégorie jointe dans la réponse', async () => {
+    tenant = await createTenant();
+
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'employee', name: 'Atelier' });
+    expect(cat.status).toBe(201);
+
+    const emp = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Ouvrier A', category_id: cat.body.id });
+    expect(emp.status).toBe(201);
+    expect(emp.body.category_id).toBe(cat.body.id);
+    expect(emp.body.category?.name).toBe('Atelier');
+
+    const moved = await request(app)
+      .patch(`/api/employees/${emp.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ category_id: null });
+    expect(moved.status).toBe(200);
+    expect(moved.body.category_id).toBeNull();
+  });
+
+  it('refuse un category_id d’un autre resource_type / tenant', async () => {
+    tenant = await createTenant();
+    const other = await createTenant();
+
+    const wrongType = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Pas pour le personnel' });
+    const res1 = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'X', category_id: wrongType.body.id });
+    expect(res1.status).toBe(400);
+
+    const otherCat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${other.admin.token}`)
+      .send({ resource_type: 'employee', name: 'Autre tenant' });
+    const res2 = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Y', category_id: otherCat.body.id });
+    expect(res2.status).toBe(400);
+
+    await other.cleanup();
+  });
+
+  it('un dossier restreint masque ses personnes pour un member sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'employee', name: 'Confidentiel', is_restricted: true });
+    const emp = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Personne cachée', category_id: cat.body.id });
+
+    const adminList = await request(app).get('/api/employees').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(adminList.body.map((e) => e.id)).toContain(emp.body.id);
+
+    const memberList = await request(app).get('/api/employees').set('Authorization', `Bearer ${member.token}`);
+    expect(memberList.body.map((e) => e.id)).not.toContain(emp.body.id);
+  });
+
+  it('garde-fou : supprimer un dossier contenant une personne renvoie 409', async () => {
+    tenant = await createTenant();
+
+    const cat = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'employee', name: 'Site Nord' });
+    const emp = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Salarié Nord', category_id: cat.body.id });
+
+    const blocked = await request(app)
+      .delete(`/api/module-categories/${cat.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('1 personne');
+
+    await request(app).delete(`/api/employees/${emp.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    const ok = await request(app)
+      .delete(`/api/module-categories/${cat.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(ok.status).toBe(204);
+  });
+});

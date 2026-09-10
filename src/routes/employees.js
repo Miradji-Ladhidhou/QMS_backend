@@ -2,8 +2,12 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
+
+const EMPLOYEE_SELECT =
+  'id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title, category_id, category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // Toutes les tables qui référencent une entrée personnel (voir schema.sql) — le nom de colonne
 // varie selon le module, contrairement à service_id sur services.js. training_records est en
@@ -28,7 +32,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('employees')
-    .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
+    .select(EMPLOYEE_SELECT)
     .eq('tenant_id', req.tenantId)
     .order('full_name', { ascending: true });
 
@@ -36,7 +40,8 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer le personnel.' });
   }
 
-  res.json(data);
+  const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  res.json(visible);
 });
 
 // POST /api/employees — création (admin uniquement)
@@ -47,7 +52,9 @@ router.post(
     body('full_name').trim().notEmpty().withMessage('Le nom est requis.'),
     body('email').optional({ values: 'falsy' }).isEmail().withMessage('Adresse email invalide.'),
     body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
   ],
+  requireValidCategoryId('employee'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -61,8 +68,9 @@ router.post(
         full_name: req.body.full_name,
         email: req.body.email || null,
         job_title: req.body.job_title || null,
+        category_id: req.body.category_id || null,
       })
-      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
+      .select(EMPLOYEE_SELECT)
       .single();
 
     if (error) {
@@ -84,14 +92,16 @@ router.patch(
     body('training_exempt').optional().isBoolean().withMessage('Valeur invalide.'),
     body('training_exempt_reason').optional({ values: 'falsy' }).trim().isLength({ max: 300 }),
     body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }),
+    body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
   ],
+  requireValidCategoryId('employee'),
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const patchableFields = ['full_name', 'email', 'is_active', 'training_exempt', 'training_exempt_reason', 'job_title'];
+    const patchableFields = ['full_name', 'email', 'is_active', 'training_exempt', 'training_exempt_reason', 'job_title', 'category_id'];
     if (!patchableFields.some((field) => field in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
@@ -103,13 +113,14 @@ router.patch(
     if ('training_exempt' in req.body) update.training_exempt = req.body.training_exempt;
     if ('training_exempt_reason' in req.body) update.training_exempt_reason = req.body.training_exempt_reason || null;
     if ('job_title' in req.body) update.job_title = req.body.job_title || null;
+    if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
     const { data, error } = await supabase
       .from('employees')
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, full_name, email, is_active, training_exempt, training_exempt_reason, job_title')
+      .select(EMPLOYEE_SELECT)
       .single();
 
     if (error || !data) {

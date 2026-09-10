@@ -31,6 +31,8 @@ const RESOURCE_TYPES = [
   'order_review',
   'qms_change',
   'customer_satisfaction',
+  'communication_plan',
+  'employee',
 ];
 
 // Table réellement porteuse de category_id pour chaque resource_type — voir schema.sql.
@@ -56,6 +58,8 @@ const RESOURCE_TABLE_INFO = {
   order_review: { table: 'order_reviews', singular: 'revue de commande', plural: 'revues de commande' },
   qms_change: { table: 'qms_changes', singular: 'modification planifiée', plural: 'modifications planifiées' },
   customer_satisfaction: { table: 'customer_satisfaction_surveys', singular: 'enquête de satisfaction', plural: 'enquêtes de satisfaction' },
+  communication_plan: { table: 'communication_plan_items', singular: 'ligne de plan de communication', plural: 'lignes de plan de communication' },
+  employee: { table: 'employees', singular: 'personne', plural: 'personnes' },
 };
 
 router.use(requireAuth);
