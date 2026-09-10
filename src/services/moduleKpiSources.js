@@ -49,7 +49,7 @@ export const MODULE_KPI_SOURCES = {
     async fetchRows(tenantId) {
       const rows = await selectAll(
         'capas',
-        'id, status, priority, severity, due_date, closed_at, created_at, effectiveness_verified, preventive_action',
+        'id, status, priority, severity, due_date, closed_at, created_at, preventive_action',
         tenantId
       );
       const now = new Date();
@@ -71,8 +71,11 @@ export const MODULE_KPI_SOURCES = {
           _is_overdue: bool01(isOpen && r.due_date && past(r.due_date)),
           _open_age_days: isOpen ? daysBetween(r.created_at, now) : '',
           _missed_deadline: missed,
-          _eff_verified: r.status === 'closed' ? bool01(r.effectiveness_verified === true) : '',
-          _eff_failed: bool01(r.effectiveness_verified === false),
+          // CAPA rouverte : elle a une date de clôture mais son statut est repassé en cours.
+          // C'est le seul signal automatique qu'une action corrective n'a pas tenu (§10.2).
+          // (Une CAPA n'est jamais clôturée sans effectiveness_verified === true — un « échec »
+          // de vérification la laisse ouverte, sans closed_at : inutile de suivre ce champ ici.)
+          _reopened: bool01(r.closed_at && r.status !== 'closed'),
           _has_preventive: bool01(r.preventive_action && String(r.preventive_action).trim() !== ''),
         };
       });
@@ -215,26 +218,16 @@ export const MODULE_KPI_PRESETS = [
     recipe: { calc_type: 'count', period_column: 'created_at' },
   },
   {
-    id: 'capa_effectiveness_rate',
+    id: 'capa_reopened_count',
     module: 'capa',
-    label: 'Efficacité des CAPA confirmée',
-    description: 'Part des CAPA clôturées dont l’efficacité a été vérifiée et confirmée (§10.2.1 f).',
-    unit: '%',
-    target: 95,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_eff_verified', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'capa_ineffective_count',
-    module: 'capa',
-    label: 'CAPA jugées inefficaces',
-    description: 'Nombre de CAPA dont la vérification d’efficacité a conclu à un échec sur la période.',
+    label: 'CAPA rouvertes',
+    description:
+      'Nombre de CAPA clôturées sur la période qui ont depuis été rouvertes — signal qu’une action corrective n’a pas tenu (§10.2).',
     unit: 'CAPA',
     target: 0,
     target_direction: 'min',
     frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: '_eff_failed', operator: 'equals', value: '1' }] },
+    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: '_reopened', operator: 'equals', value: '1' }] },
   },
   {
     id: 'capa_preventive_rate',

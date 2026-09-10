@@ -243,20 +243,27 @@ describe('KPI de module — photo à date (snapshot)', () => {
 });
 
 describe('KPI de module — efficacité CAPA', () => {
-  it('« Efficacité des CAPA confirmée » = part des clôturées vérifiées efficaces', async () => {
+  it('« CAPA rouvertes » compte les CAPA clôturées puis repassées en cours', async () => {
     tenant = await createTenant();
     const t = tenant.admin.token;
 
     const c1 = await makeCapa(t);
     const c2 = await makeCapa(t);
-    await closeCapa(t, c1.id); // closeCapa pose effectiveness_verified: true
+    await closeCapa(t, c1.id);
     await closeCapa(t, c2.id);
+    // c1 est rouverte : elle garde sa closed_at mais repasse "en cours".
+    const reopen = await request(app)
+      .patch(`/api/capas/${c1.id}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ status: 'in_progress' });
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.closed_at).toBeTruthy();
 
-    const created = await fromPreset(t, 'capa_effectiveness_rate');
+    const created = await fromPreset(t, 'capa_reopened_count');
     expect(created.status).toBe(201);
     const rec = (created.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(100);
-    expect(created.body.target).toBe(95);
+    expect(Number(rec.value)).toBe(1);
+    expect(created.body.target).toBe(0);
   });
 });
 
