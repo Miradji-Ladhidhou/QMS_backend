@@ -26,6 +26,7 @@ export const MENU_ITEM_KEYS = [
   'measuring-equipment',
   'nonconforming-outputs',
   'order-reviews',
+  'qms-changes',
   'my-approvals',
   'services',
   'employees',

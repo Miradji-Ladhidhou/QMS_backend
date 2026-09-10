@@ -1197,7 +1197,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'quality_objective', 'measuring_equipment', 'nonconforming_output',
-      'order_review'
+      'order_review', 'qms_change'
     )
   ),
   name          text not null,
@@ -1549,6 +1549,40 @@ create table order_reviews (
   updated_at               timestamptz not null default now()
 );
 
+-- Planification des modifications du SMQ (ISO 9001 §6.3). purpose/potential_consequences
+-- couvrent a) ; integrity_impact couvre b) ; resources_needed couvre c) ;
+-- responsibilities_reallocation couvre d). Contrairement aux modules précédents, le statut
+-- suit un graphe de transition explicite (voir routes/qmsChanges.js) plutôt qu'un simple enum
+-- validé à l'arrivée : planned -> approved -> implemented, avec cancelled en sortie depuis
+-- planned ou approved — jamais de saut direct planned -> implemented, précisément parce que
+-- §6.3 exige une réalisation "de façon planifiée". Pas de lien CAPA : un changement planifié
+-- n'est pas une non-conformité.
+create table qms_changes (
+  id                             uuid primary key default gen_random_uuid(),
+  tenant_id                      uuid not null references tenants (id) on delete cascade,
+  title                          text not null,
+  description                    text not null,
+  purpose                        text,
+  potential_consequences         text,
+  integrity_impact               text,
+  resources_needed               text,
+  responsibilities_reallocation  text,
+  planned_date                   date,
+  status                         text not null default 'planned'
+                                   check (status in ('planned', 'approved', 'implemented', 'cancelled')),
+  approved_by                    uuid references users (id) on delete set null,
+  approved_at                    timestamptz,
+  implemented_by                 uuid references users (id) on delete set null,
+  implemented_at                 timestamptz,
+  cancellation_reason            text,
+  cancelled_at                   timestamptz,
+  service_id                     uuid references services (id) on delete set null,
+  category_id                    uuid references categories (id) on delete set null,
+  created_by                     uuid references users (id) on delete set null,
+  created_at                     timestamptz not null default now(),
+  updated_at                     timestamptz not null default now()
+);
+
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1770,6 +1804,7 @@ create index idx_equipment_calibrations_equipment_id on equipment_calibrations (
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
 create index idx_order_reviews_tenant_id on order_reviews (tenant_id);
+create index idx_qms_changes_tenant_id on qms_changes (tenant_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -1975,6 +2010,9 @@ create trigger trg_nonconforming_outputs_updated_at before update on nonconformi
 create trigger trg_order_reviews_updated_at before update on order_reviews
   for each row execute function set_updated_at();
 
+create trigger trg_qms_changes_updated_at before update on qms_changes
+  for each row execute function set_updated_at();
+
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -2148,6 +2186,7 @@ alter table measuring_equipment enable row level security;
 alter table equipment_calibrations enable row level security;
 alter table nonconforming_outputs enable row level security;
 alter table order_reviews enable row level security;
+alter table qms_changes enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2509,6 +2548,11 @@ create policy nonconforming_outputs_isolation on nonconforming_outputs
   with check (tenant_id = auth_tenant_id());
 
 create policy order_reviews_isolation on order_reviews
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy qms_changes_isolation on qms_changes
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
