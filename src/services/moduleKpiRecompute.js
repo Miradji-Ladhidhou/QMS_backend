@@ -1,0 +1,114 @@
+// Recalcul d'un KPI de module (calculation_type='module') : lit les lignes de la table de
+// module (moduleKpiSources.js), les regroupe par période selon la fréquence du KPI, applique
+// la recette de calcul via le moteur partagé (kpiCalculation.js), et remplace les kpi_records
+// correspondants. Miroir de POST /api/kpi-imports/:id/apply, mais sans fichier importé.
+import { supabase } from './supabase.js';
+import { groupRowsByPeriod, summarizeGroups } from './kpiCalculation.js';
+import { MODULE_KPI_SOURCES } from './moduleKpiSources.js';
+
+// Ramène une date au début de sa période selon la fréquence du KPI. Toujours un yyyy-MM-dd
+// valide (accepté par normalizeAnyDate). Rend '' si la valeur n'est pas une date — la ligne
+// sera alors groupée en "__raw__:" et non persistée (comportement du moteur).
+export function bucketDate(raw, frequency) {
+  if (raw === null || raw === undefined || raw === '') return '';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return '';
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth(); // 0-11
+  const pad = (n) => String(n).padStart(2, '0');
+
+  switch (frequency) {
+    case 'yearly':
+      return `${y}-01-01`;
+    case 'quarterly': {
+      const qStartMonth = Math.floor(m / 3) * 3; // 0,3,6,9
+      return `${y}-${pad(qStartMonth + 1)}-01`;
+    }
+    case 'weekly': {
+      // Lundi de la semaine ISO.
+      const day = (d.getUTCDay() + 6) % 7; // 0 = lundi
+      const monday = new Date(Date.UTC(y, m, d.getUTCDate() - day));
+      return monday.toISOString().slice(0, 10);
+    }
+    case 'daily':
+      return d.toISOString().slice(0, 10);
+    case 'monthly':
+    default:
+      return `${y}-${pad(m + 1)}-01`;
+  }
+}
+
+// Renvoie { periods, updated, deleted }. Lève si le KPI n'est pas un KPI de module valide.
+export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null }) {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id, tenant_id, calculation_type, source_module, frequency')
+    .eq('tenant_id', tenantId)
+    .eq('id', kpiId)
+    .single();
+
+  if (kpiError || !kpi) throw new Error('KPI introuvable.');
+  if (kpi.calculation_type !== 'module') throw new Error("Ce KPI n'est pas un KPI de module.");
+
+  const source = MODULE_KPI_SOURCES[kpi.source_module];
+  if (!source) throw new Error(`Source de module inconnue : "${kpi.source_module}".`);
+
+  const { data: configs, error: configError } = await supabase
+    .from('kpi_calculation_configs')
+    .select('*')
+    .eq('tenant_id', tenantId)
+    .eq('kpi_id', kpi.id)
+    .limit(1);
+
+  if (configError || !configs || configs.length === 0) {
+    throw new Error('Recette de calcul introuvable pour ce KPI de module.');
+  }
+  const config = configs[0];
+
+  const rows = await source.fetchRows(tenantId);
+  for (const row of rows) {
+    row.row_data[config.period_column] = bucketDate(row.row_data[config.period_column], kpi.frequency);
+  }
+
+  const groups = groupRowsByPeriod(rows, config.period_column, null);
+  const { periods } = summarizeGroups(config, groups);
+
+  const persisted = periods.filter((p) => p.persisted);
+  const keptDates = new Set(persisted.map((p) => p.period_date));
+
+  if (persisted.length > 0) {
+    const { error: upsertError } = await supabase.from('kpi_records').upsert(
+      persisted.map((p) => ({
+        tenant_id: tenantId,
+        kpi_id: kpi.id,
+        config_id: config.id,
+        period_date: p.period_date,
+        value: p.value,
+        source: 'module',
+        recorded_by: recordedBy,
+      })),
+      { onConflict: 'config_id,period_date' }
+    );
+    if (upsertError) throw new Error(`Écriture des valeurs calculées : ${upsertError.message}`);
+  }
+
+  // Une période qui n'apparaît plus dans les données courantes (ex. la dernière CAPA de ce
+  // mois a été rouverte) doit disparaître de l'historique — un KPI de module reflète l'état
+  // actuel, pas un cumul figé.
+  const { data: existing, error: existingError } = await supabase
+    .from('kpi_records')
+    .select('id, period_date')
+    .eq('tenant_id', tenantId)
+    .eq('config_id', config.id);
+
+  let deleted = 0;
+  if (!existingError && existing) {
+    const stale = existing.filter((r) => !keptDates.has(r.period_date)).map((r) => r.id);
+    if (stale.length > 0) {
+      await supabase.from('kpi_records').delete().eq('tenant_id', tenantId).in('id', stale);
+      deleted = stale.length;
+    }
+  }
+
+  return { periods, updated: persisted.length, deleted };
+}

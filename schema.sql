@@ -741,10 +741,15 @@ create table kpis (
   target_direction text not null default 'min' check (target_direction in ('min', 'max')),
   frequency   text check (frequency in ('daily', 'weekly', 'monthly', 'quarterly', 'yearly')),
   -- 'manual' : valeur saisie directement. 'import' : calculée depuis un import générique
-  -- (kpi_raw_imports/kpi_raw_rows). Le type de calcul précis (ratio, sum, average, count,
+  -- (kpi_raw_imports/kpi_raw_rows). 'module' : calculée automatiquement depuis une table de
+  -- module du SMQ (source_module), via le même moteur que 'import' — voir
+  -- services/moduleKpiSources.js. Le type de calcul précis (ratio, sum, average, count,
   -- count_grouped) n'est pas dupliqué ici : il vit uniquement dans kpi_calculation_configs
   -- .calc_type, pour éviter deux colonnes à garder synchronisées.
-  calculation_type text not null default 'manual' check (calculation_type in ('manual', 'import')),
+  calculation_type text not null default 'manual' check (calculation_type in ('manual', 'import', 'module')),
+  -- Renseignée seulement quand calculation_type='module' : la clé de MODULE_KPI_SOURCES
+  -- (ex. 'capa', 'accident') dont ce KPI agrège les lignes.
+  source_module text,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -828,8 +833,9 @@ create table kpi_records (
   comment           text,
   -- 'manual' : saisie directe. 'import' : calculée depuis un import générique (CSV/Excel,
   -- kpi_raw_imports/kpi_raw_rows) — repasse à 'manual' si un humain modifie ensuite la
-  -- valeur (voir PATCH .../records/:id).
-  source            text not null default 'manual' check (source in ('manual', 'import')),
+  -- valeur (voir PATCH .../records/:id). 'module' : calculée automatiquement depuis une table
+  -- de module (services/moduleKpiRecompute.js), jamais modifiable à la main.
+  source            text not null default 'manual' check (source in ('manual', 'import', 'module')),
   source_import_id  uuid references kpi_raw_imports (id) on delete set null,
   recorded_by       uuid references users (id) on delete set null,
   created_at        timestamptz not null default now(),

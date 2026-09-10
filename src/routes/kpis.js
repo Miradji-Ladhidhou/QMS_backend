@@ -8,6 +8,8 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { MODULE_KPI_PRESETS, MODULE_KPI_SOURCES, getPreset } from '../services/moduleKpiSources.js';
+import { recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
 
 const router = Router();
 
@@ -127,6 +129,115 @@ router.get('/report', async (req, res) => {
   res.setHeader('Content-Disposition', `inline; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.pdf"`);
   res.send(pdfBuffer);
 });
+
+// GET /api/kpis/module-presets — catalogue des métriques de module prêtes à l'emploi
+// (§9.1). Placé avant /:id pour ne pas être capturé.
+router.get('/module-presets', async (req, res) => {
+  res.json(
+    MODULE_KPI_PRESETS.map(({ id, module, label, description, unit, target_direction, frequency }) => ({
+      id,
+      module,
+      module_label: MODULE_KPI_SOURCES[module]?.label || module,
+      label,
+      description,
+      unit,
+      target_direction,
+      frequency,
+    }))
+  );
+});
+
+// POST /api/kpis/from-module-preset — crée un KPI calculé automatiquement depuis un module
+// (kpis.calculation_type='module') + sa recette (kpi_calculation_configs), puis lance un
+// premier calcul. Admin/manager uniquement, comme POST /.
+router.post(
+  '/from-module-preset',
+  requireRole('admin', 'manager'),
+  [
+    body('preset_id').trim().notEmpty().withMessage('preset_id est requis.'),
+    body('folder_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier invalide.'),
+    body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+  ],
+  requireValidCategoryId('kpi'),
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const preset = getPreset(req.body.preset_id);
+    if (!preset) {
+      return res.status(400).json({ error: 'Métrique de module inconnue.' });
+    }
+
+    const { folder_id: folderId, category_id: categoryId } = req.body;
+    if (folderId) {
+      const { data: folder } = await supabase
+        .from('kpi_folders')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', folderId)
+        .maybeSingle();
+      if (!folder) {
+        return res.status(400).json({ error: 'Dossier introuvable.' });
+      }
+    }
+
+    const { data: kpi, error: kpiError } = await supabase
+      .from('kpis')
+      .insert({
+        tenant_id: req.tenantId,
+        name: preset.label,
+        unit: preset.unit || null,
+        target_direction: preset.target_direction || undefined,
+        frequency: preset.frequency || null,
+        calculation_type: 'module',
+        source_module: preset.module,
+        folder_id: folderId || null,
+        category_id: categoryId || null,
+      })
+      .select(`*, ${KPI_JOINS}`)
+      .single();
+
+    if (kpiError) {
+      return res.status(500).json({ error: 'Erreur lors de la création du KPI.' });
+    }
+
+    const { error: configError } = await supabase.from('kpi_calculation_configs').insert({
+      tenant_id: req.tenantId,
+      kpi_id: kpi.id,
+      label: 'Automatique',
+      calc_type: preset.recipe.calc_type,
+      source_column: preset.recipe.source_column || null,
+      filters: preset.recipe.filters || [],
+      filter_logic: preset.recipe.filter_logic || 'all',
+      group_by_column: preset.recipe.group_by_column || null,
+      period_column: preset.recipe.period_column || null,
+    });
+
+    if (configError) {
+      await supabase.from('kpis').delete().eq('id', kpi.id);
+      return res.status(500).json({ error: 'Erreur lors de la création de la recette de calcul.' });
+    }
+
+    try {
+      await recomputeModuleKpi({ tenantId: req.tenantId, kpiId: kpi.id, recordedBy: req.user.id });
+    } catch (err) {
+      console.error('[from-module-preset] Premier calcul échoué :', err.message);
+    }
+
+    const { data: full } = await supabase
+      .from('kpis')
+      .select(
+        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      )
+      .eq('tenant_id', req.tenantId)
+      .eq('id', kpi.id)
+      .single();
+
+    res.status(201).json(full || kpi);
+  }
+);
 
 // POST /api/kpis — création (admin/manager uniquement — même périmètre que PATCH/DELETE
 // ci-dessous ; un member ne définit pas d'indicateur d'entreprise, seul le frontend
@@ -316,6 +427,20 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    // Un KPI de module reste un KPI de module : son type et sa fréquence pilotent le calcul
+    // automatique, on ne les change pas via ce PATCH (il faudrait recréer une recette).
+    if ('calculation_type' in update || 'frequency' in update) {
+      const { data: current } = await supabase
+        .from('kpis')
+        .select('calculation_type')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (current?.calculation_type === 'module') {
+        return res.status(409).json({ error: "Le type et la fréquence d'un KPI de module ne peuvent pas être modifiés ici." });
+      }
+    }
+
     if (update.folder_id) {
       const { data: folder } = await supabase
         .from('kpi_folders')
@@ -490,13 +615,19 @@ router.post(
 
     const { data: kpi, error: kpiError } = await supabase
       .from('kpis')
-      .select('id')
+      .select('id, calculation_type')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
 
     if (kpiError || !kpi) {
       return res.status(404).json({ error: 'KPI introuvable.' });
+    }
+
+    if (kpi.calculation_type === 'module') {
+      return res.status(409).json({
+        error: 'Les valeurs de ce KPI sont calculées automatiquement depuis un module — utilisez « Actualiser ».',
+      });
     }
 
     const { period_date: periodDate, value, comment, config_id: configId } = req.body;
@@ -634,6 +765,19 @@ router.delete('/:id/records/:recordId', requireRole('admin', 'manager'), async (
   }
 
   res.status(204).send();
+});
+
+// POST /api/kpis/:id/recompute — relance le calcul d'un KPI de module depuis les données
+// courantes du module. Admin/manager. Le recalcul nocturne (moduleKpiJob) fait la même chose
+// automatiquement.
+router.post('/:id/recompute', requireRole('admin', 'manager'), async (req, res) => {
+  try {
+    const result = await recomputeModuleKpi({ tenantId: req.tenantId, kpiId: req.params.id, recordedBy: req.user.id });
+    res.json({ ok: true, updated: result.updated, deleted: result.deleted });
+  } catch (err) {
+    const clientError = err.message.includes("n'est pas un KPI de module") || err.message.includes('introuvable');
+    return res.status(clientError ? 400 : 500).json({ error: err.message });
+  }
 });
 
 const SERIES_VALIDATORS = [
