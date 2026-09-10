@@ -125,6 +125,28 @@ describe('KPI de module — garde-fous', () => {
     expect(res.status).toBe(409);
   });
 
+  it('PATCH et DELETE d’une valeur refusés sur un KPI de module (409)', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeCapa(t);
+    await closeCapa(t, c1.id);
+    const created = await fromPreset(t, 'capa_closed_count');
+    const recordId = (created.body.records || [])[0].id;
+    expect(recordId).toBeTruthy();
+
+    const patch = await request(app)
+      .patch(`/api/kpis/${created.body.id}/records/${recordId}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ value: 99 });
+    expect(patch.status).toBe(409);
+
+    const del = await request(app)
+      .delete(`/api/kpis/${created.body.id}/records/${recordId}`)
+      .set('Authorization', `Bearer ${t}`);
+    expect(del.status).toBe(409);
+  });
+
   it('POST /:id/recompute sur un KPI manuel → 400', async () => {
     tenant = await createTenant();
     const manual = await request(app)

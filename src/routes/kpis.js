@@ -687,13 +687,19 @@ router.patch(
 
     const { data: kpi, error: kpiError } = await supabase
       .from('kpis')
-      .select('id')
+      .select('id, calculation_type')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
 
     if (kpiError || !kpi) {
       return res.status(404).json({ error: 'KPI introuvable.' });
+    }
+
+    if (kpi.calculation_type === 'module') {
+      return res.status(409).json({
+        error: 'Les valeurs de ce KPI sont calculées automatiquement depuis un module et ne se modifient pas à la main.',
+      });
     }
 
     const update = {};
@@ -740,13 +746,19 @@ router.patch(
 router.delete('/:id/records/:recordId', requireRole('admin', 'manager'), async (req, res) => {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
-    .select('id')
+    .select('id, calculation_type')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
 
   if (kpiError || !kpi) {
     return res.status(404).json({ error: 'KPI introuvable.' });
+  }
+
+  if (kpi.calculation_type === 'module') {
+    return res.status(409).json({
+      error: 'Les valeurs de ce KPI sont calculées automatiquement depuis un module et ne se suppriment pas à la main.',
+    });
   }
 
   const { error, count } = await supabase

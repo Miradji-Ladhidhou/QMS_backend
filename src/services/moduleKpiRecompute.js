@@ -64,6 +64,12 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null })
     throw new Error('Recette de calcul introuvable pour ce KPI de module.');
   }
   const config = configs[0];
+  if (!config.period_column) {
+    // Sans colonne de période, groupRowsByPeriod grouperait tout sous une seule clé null que
+    // summarizeGroups ne sait pas traiter. Tous les presets Phase 1 en ont une ; garde-fou
+    // pour un futur preset mal formé.
+    throw new Error("La recette de ce KPI de module n'a pas de colonne de période.");
+  }
 
   const rows = await source.fetchRows(tenantId);
   for (const row of rows) {

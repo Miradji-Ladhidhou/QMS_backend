@@ -11,7 +11,8 @@ export function scheduleModuleKpiJob() {
     const { data: kpis, error } = await supabase
       .from('kpis')
       .select('id, tenant_id')
-      .eq('calculation_type', 'module');
+      .eq('calculation_type', 'module')
+      .limit(50000);
 
     if (error || !kpis) {
       console.error('[moduleKpiJob] Impossible de lister les KPI de module :', error?.message);
