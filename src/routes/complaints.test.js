@@ -158,6 +158,38 @@ describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA',
     expect(res.body.status).toBe('closed');
     expect(res.body.customer_satisfied).toBe(true);
   });
+
+  it('date la résolution automatiquement si l’utilisateur ne renseigne pas resolution_date', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+    const today = new Date().toISOString().slice(0, 10);
+
+    const res = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved', resolution: 'Produit remplacé.' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.resolution_date).toBe(today);
+  });
+
+  it('ne réécrit pas une resolution_date déjà renseignée', async () => {
+    tenant = await createTenant();
+    const complaint = await makeComplaint(tenant.admin.token);
+
+    await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'resolved', resolution: 'Produit remplacé.', resolution_date: '2026-02-10' });
+
+    const res = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'closed', customer_satisfied: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body.resolution_date).toBe('2026-02-10');
+  });
 });
 
 describe('POST /api/complaints/:id/create-capa — lien bidirectionnel', () => {

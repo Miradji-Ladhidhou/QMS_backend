@@ -251,23 +251,20 @@ router.patch(
       // customer_satisfied === true, seulement qu'il ait été DEMANDÉ : bloquer la clôture sur une
       // réponse négative laisserait des dossiers ouverts indéfiniment pour une raison hors de
       // notre portée (voir plutôt le bandeau "envisagez une CAPA" côté écran pour ce cas).
-      let resolution = update.resolution;
-      let customerSatisfied = update.customer_satisfied;
+      const { data: existing, error: fetchError } = await supabase
+        .from('complaints')
+        .select('resolution, customer_satisfied, resolution_date')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .single();
 
-      if (resolution === undefined || customerSatisfied === undefined) {
-        const { data: existing, error: fetchError } = await supabase
-          .from('complaints')
-          .select('resolution, customer_satisfied')
-          .eq('tenant_id', req.tenantId)
-          .eq('id', req.params.id)
-          .single();
-
-        if (fetchError || !existing) {
-          return res.status(404).json({ error: 'Réclamation introuvable.' });
-        }
-        if (resolution === undefined) resolution = existing.resolution;
-        if (customerSatisfied === undefined) customerSatisfied = existing.customer_satisfied;
+      if (fetchError || !existing) {
+        return res.status(404).json({ error: 'Réclamation introuvable.' });
       }
+
+      const resolution = update.resolution !== undefined ? update.resolution : existing.resolution;
+      const customerSatisfied =
+        update.customer_satisfied !== undefined ? update.customer_satisfied : existing.customer_satisfied;
 
       if (!resolution) {
         return res
@@ -279,6 +276,13 @@ router.patch(
         return res
           .status(400)
           .json({ error: 'Impossible de clôturer une réclamation sans avoir renseigné la satisfaction du client.' });
+      }
+
+      // Dater la résolution automatiquement si personne ne l'a fait (miroir de closed_at côté
+      // CAPA) : le champ resolution_date est facultatif dans le formulaire, or les délais de
+      // traitement et les indicateurs qui s'y rattachent deviennent faux s'il reste vide.
+      if (!update.resolution_date && !existing.resolution_date) {
+        update.resolution_date = new Date().toISOString().slice(0, 10);
       }
     }
 

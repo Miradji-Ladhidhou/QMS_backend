@@ -348,7 +348,7 @@ describe('KPI de module — réclamations clients', () => {
     expect(created.body.target).toBe(0);
   });
 
-  it('« Clients insatisfaits après résolution » compte les avis négatifs par mois de résolution', async () => {
+  it('« Clients insatisfaits à ce jour » compte les avis négatifs enregistrés (photo à date)', async () => {
     tenant = await createTenant();
     const t = tenant.admin.token;
 
@@ -362,6 +362,8 @@ describe('KPI de module — réclamations clients', () => {
     const created = await fromPreset(t, 'complaint_dissatisfied_count');
     const rec = (created.body.records || []).find((r) => r.value !== null);
     expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+    expect(created.body.target).toBe(0);
   });
 
   it('« Réclamations résolues sans retour client » compte les résolues sans avis (§9.1.2)', async () => {

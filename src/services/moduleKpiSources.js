@@ -425,7 +425,7 @@ export const MODULE_KPI_PRESETS = [
   {
     id: 'complaint_dissatisfied_count',
     module: 'complaint',
-    label: 'Clients insatisfaits après résolution',
+    label: 'Clients insatisfaits à ce jour',
     description: 'Nombre de réclamations où le client s’est explicitement déclaré insatisfait de la résolution (§9.1.2).',
     unit: 'réclamations',
     target: 0,
@@ -433,7 +433,7 @@ export const MODULE_KPI_PRESETS = [
     frequency: 'monthly',
     recipe: {
       calc_type: 'count',
-      period_column: 'resolution_date',
+      period_column: '__snapshot__',
       filters: [{ column: '_customer_dissatisfied', operator: 'equals', value: '1' }],
     },
   },
