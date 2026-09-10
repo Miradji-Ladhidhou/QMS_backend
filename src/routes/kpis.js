@@ -44,7 +44,7 @@ router.get('/', async (req, res) => {
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
     // répartition) et de nommer chaque courbe, sans une requête par KPI.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -84,7 +84,7 @@ router.get('/report', async (req, res) => {
     // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
     // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -134,15 +134,17 @@ router.get('/report', async (req, res) => {
 // (§9.1). Placé avant /:id pour ne pas être capturé.
 router.get('/module-presets', async (req, res) => {
   res.json(
-    MODULE_KPI_PRESETS.map(({ id, module, label, description, unit, target_direction, frequency }) => ({
+    MODULE_KPI_PRESETS.map(({ id, module, label, description, unit, target, target_direction, frequency, recipe }) => ({
       id,
       module,
       module_label: MODULE_KPI_SOURCES[module]?.label || module,
       label,
       description,
       unit,
+      target: target ?? null,
       target_direction,
       frequency,
+      snapshot: recipe?.period_column === '__snapshot__',
     }))
   );
 });
@@ -189,6 +191,7 @@ router.post(
         tenant_id: req.tenantId,
         name: preset.label,
         unit: preset.unit || null,
+        target: preset.target ?? null,
         target_direction: preset.target_direction || undefined,
         frequency: preset.frequency || null,
         calculation_type: 'module',
@@ -229,7 +232,7 @@ router.post(
     const { data: full } = await supabase
       .from('kpis')
       .select(
-        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
       )
       .eq('tenant_id', req.tenantId)
       .eq('id', kpi.id)
@@ -323,7 +326,7 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)

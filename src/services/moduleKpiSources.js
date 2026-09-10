@@ -47,12 +47,35 @@ export const MODULE_KPI_SOURCES = {
     table: 'capas',
     label: 'CAPA',
     async fetchRows(tenantId) {
-      const rows = await selectAll('capas', 'id, status, priority, severity, due_date, closed_at, created_at', tenantId);
-      return rowsFrom(rows, (r) => ({
-        _is_closed: bool01(r.status === 'closed'),
-        _resolution_days: daysBetween(r.created_at, r.closed_at),
-        _on_time: onTime(r.closed_at, r.due_date),
-      }));
+      const rows = await selectAll(
+        'capas',
+        'id, status, priority, severity, due_date, closed_at, created_at, effectiveness_verified, preventive_action',
+        tenantId
+      );
+      const now = new Date();
+      const past = (d) => {
+        if (!d) return false;
+        const t = new Date(d);
+        return !Number.isNaN(t.getTime()) && now.getTime() > t.getTime() + DAY_MS - 1;
+      };
+      return rowsFrom(rows, (r) => {
+        const isOpen = r.status !== 'closed';
+        const missed = !r.due_date
+          ? ''
+          : bool01(r.closed_at ? onTime(r.closed_at, r.due_date) === '0' : past(r.due_date));
+        return {
+          _is_closed: bool01(r.status === 'closed'),
+          _resolution_days: daysBetween(r.created_at, r.closed_at),
+          _on_time: onTime(r.closed_at, r.due_date),
+          _is_open: bool01(isOpen),
+          _is_overdue: bool01(isOpen && r.due_date && past(r.due_date)),
+          _open_age_days: isOpen ? daysBetween(r.created_at, now) : '',
+          _missed_deadline: missed,
+          _eff_verified: r.status === 'closed' ? bool01(r.effectiveness_verified === true) : '',
+          _eff_failed: bool01(r.effectiveness_verified === false),
+          _has_preventive: bool01(r.preventive_action && String(r.preventive_action).trim() !== ''),
+        };
+      });
     },
   },
 
@@ -160,6 +183,7 @@ export const MODULE_KPI_PRESETS = [
     label: 'CAPA clôturées dans les délais',
     description: 'Part des CAPA clôturées dont la date de clôture respecte l’échéance.',
     unit: '%',
+    target: 90,
     target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_on_time', operator: 'equals', value: '1' }] },
@@ -170,6 +194,7 @@ export const MODULE_KPI_PRESETS = [
     label: 'Délai moyen de traitement des CAPA',
     description: 'Nombre de jours moyen entre la création et la clôture d’une CAPA.',
     unit: 'jours',
+    target: 30,
     target_direction: 'min',
     frequency: 'monthly',
     recipe: {
@@ -188,6 +213,87 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'created_at' },
+  },
+  {
+    id: 'capa_effectiveness_rate',
+    module: 'capa',
+    label: 'Efficacité des CAPA confirmée',
+    description: 'Part des CAPA clôturées dont l’efficacité a été vérifiée et confirmée (§10.2.1 f).',
+    unit: '%',
+    target: 95,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_eff_verified', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_ineffective_count',
+    module: 'capa',
+    label: 'CAPA jugées inefficaces',
+    description: 'Nombre de CAPA dont la vérification d’efficacité a conclu à un échec sur la période.',
+    unit: 'CAPA',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: '_eff_failed', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_preventive_rate',
+    module: 'capa',
+    label: 'CAPA assorties d’une action préventive',
+    description: 'Part des CAPA clôturées comportant une action préventive renseignée.',
+    unit: '%',
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: 'closed_at', filters: [{ column: '_has_preventive', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_missed_deadline_count',
+    module: 'capa',
+    label: 'Échéances de CAPA manquées',
+    description: 'Nombre de CAPA dont l’échéance tombe sur la période sans avoir été traitées à temps.',
+    unit: 'CAPA',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'due_date', filters: [{ column: '_missed_deadline', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_open_backlog',
+    module: 'capa',
+    label: 'CAPA ouvertes à ce jour',
+    description: 'Nombre de CAPA non clôturées au moment du calcul (photo à date).',
+    unit: 'CAPA',
+    target: 15,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_overdue_backlog',
+    module: 'capa',
+    label: 'CAPA en retard à ce jour',
+    description: 'Nombre de CAPA non clôturées dont l’échéance est dépassée au moment du calcul (photo à date).',
+    unit: 'CAPA',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'capa_open_age_days',
+    module: 'capa',
+    label: 'Âge moyen des CAPA ouvertes',
+    description: 'Ancienneté moyenne (jours) des CAPA non clôturées au moment du calcul (photo à date).',
+    unit: 'jours',
+    target: 45,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'average',
+      source_column: '_open_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_is_open', operator: 'equals', value: '1' }],
+    },
   },
 
   // --- Non-conformités produit/service ---

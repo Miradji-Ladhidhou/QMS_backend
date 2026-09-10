@@ -186,6 +186,80 @@ describe('KPI de module — garde-fous', () => {
   });
 });
 
+function currentMonthBucket() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-01`;
+}
+
+describe('KPI de module — photo à date (snapshot)', () => {
+  it('« CAPA ouvertes à ce jour » compte le stock courant, pas un agrégat de période', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeCapa(t);
+    await makeCapa(t);
+    await makeCapa(t);
+    await closeCapa(t, c1.id);
+
+    const created = await fromPreset(t, 'capa_open_backlog');
+    expect(created.status).toBe(201);
+    const records = (created.body.records || []).filter((r) => r.value !== null);
+    expect(records.length).toBe(1);
+    expect(Number(records[0].value)).toBe(2);
+    expect(records[0].period_date).toBe(currentMonthBucket());
+    expect(records[0].source).toBe('module');
+    expect(created.body.target).toBe(15);
+  });
+
+  it('« CAPA en retard à ce jour » ne compte que les CAPA ouvertes hors délai', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeCapa(t, { due_date: '2020-01-01' }); // ouverte + échéance dépassée
+    await makeCapa(t, { due_date: '2999-01-01' }); // ouverte mais dans les délais
+    const done = await makeCapa(t, { due_date: '2020-01-01' });
+    await closeCapa(t, done.id); // clôturée → hors backlog
+
+    const created = await fromPreset(t, 'capa_overdue_backlog');
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+  });
+
+  it('recalcul idempotent : la photo ne supprime pas les relevés précédents', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeCapa(t);
+    const created = await fromPreset(t, 'capa_open_backlog');
+
+    const first = await request(app).post(`/api/kpis/${created.body.id}/recompute`).set('Authorization', `Bearer ${t}`);
+    expect(first.status).toBe(200);
+    expect(first.body.deleted).toBe(0);
+
+    const second = await request(app).post(`/api/kpis/${created.body.id}/recompute`).set('Authorization', `Bearer ${t}`);
+    expect(second.body.deleted).toBe(0);
+    expect(second.body.updated).toBe(1);
+  });
+});
+
+describe('KPI de module — efficacité CAPA', () => {
+  it('« Efficacité des CAPA confirmée » = part des clôturées vérifiées efficaces', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const c1 = await makeCapa(t);
+    const c2 = await makeCapa(t);
+    await closeCapa(t, c1.id); // closeCapa pose effectiveness_verified: true
+    await closeCapa(t, c2.id);
+
+    const created = await fromPreset(t, 'capa_effectiveness_rate');
+    expect(created.status).toBe(201);
+    const rec = (created.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(100);
+    expect(created.body.target).toBe(95);
+  });
+});
+
 describe('KPI de module — satisfaction (average)', () => {
   it('« Note moyenne » = moyenne des scores du mois', async () => {
     tenant = await createTenant();
