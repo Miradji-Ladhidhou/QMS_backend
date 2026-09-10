@@ -396,6 +396,70 @@ describe('KPI de module — réclamations clients', () => {
   });
 });
 
+describe('KPI de module — compétences (matrice)', () => {
+  async function makeTraining(token, body) {
+    const res = await request(app).post('/api/trainings').set('Authorization', `Bearer ${token}`).send(body);
+    if (res.status !== 201) throw new Error(`makeTraining a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+  async function addRecord(token, trainingId, body) {
+    const res = await request(app)
+      .post(`/api/trainings/${trainingId}/records`)
+      .set('Authorization', `Bearer ${token}`)
+      .send(body);
+    if (res.status !== 201) throw new Error(`addRecord a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('expirées / jamais suivies / couverture reflètent l’état de la matrice', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    // Formation A : récurrente, réalisée il y a longtemps → renouvellement expiré.
+    const tA = await makeTraining(t, { title: 'Sécurité au poste', frequency_months: 12 });
+    await addRecord(t, tA.id, { user_id: tenant.admin.id, completed_at: '2020-01-01' });
+
+    // Formation B : obligatoire, jamais réalisée → manquante.
+    await makeTraining(t, { title: 'Sensibilisation qualité', frequency_months: 12 });
+
+    const expired = await fromPreset(t, 'competence_expired_backlog');
+    expect(expired.status).toBe(201);
+    let rec = (expired.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+    expect(expired.body.target).toBe(0);
+
+    const missing = await fromPreset(t, 'competence_missing_backlog');
+    rec = (missing.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const people = await fromPreset(t, 'competence_people_with_gap');
+    rec = (people.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1); // l'admin cumule les deux écarts, compté une fois
+
+    const coverage = await fromPreset(t, 'competence_coverage_rate');
+    rec = (coverage.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(0); // 2 compétences requises, 0 à jour
+  });
+
+  it('une formation renouvelée dans les temps compte comme couverte', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const tr = await makeTraining(t, { title: 'Habilitation électrique', frequency_months: 24 });
+    await addRecord(t, tr.id, { user_id: tenant.admin.id, completed_at: today });
+
+    const coverage = await fromPreset(t, 'competence_coverage_rate');
+    const rec = (coverage.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(100);
+
+    const gap = await fromPreset(t, 'competence_people_with_gap');
+    const gapRec = (gap.body.records || []).find((r) => r.value !== null);
+    expect(Number(gapRec.value)).toBe(0);
+  });
+});
+
 describe('KPI de module — satisfaction (average)', () => {
   it('« Note moyenne » = moyenne des scores du mois', async () => {
     tenant = await createTenant();

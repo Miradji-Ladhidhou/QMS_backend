@@ -41,6 +41,90 @@ function rowsFrom(records, augment) {
   return records.map((row) => ({ row_index: row.id, row_data: { ...row, ...augment(row) } }));
 }
 
+// Fenêtre « bientôt à renouveler » — alignée sur trainings.js (RENEWAL_WINDOW_DAYS).
+const RENEWAL_WINDOW_DAYS = 60;
+
+// job_title est un texte libre : comparaison insensible à la casse/aux espaces. Une formation
+// sans required_job_titles concerne tout le monde (même règle que la matrice de trainings.js).
+function matchesJobTitle(personJobTitle, requiredJobTitles) {
+  if (!requiredJobTitles || requiredJobTitles.length === 0) return true;
+  const normalized = String(personJobTitle || '').trim().toLowerCase();
+  return requiredJobTitles.some((t) => String(t).trim().toLowerCase() === normalized);
+}
+
+// Reconstruit la matrice compétences (personnel × formations) — même logique que
+// buildMatrix() dans routes/trainings.js, mais sans le filtre de catégorie : un KPI de
+// compétence couvre tout l'effectif. Renvoie une cellule par couple (personne, formation)
+// CONCERNÉ (les postes non concernés sont exclus). state : 'valid' | 'due_soon' | 'expired'
+// | 'missing'.
+async function buildCompetenceCells(tenantId) {
+  const today = new Date().toISOString().slice(0, 10);
+  const soon = new Date();
+  soon.setDate(soon.getDate() + RENEWAL_WINDOW_DAYS);
+  const soonStr = soon.toISOString().slice(0, 10);
+
+  const [usersRes, employeesRes, trainingsRes, recordsRes] = await Promise.all([
+    supabase.from('users').select('id, full_name, job_title').eq('tenant_id', tenantId).eq('training_exempt', false),
+    supabase
+      .from('employees')
+      .select('id, full_name, job_title')
+      .eq('tenant_id', tenantId)
+      .eq('is_active', true)
+      .eq('training_exempt', false),
+    supabase.from('trainings').select('id, title, required_job_titles').eq('tenant_id', tenantId),
+    supabase
+      .from('training_records')
+      .select('training_id, user_id, employee_id, completed_at, next_due_date')
+      .eq('tenant_id', tenantId)
+      .limit(50000),
+  ]);
+
+  const err = usersRes.error || employeesRes.error || trainingsRes.error || recordsRes.error;
+  if (err) throw new Error(`Matrice compétences : ${err.message}`);
+
+  const people = [
+    ...(usersRes.data || []).map((u) => ({ key: `u:${u.id}`, name: u.full_name, job_title: u.job_title })),
+    ...(employeesRes.data || []).map((e) => ({ key: `e:${e.id}`, name: e.full_name, job_title: e.job_title })),
+  ];
+
+  // Dernier enregistrement par couple (formation, personne).
+  const latest = new Map();
+  for (const rec of recordsRes.data || []) {
+    const pk = rec.user_id ? `u:${rec.user_id}` : `e:${rec.employee_id}`;
+    const key = `${rec.training_id}:${pk}`;
+    const cur = latest.get(key);
+    if (!cur || rec.completed_at > cur.completed_at) latest.set(key, rec);
+  }
+
+  const cells = [];
+  for (const training of trainingsRes.data || []) {
+    const required = training.required_job_titles || [];
+    for (const person of people) {
+      const record = latest.get(`${training.id}:${person.key}`);
+      let state;
+      if (!record) {
+        if (required.length > 0 && !matchesJobTitle(person.job_title, required)) continue; // poste non concerné
+        state = 'missing';
+      } else if (record.next_due_date && record.next_due_date < today) {
+        state = 'expired';
+      } else if (record.next_due_date && record.next_due_date <= soonStr) {
+        state = 'due_soon';
+      } else {
+        state = 'valid';
+      }
+      cells.push({
+        id: `${training.id}:${person.key}`,
+        state,
+        person_key: person.key,
+        person: person.name,
+        training_title: training.title,
+        days_overdue: state === 'expired' ? daysBetween(record.next_due_date, today) : '',
+      });
+    }
+  }
+  return cells;
+}
+
 // Clés = valeur stockée dans kpis.source_module.
 export const MODULE_KPI_SOURCES = {
   capa: {
@@ -169,10 +253,57 @@ export const MODULE_KPI_SOURCES = {
 
   training_record: {
     table: 'training_records',
-    label: 'Réalisations de formation',
+    label: 'Formations',
     async fetchRows(tenantId) {
       const rows = await selectAll('training_records', 'id, completed_at, next_due_date, created_at', tenantId);
       return rowsFrom(rows, () => ({}));
+    },
+  },
+
+  // Compétences (§7.2) : une ligne par cellule concernée de la matrice personnel × formations.
+  competence: {
+    table: 'trainings',
+    label: 'Formations',
+    async fetchRows(tenantId) {
+      const cells = await buildCompetenceCells(tenantId);
+      return cells.map((c) => ({
+        row_index: c.id,
+        row_data: {
+          state: c.state,
+          person: c.person,
+          training_title: c.training_title,
+          _expired: bool01(c.state === 'expired'),
+          _missing: bool01(c.state === 'missing'),
+          _due_soon: bool01(c.state === 'due_soon'),
+          _up_to_date: bool01(c.state === 'valid' || c.state === 'due_soon'),
+          _days_overdue: c.days_overdue,
+        },
+      }));
+    },
+  },
+
+  // Compétences (§7.2), vue par personne : une ligne par salarié concerné par ≥ 1 formation.
+  competence_person: {
+    table: 'trainings',
+    label: 'Formations',
+    async fetchRows(tenantId) {
+      const cells = await buildCompetenceCells(tenantId);
+      const byPerson = new Map();
+      for (const c of cells) {
+        const p = byPerson.get(c.person_key) || { person: c.person, gap: false, expired: false };
+        if (c.state === 'expired' || c.state === 'missing') p.gap = true;
+        if (c.state === 'expired') p.expired = true;
+        byPerson.set(c.person_key, p);
+      }
+      return [...byPerson.entries()].map(([key, p]) => ({
+        row_index: key,
+        row_data: {
+          person: p.person,
+          _has_gap: bool01(p.gap),
+          _has_expired: bool01(p.expired),
+          _fully_covered: bool01(!p.gap),
+        },
+      }));
     },
   },
 };
@@ -603,14 +734,87 @@ export const MODULE_KPI_PRESETS = [
     },
   },
 
-  // --- Formations ---
+  // --- Formations / compétences ---
+  // Jeu orienté audit (§7.2 compétence). Une question d'auditeur = un indicateur = une
+  // courbe. Ligne à 0 là où tout écart est une non-conformité de compétence.
+
+  // Écarts de compétence (photo à date, sur la matrice personnel × formations obligatoires).
+  {
+    id: 'competence_expired_backlog',
+    module: 'competence',
+    label: 'Formations obligatoires expirées',
+    description: 'Nombre de compétences requises dont la date de renouvellement est dépassée (§7.2).',
+    unit: 'compétences',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_expired', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'competence_missing_backlog',
+    module: 'competence',
+    label: 'Formations obligatoires jamais suivies',
+    description: 'Nombre de compétences requises pour un poste sans aucune réalisation enregistrée (§7.2).',
+    unit: 'compétences',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_missing', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'competence_people_with_gap',
+    module: 'competence_person',
+    label: 'Personnes non pleinement qualifiées',
+    description: 'Nombre de personnes ayant au moins une formation obligatoire expirée ou jamais suivie (§7.2).',
+    unit: 'personnes',
+    target: 0,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_has_gap', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'competence_coverage_rate',
+    module: 'competence',
+    label: 'Taux de couverture des compétences',
+    description: 'Part des compétences requises qui sont à jour (valides ou à renouveler prochainement).',
+    unit: '%',
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_up_to_date', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'competence_oldest_overdue_days',
+    module: 'competence',
+    label: 'Retard de la formation la plus en retard',
+    description: 'Nombre de jours écoulés depuis l’échéance de renouvellement la plus ancienne non traitée.',
+    unit: 'jours',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'max',
+      source_column: '_days_overdue',
+      period_column: '__snapshot__',
+      filters: [{ column: '_expired', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'competence_due_soon_backlog',
+    module: 'competence',
+    label: 'Formations à renouveler sous 60 jours',
+    description: 'Nombre de compétences requises dont le renouvellement arrive à échéance dans les 60 jours — anticipation.',
+    unit: 'compétences',
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_due_soon', operator: 'equals', value: '1' }] },
+  },
+
+  // Activité (par mois de réalisation).
   {
     id: 'training_completions',
     module: 'training_record',
     label: 'Réalisations de formation',
     description: 'Nombre de formations effectivement suivies (par personne) sur la période.',
     unit: 'réalisations',
-    target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'completed_at' },
   },
