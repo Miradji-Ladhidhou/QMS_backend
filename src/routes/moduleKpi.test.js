@@ -509,6 +509,22 @@ describe('KPI de module — risques', () => {
     const rec = (coverage.body.records || []).find((r) => r.value !== null);
     expect(Number(rec.value)).toBe(50);
   });
+
+  it('les opportunités sont exclues des KPI de risque', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeRisk(t, { likelihood: 5, impact: 5, type: 'opportunity' }); // score 25 mais opportunité
+    await makeRisk(t, { likelihood: 2, impact: 2 }); // vrai risque, score 4
+
+    const high = await fromPreset(t, 'risk_high_untreated_backlog');
+    const rec = (high.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(0); // l'opportunité à 25 ne compte pas
+
+    const open = await fromPreset(t, 'risk_open_backlog');
+    const openRec = (open.body.records || []).find((r) => r.value !== null);
+    expect(Number(openRec.value)).toBe(1); // seul le vrai risque
+  });
 });
 
 describe('KPI de module — fournisseurs', () => {

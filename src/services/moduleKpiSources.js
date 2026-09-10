@@ -406,8 +406,12 @@ export const MODULE_KPI_SOURCES = {
     label: 'Risques',
     async fetchRows(tenantId) {
       const today = todayStr();
-      const rows = await selectAll('risks', 'id, status, risk_score, treatment_plan, review_date, created_at', tenantId);
-      return rowsFrom(rows, (r) => {
+      const rows = await selectAll('risks', 'id, type, status, risk_score, treatment_plan, review_date, created_at', tenantId);
+      // Les opportunités partagent la table mais pas la logique : « opportunité élevée non
+      // traitée » ou « criticité moyenne » n'ont de sens que pour les risques. Ce jeu de KPI
+      // mesure la maîtrise des risques.
+      const risksOnly = rows.filter((r) => r.type !== 'opportunity');
+      return rowsFrom(risksOnly, (r) => {
         const isOpen = r.status === 'identified' || r.status === 'treating';
         const score = Number(r.risk_score);
         return {
