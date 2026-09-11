@@ -97,6 +97,11 @@ create table document_categories (
   -- false (défaut) : comportement actuel inchangé, visible par tout le tenant.
   -- true : accès réservé aux sujets ayant une entrée dans category_permissions.
   is_restricted boolean not null default false,
+  -- Dossiers imbriqués (même principe que kpi_folders.parent_id) : un dossier racine a
+  -- parent_id = null. La cascade supprime les sous-dossiers avec leur parent ; les documents
+  -- qu'ils contenaient reviennent sans dossier (category_id remis à null, jamais supprimés —
+  -- voir la colonne documents.category_id plus bas, on delete set null).
+  parent_id   uuid references document_categories (id) on delete cascade,
   created_at  timestamptz not null default now()
 );
 
@@ -1215,12 +1220,31 @@ create table categories (
   -- être unique ici (deux personnes peuvent s'appeler pareil, ou vouloir toutes une catégorie
   -- "Personnel") : l'identité réelle d'une catégorie personnelle est owner_user_id, pas le nom.
   owner_user_id uuid references users (id) on delete cascade,
+  -- Dossiers imbriqués (même principe que kpi_folders.parent_id, généralisé aux modules
+  -- génériques) : un dossier racine a parent_id = null. Jamais pour un dossier personnel
+  -- (contrainte ci-dessous) — "Uniquement moi" reste un compartiment plat à la racine, pas de
+  -- raison de le laisser s'imbriquer. La cascade supprime les sous-dossiers avec leur parent ;
+  -- DELETE /module-categories/:id vérifie tout le sous-arbre avant d'autoriser la suppression
+  -- (voir moduleCategories.js), pour ne jamais détacher silencieusement des éléments encore
+  -- rattachés à un dossier plus profond que celui visé.
+  parent_id     uuid references categories (id) on delete cascade,
   created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
+  updated_at    timestamptz not null default now(),
+  constraint categories_personal_never_nested check (owner_user_id is null or parent_id is null)
 );
 
-create unique index categories_admin_name_unique on categories (tenant_id, resource_type, name) where owner_user_id is null;
+-- Remplace l'ancien index global categories_admin_name_unique (tenant_id, resource_type,
+-- name) : avec l'imbrication, la même feuille "Q1" doit pouvoir exister sous deux dossiers
+-- parents différents. parent_id étant nullable et les index uniques Postgres traitant chaque
+-- NULL comme distinct des autres, un seul index composite ne suffirait pas à bloquer les
+-- doublons à la racine — d'où les deux index partiels ci-dessous (même schéma que
+-- categories_personal_owner_unique juste en dessous, déjà scindé sur owner_user_id).
+create unique index categories_admin_name_unique_root on categories (tenant_id, resource_type, name)
+  where owner_user_id is null and parent_id is null;
+create unique index categories_admin_name_unique_nested on categories (tenant_id, resource_type, parent_id, name)
+  where owner_user_id is null and parent_id is not null;
 create unique index categories_personal_owner_unique on categories (tenant_id, resource_type, owner_user_id) where owner_user_id is not null;
+create index idx_categories_parent_id on categories (parent_id);
 
 -- employees est déclarée avant categories (voir plus haut) — le rattachement à un dossier
 -- (resource_type='employee') se fait donc par un alter ici. on delete set null : supprimer un
@@ -1518,6 +1542,7 @@ create index idx_tasks_assigned_to on tasks (assigned_to);
 create index idx_tasks_assigned_employee_id on tasks (assigned_employee_id);
 
 create index idx_document_categories_tenant_id on document_categories (tenant_id);
+create index idx_document_categories_parent_id on document_categories (parent_id);
 
 create index idx_documents_tenant_id on documents (tenant_id);
 create index idx_documents_category_id on documents (category_id);

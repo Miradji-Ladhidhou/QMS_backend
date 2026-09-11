@@ -3,6 +3,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { filterViewableCategories, hasCategoryPermission } from '../middleware/documentPermissions.js';
+import { loadAncestors, loadSubtreeIds } from '../utils/folderAncestors.js';
 
 const router = Router();
 const APPROVER_ROLES = ['admin', 'manager', 'member'];
@@ -10,15 +11,18 @@ const SUBJECT_TYPES = ['user', 'group'];
 
 router.use(requireAuth);
 
-// GET /api/categories — liste des catégories du tenant. Une catégorie restreinte à
-// laquelle l'utilisateur n'a pas accès (can_view) n'apparaît pas — principe de moindre
-// divulgation, notamment pour le sélecteur de filtre de la liste des documents.
+// GET /api/categories?parent_id=<uuid>|root — sous-dossiers directs d'un dossier (racine si
+// parent_id absent ou "root"), même principe que GET /api/module-categories/GET
+// /api/kpi-folders. Une catégorie restreinte à laquelle l'utilisateur n'a pas accès (can_view)
+// n'apparaît pas — principe de moindre divulgation, notamment pour le sélecteur de filtre de
+// la liste des documents.
 router.get('/', async (req, res) => {
-  const { data, error } = await supabase
-    .from('document_categories')
-    .select('*')
-    .eq('tenant_id', req.tenantId)
-    .order('name', { ascending: true });
+  const { parent_id: parentId } = req.query;
+
+  let query = supabase.from('document_categories').select('*').eq('tenant_id', req.tenantId);
+  query = !parentId || parentId === 'root' ? query.is('parent_id', null) : query.eq('parent_id', parentId);
+
+  const { data, error } = await query.order('name', { ascending: true });
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les catégories.' });
@@ -29,6 +33,24 @@ router.get('/', async (req, res) => {
   res.json(viewable);
 });
 
+// GET /api/categories/:id/breadcrumb — chaîne des ancêtres (racine → dossier), pour le fil
+// d'Ariane de navigation.
+router.get('/:id/breadcrumb', async (req, res) => {
+  const { data: folder } = await supabase
+    .from('document_categories')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (!folder) {
+    return res.status(404).json({ error: 'Dossier introuvable.' });
+  }
+
+  const breadcrumb = await loadAncestors(supabase, 'document_categories', req.tenantId, req.params.id);
+  res.json(breadcrumb);
+});
+
 // POST /api/categories — création (admin uniquement)
 router.post(
   '/',
@@ -37,6 +59,7 @@ router.post(
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
     body('is_restricted').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('parent_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier parent invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -44,7 +67,25 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, color, required_approver_role: requiredApproverRole, is_restricted: isRestricted } = req.body;
+    const {
+      name,
+      color,
+      required_approver_role: requiredApproverRole,
+      is_restricted: isRestricted,
+      parent_id: parentId,
+    } = req.body;
+
+    if (parentId) {
+      const { data: parent } = await supabase
+        .from('document_categories')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', parentId)
+        .maybeSingle();
+      if (!parent) {
+        return res.status(400).json({ error: 'Dossier parent introuvable.' });
+      }
+    }
 
     const { data, error } = await supabase
       .from('document_categories')
@@ -54,6 +95,7 @@ router.post(
         color: color || null,
         required_approver_role: requiredApproverRole || null,
         is_restricted: isRestricted ?? false,
+        parent_id: parentId || null,
       })
       .select()
       .single();
@@ -74,6 +116,10 @@ router.put(
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('required_approver_role').optional({ values: 'falsy' }).isIn(APPROVER_ROLES).withMessage('Rôle approbateur invalide.'),
     body('is_restricted').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('parent_id')
+      .optional({ nullable: true })
+      .custom((value) => value === null || typeof value === 'string')
+      .withMessage('Dossier parent invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -86,6 +132,31 @@ router.put(
     const update = { name, color: color || null, required_approver_role: requiredApproverRole || null };
     if ('is_restricted' in req.body) {
       update.is_restricted = isRestricted;
+    }
+
+    if ('parent_id' in req.body) {
+      const parentId = req.body.parent_id;
+
+      if (parentId) {
+        if (parentId === req.params.id) {
+          return res.status(400).json({ error: 'Un dossier ne peut pas être son propre parent.' });
+        }
+        const { data: parent } = await supabase
+          .from('document_categories')
+          .select('id')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', parentId)
+          .maybeSingle();
+        if (!parent) {
+          return res.status(400).json({ error: 'Dossier parent introuvable.' });
+        }
+        const ancestors = await loadAncestors(supabase, 'document_categories', req.tenantId, parentId);
+        if (ancestors.some((ancestor) => ancestor.id === req.params.id)) {
+          return res.status(400).json({ error: "Impossible de déplacer un dossier dans l'un de ses sous-dossiers." });
+        }
+      }
+
+      update.parent_id = parentId || null;
     }
 
     const { data, error } = await supabase
@@ -109,21 +180,25 @@ router.put(
 // schema.sql, on delete set null) — pour une catégorie restreinte, ça lève silencieusement la
 // restriction d'accès sur ses documents (un document sans catégorie est visible par tout le
 // tenant par défaut). Bloquer tant que des documents y sont encore rattachés plutôt que de
-// laisser filer cette perte d'accès silencieuse.
+// laisser filer cette perte d'accès silencieuse — sur TOUT LE SOUS-ARBRE (ce dossier + ses
+// descendants), puisque parent_id est en cascade (schema.sql) et supprimerait sinon
+// silencieusement les sous-dossiers avec leurs propres documents rattachés.
 router.delete('/:id', requireRole('admin'), async (req, res) => {
+  const subtreeIds = await loadSubtreeIds(supabase, 'document_categories', req.tenantId, req.params.id);
   const { count: documentCount, error: countError } = await supabase
     .from('documents')
     .select('id', { count: 'exact', head: true })
     .eq('tenant_id', req.tenantId)
-    .eq('category_id', req.params.id);
+    .in('category_id', subtreeIds);
 
   if (countError) {
     return res.status(500).json({ error: 'Impossible de vérifier les documents rattachés à cette catégorie.' });
   }
 
   if (documentCount > 0) {
+    const scope = subtreeIds.length > 1 ? ' (y compris ses sous-dossiers)' : '';
     return res.status(409).json({
-      error: `${documentCount} document(s) sont rattachés à cette catégorie. Déplacez-les avant de la supprimer.`,
+      error: `${documentCount} document(s) sont rattachés à cette catégorie${scope}. Déplacez-les avant de la supprimer.`,
     });
   }
 

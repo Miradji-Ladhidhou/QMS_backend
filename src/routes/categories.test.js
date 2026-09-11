@@ -120,3 +120,101 @@ describe('Catégories de documents — écriture réservée à admin', () => {
     expect(res.body.some((c) => c.name === 'Catégorie visible')).toBe(true);
   });
 });
+
+describe('Dossiers imbriqués (nesting)', () => {
+  async function createCategory(token, body) {
+    const res = await request(app).post('/api/categories').set('Authorization', `Bearer ${token}`).send(body);
+    expect(res.status).toBe(201);
+    return res.body;
+  }
+
+  it("GET / ne renvoie que les enfants directs — racine par défaut, sous-dossiers via parent_id", async () => {
+    tenant = await createTenant();
+    const root = await createCategory(tenant.admin.token, { name: 'Qualité' });
+    const child = await createCategory(tenant.admin.token, { name: 'Fournisseurs', parent_id: root.id });
+
+    const atRoot = await request(app).get('/api/categories').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(atRoot.body.map((c) => c.id)).toEqual([root.id]);
+
+    const inRoot = await request(app)
+      .get(`/api/categories?parent_id=${root.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(inRoot.body.map((c) => c.id)).toEqual([child.id]);
+  });
+
+  it('GET /:id/breadcrumb renvoie la chaîne racine → dossier (dossier inclus) ; 404 sur un id inconnu', async () => {
+    tenant = await createTenant();
+    const parent = await createCategory(tenant.admin.token, { name: 'Niveau 1' });
+    const child = await createCategory(tenant.admin.token, { name: 'Niveau 2', parent_id: parent.id });
+
+    const breadcrumb = await request(app)
+      .get(`/api/categories/${child.id}/breadcrumb`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(breadcrumb.status).toBe(200);
+    expect(breadcrumb.body.map((f) => f.name)).toEqual(['Niveau 1', 'Niveau 2']);
+
+    const notFound = await request(app)
+      .get('/api/categories/00000000-0000-0000-0000-000000000000/breadcrumb')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(notFound.status).toBe(404);
+  });
+
+  it('POST / rejette un parent_id inconnu ou appartenant à un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const badParent = await request(app)
+        .post('/api/categories')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ name: 'Enfant', parent_id: '00000000-0000-0000-0000-000000000000' });
+      expect(badParent.status).toBe(400);
+
+      const otherTenantCategory = await createCategory(otherTenant.admin.token, { name: 'Ailleurs' });
+      const crossTenant = await request(app)
+        .post('/api/categories')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ name: 'Enfant', parent_id: otherTenantCategory.id });
+      expect(crossTenant.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it('PUT /:id (déplacement) : rejette de se parenter soi-même et de se déplacer dans un de ses sous-dossiers', async () => {
+    tenant = await createTenant();
+    const parent = await createCategory(tenant.admin.token, { name: 'Parent' });
+    const child = await createCategory(tenant.admin.token, { name: 'Enfant', parent_id: parent.id });
+
+    const selfParent = await request(app)
+      .put(`/api/categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: parent.name, parent_id: parent.id });
+    expect(selfParent.status).toBe(400);
+
+    const intoOwnChild = await request(app)
+      .put(`/api/categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: parent.name, parent_id: child.id });
+    expect(intoOwnChild.status).toBe(400);
+  });
+
+  it('DELETE /:id bloqué si un document est rattaché à un SOUS-dossier, pas seulement au dossier ciblé', async () => {
+    tenant = await createTenant();
+    const parent = await createCategory(tenant.admin.token, { name: 'Parent avec sous-dossier' });
+    const child = await createCategory(tenant.admin.token, { name: 'Enfant occupé', parent_id: parent.id });
+
+    const doc = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-NEST-001')
+      .field('title', 'Document dans le sous-dossier')
+      .field('category_id', child.id);
+    expect(doc.status).toBe(201);
+
+    const blocked = await request(app)
+      .delete(`/api/categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.error).toContain('sous-dossiers');
+  });
+});

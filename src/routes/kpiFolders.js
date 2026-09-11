@@ -3,31 +3,18 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
+import { loadAncestors as loadAncestorsGeneric } from '../utils/folderAncestors.js';
 
 const router = Router();
-const MAX_ANCESTOR_DEPTH = 30;
 
 router.use(requireAuth);
 router.use(requireMenuVisible('kpis'));
 
-// Remonte la chaîne des parents jusqu'à la racine, pour le fil d'Ariane et pour détecter
-// les cycles avant un déplacement (voir PATCH ci-dessous). Une boucle de requêtes plutôt
-// qu'une CTE récursive : la profondeur réelle d'un classement de KPI reste faible.
-async function loadAncestors(tenantId, folderId) {
-  const ancestors = [];
-  let currentId = folderId;
-  for (let i = 0; i < MAX_ANCESTOR_DEPTH && currentId; i += 1) {
-    const { data } = await supabase
-      .from('kpi_folders')
-      .select('id, name, parent_id')
-      .eq('tenant_id', tenantId)
-      .eq('id', currentId)
-      .maybeSingle();
-    if (!data) break;
-    ancestors.unshift({ id: data.id, name: data.name });
-    currentId = data.parent_id;
-  }
-  return ancestors;
+// Généralisé depuis ce fichier (premier module à avoir eu des dossiers imbriqués) vers
+// utils/folderAncestors.js, pour servir aussi categories (moduleCategories.js) et
+// document_categories (categories.js) — dédoublonnage pur, comportement inchangé.
+function loadAncestors(tenantId, folderId) {
+  return loadAncestorsGeneric(supabase, 'kpi_folders', tenantId, folderId);
 }
 
 // GET /api/kpi-folders?parent_id=<uuid>|root — sous-dossiers directs d'un dossier (ou les

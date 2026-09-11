@@ -797,3 +797,181 @@ describe('DELETE /api/module-categories/:id — refuse si des éléments y sont 
     expect(ok.status).toBe(204);
   });
 });
+
+describe('Dossiers imbriqués (nesting)', () => {
+  it("GET / ne renvoie que les enfants directs — racine par défaut, sous-dossiers via parent_id", async () => {
+    tenant = await createTenant();
+    const root = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Qualité' });
+    const child = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Fournisseurs', parent_id: root.id })
+      .expect(201);
+
+    const atRoot = await request(app)
+      .get('/api/module-categories?resource_type=risk')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(atRoot.body.map((c) => c.id)).toEqual([root.id]);
+
+    const atRootExplicit = await request(app)
+      .get('/api/module-categories?resource_type=risk&parent_id=root')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(atRootExplicit.body.map((c) => c.id)).toEqual([root.id]);
+
+    const inRoot = await request(app)
+      .get(`/api/module-categories?resource_type=risk&parent_id=${root.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(inRoot.body.map((c) => c.id)).toEqual([child.body.id]);
+  });
+
+  it('GET /:id/breadcrumb renvoie la chaîne racine → dossier ; 404 sur un id inconnu', async () => {
+    tenant = await createTenant();
+    const grandparent = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Niveau 1' });
+    const parent = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Niveau 2', parent_id: grandparent.id })
+      .expect(201);
+    const child = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Niveau 3', parent_id: parent.body.id })
+      .expect(201);
+
+    const breadcrumb = await request(app)
+      .get(`/api/module-categories/${child.body.id}/breadcrumb`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(breadcrumb.status).toBe(200);
+    // Inclut le dossier lui-même en dernier (même convention que kpiFolders.js/FolderBreadcrumb
+    // côté frontend, qui met en gras le dernier élément comme "position actuelle").
+    expect(breadcrumb.body.map((f) => f.name)).toEqual(['Niveau 1', 'Niveau 2', 'Niveau 3']);
+
+    const notFound = await request(app)
+      .get('/api/module-categories/00000000-0000-0000-0000-000000000000/breadcrumb')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(notFound.status).toBe(404);
+  });
+
+  it('POST / rejette un parent_id inconnu ou appartenant à un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const badParent = await request(app)
+        .post('/api/module-categories')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ resource_type: 'risk', name: 'Enfant', parent_id: '00000000-0000-0000-0000-000000000000' });
+      expect(badParent.status).toBe(400);
+
+      const otherTenantCategory = await createCategory(otherTenant.admin.token, { resourceType: 'risk', name: 'Ailleurs' });
+      const crossTenant = await request(app)
+        .post('/api/module-categories')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ resource_type: 'risk', name: 'Enfant', parent_id: otherTenantCategory.id });
+      expect(crossTenant.status).toBe(400);
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+
+  it('PUT /:id (déplacement) : rejette de se parenter soi-même et de se déplacer dans un de ses sous-dossiers', async () => {
+    tenant = await createTenant();
+    const parent = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Parent' });
+    const child = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Enfant', parent_id: parent.id })
+      .expect(201);
+
+    const selfParent = await request(app)
+      .put(`/api/module-categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: parent.name, parent_id: parent.id });
+    expect(selfParent.status).toBe(400);
+
+    const intoOwnChild = await request(app)
+      .put(`/api/module-categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: parent.name, parent_id: child.body.id });
+    expect(intoOwnChild.status).toBe(400);
+  });
+
+  it("PUT /:id déplace bien un dossier dans un parent valide, sans rapport avec lui", async () => {
+    tenant = await createTenant();
+    const folderA = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Dossier A' });
+    const folderB = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Dossier B' });
+
+    const moved = await request(app)
+      .put(`/api/module-categories/${folderA.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: folderA.name, parent_id: folderB.id });
+    expect(moved.status).toBe(200);
+    expect(moved.body.parent_id).toBe(folderB.id);
+  });
+
+  it('DELETE /:id bloqué si un élément est rattaché à un SOUS-dossier, pas seulement au dossier ciblé', async () => {
+    tenant = await createTenant();
+    const parent = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Parent avec sous-dossier' });
+    const child = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Enfant occupé', parent_id: parent.id })
+      .expect(201);
+
+    await request(app)
+      .post('/api/risks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Risque dans le sous-dossier', likelihood: 3, impact: 3, category_id: child.body.id })
+      .expect(201);
+
+    // Le dossier ciblé (parent) lui-même est vide — seul son sous-dossier a un risque rattaché.
+    const blocked = await request(app)
+      .delete(`/api/module-categories/${parent.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(blocked.status).toBe(409);
+
+    // Une fois l'enfant lui-même supprimable (déplacer le risque hors du sous-arbre), le
+    // parent reste bloqué tant que l'enfant existe encore (contrainte FK), donc on vérifie
+    // plutôt que le sous-dossier seul est également bloqué pour la même raison.
+    const childBlocked = await request(app)
+      .delete(`/api/module-categories/${child.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(childBlocked.status).toBe(409);
+  });
+
+  it("une catégorie restreinte imbriquée se comporte exactement comme une catégorie restreinte à la racine (pas d'héritage)", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const openParent = await createCategory(tenant.admin.token, { resourceType: 'risk', name: 'Parent ouvert' });
+    const restrictedChild = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'risk', name: 'Enfant restreint', parent_id: openParent.id, is_restricted: true })
+      .expect(201);
+
+    // Le parent n'étant pas restreint, un member le voit dans la liste de son niveau...
+    const atRoot = await request(app)
+      .get('/api/module-categories?resource_type=risk')
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(atRoot.body.map((c) => c.id)).toContain(openParent.id);
+
+    // ...mais l'enfant restreint n'apparaît pas pour lui tant qu'aucune permission n'est
+    // accordée — exactement le même comportement qu'une catégorie restreinte à la racine,
+    // la profondeur ne change rien.
+    const inParent = await request(app)
+      .get(`/api/module-categories?resource_type=risk&parent_id=${openParent.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(inParent.body.map((c) => c.id)).not.toContain(restrictedChild.body.id);
+
+    await request(app)
+      .post(`/api/module-categories/${restrictedChild.body.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: member.id, can_view: true })
+      .expect(201);
+
+    const inParentAfterGrant = await request(app)
+      .get(`/api/module-categories?resource_type=risk&parent_id=${openParent.id}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(inParentAfterGrant.body.map((c) => c.id)).toContain(restrictedChild.body.id);
+  });
+});

@@ -7,6 +7,7 @@ import {
   hasGenericCategoryPermission,
   getOrCreatePersonalCategory,
 } from '../middleware/genericCategoryPermissions.js';
+import { loadAncestors, loadSubtreeIds } from '../utils/folderAncestors.js';
 
 const router = Router();
 const SUBJECT_TYPES = ['user', 'group'];
@@ -56,25 +57,33 @@ const RESOURCE_TABLE_INFO = {
 
 router.use(requireAuth);
 
-// GET /api/module-categories?resource_type=capa — liste des catégories de ce type pour le
-// tenant. Une catégorie restreinte à laquelle l'utilisateur n'a pas accès (can_view)
-// n'apparaît pas — même principe de moindre divulgation que GET /api/categories (documents).
+// GET /api/module-categories?resource_type=capa&parent_id=<uuid>|root — sous-dossiers directs
+// d'un dossier (racine si parent_id absent ou "root"), même principe que
+// GET /api/kpi-folders. Une catégorie restreinte à laquelle l'utilisateur n'a pas accès
+// (can_view) n'apparaît pas — même principe de moindre divulgation que GET /api/categories
+// (documents).
 router.get('/', [query('resource_type').isIn(RESOURCE_TYPES).withMessage('Type de ressource invalide.')], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ error: 'Requête invalide.', details: errors.array() });
   }
 
-  const { data, error } = await supabase
+  const { parent_id: parentId } = req.query;
+
+  let query_ = supabase
     .from('categories')
     .select('*')
     .eq('tenant_id', req.tenantId)
     .eq('resource_type', req.query.resource_type)
     // Les catégories personnelles ("Uniquement moi", voir POST /personal) ne sont jamais
     // listées ici : ni dans Paramètres > Catégories (l'admin n'a rien à en faire), ni dans le
-    // sélecteur de catégorie normal d'un formulaire de création.
-    .is('owner_user_id', null)
-    .order('name', { ascending: true });
+    // sélecteur de catégorie normal d'un formulaire de création. Jamais imbriquées non plus
+    // (voir contrainte categories_personal_never_nested, schema.sql) : cette exclusion
+    // n'entre donc jamais en conflit avec le filtre parent_id ci-dessous.
+    .is('owner_user_id', null);
+  query_ = !parentId || parentId === 'root' ? query_.is('parent_id', null) : query_.eq('parent_id', parentId);
+
+  const { data, error } = await query_.order('name', { ascending: true });
 
   if (error) {
     return res.status(500).json({ error: 'Impossible de récupérer les catégories.' });
@@ -83,6 +92,26 @@ router.get('/', [query('resource_type').isIn(RESOURCE_TYPES).withMessage('Type d
   const viewable = await filterViewableGenericCategories({ userId: req.user.id, userRole: req.userRole, categories: data });
 
   res.json(viewable);
+});
+
+// GET /api/module-categories/:id/breadcrumb — chaîne des ancêtres (racine → dossier), pour le
+// fil d'Ariane de navigation. Pas de resource_type requis : l'id + tenant_id suffisent à
+// résoudre la ligne sans ambiguïté, même principe que /:id/permissions un peu plus bas dans ce
+// fichier (qui ne vérifie pas non plus le resource_type appelant).
+router.get('/:id/breadcrumb', async (req, res) => {
+  const { data: folder } = await supabase
+    .from('categories')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (!folder) {
+    return res.status(404).json({ error: 'Dossier introuvable.' });
+  }
+
+  const breadcrumb = await loadAncestors(supabase, 'categories', req.tenantId, req.params.id);
+  res.json(breadcrumb);
 });
 
 // POST /api/module-categories/personal — libre-service (tous les rôles, pas seulement admin) :
@@ -120,6 +149,7 @@ router.post(
     body('resource_type').isIn(RESOURCE_TYPES).withMessage('Type de ressource invalide.'),
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('is_restricted').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('parent_id').optional({ values: 'falsy' }).isUUID().withMessage('Dossier parent invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -127,7 +157,20 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { resource_type: resourceType, name, color, is_restricted: isRestricted } = req.body;
+    const { resource_type: resourceType, name, color, is_restricted: isRestricted, parent_id: parentId } = req.body;
+
+    if (parentId) {
+      const { data: parent } = await supabase
+        .from('categories')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('resource_type', resourceType)
+        .eq('id', parentId)
+        .maybeSingle();
+      if (!parent) {
+        return res.status(400).json({ error: 'Dossier parent introuvable.' });
+      }
+    }
 
     const { data, error } = await supabase
       .from('categories')
@@ -137,6 +180,7 @@ router.post(
         name,
         color: color || null,
         is_restricted: isRestricted ?? false,
+        parent_id: parentId || null,
       })
       .select()
       .single();
@@ -162,6 +206,10 @@ router.put(
   [
     body('name').trim().notEmpty().withMessage('Le nom de la catégorie est requis.'),
     body('is_restricted').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('parent_id')
+      .optional({ nullable: true })
+      .custom((value) => value === null || typeof value === 'string')
+      .withMessage('Dossier parent invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -174,6 +222,43 @@ router.put(
     const update = { name, color: color || null };
     if ('is_restricted' in req.body) {
       update.is_restricted = isRestricted;
+    }
+
+    if ('parent_id' in req.body) {
+      const parentId = req.body.parent_id;
+
+      if (parentId) {
+        if (parentId === req.params.id) {
+          return res.status(400).json({ error: 'Un dossier ne peut pas être son propre parent.' });
+        }
+        // resource_type comparé ici (jamais transmis par le client, voir commentaire de la
+        // route) : un déplacement ne doit jamais faire apparaître une catégorie sous un
+        // parent d'un autre module.
+        const { data: current } = await supabase
+          .from('categories')
+          .select('resource_type')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', req.params.id)
+          .maybeSingle();
+        const { data: parent } = await supabase
+          .from('categories')
+          .select('id')
+          .eq('tenant_id', req.tenantId)
+          .eq('id', parentId)
+          .eq('resource_type', current?.resource_type)
+          .maybeSingle();
+        if (!parent) {
+          return res.status(400).json({ error: 'Dossier parent introuvable.' });
+        }
+        // Empêche de déplacer un dossier dans l'un de ses propres sous-dossiers, ce qui
+        // créerait un cycle et casserait la remontée du fil d'Ariane.
+        const ancestors = await loadAncestors(supabase, 'categories', req.tenantId, parentId);
+        if (ancestors.some((ancestor) => ancestor.id === req.params.id)) {
+          return res.status(400).json({ error: "Impossible de déplacer un dossier dans l'un de ses sous-dossiers." });
+        }
+      }
+
+      update.parent_id = parentId || null;
     }
 
     const { data, error } = await supabase
@@ -198,6 +283,12 @@ router.put(
 // restriction d'accès sur tout ce qu'elle contenait (un élément sans catégorie est visible par
 // tout le tenant par défaut) — le même risque que le garde-fou déjà posé sur
 // categories.js (documents), ici avec 14 modules concernés au lieu d'un seul.
+//
+// La vérification porte sur TOUT LE SOUS-ARBRE (ce dossier + ses descendants), pas seulement
+// le dossier ciblé : parent_id est en "on delete cascade" (schema.sql), donc supprimer un
+// dossier supprime aussi ses sous-dossiers — sans cette vérification élargie, un élément
+// rattaché deux niveaux plus bas se retrouverait détaché silencieusement (category_id remis à
+// null), perdant sa restriction d'accès au passage sans qu'on l'ait jamais visé directement.
 router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { data: category, error: categoryError } = await supabase
     .from('categories')
@@ -212,11 +303,12 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
 
   const referenceInfo = RESOURCE_TABLE_INFO[category.resource_type];
   if (referenceInfo) {
+    const subtreeIds = await loadSubtreeIds(supabase, 'categories', req.tenantId, req.params.id);
     const { count: referenceCount, error: countError } = await supabase
       .from(referenceInfo.table)
       .select('id', { count: 'exact', head: true })
       .eq('tenant_id', req.tenantId)
-      .eq('category_id', req.params.id);
+      .in('category_id', subtreeIds);
 
     if (countError) {
       return res.status(500).json({ error: 'Impossible de vérifier les éléments rattachés à cette catégorie.' });
@@ -224,8 +316,9 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
 
     if (referenceCount > 0) {
       const label = referenceCount > 1 ? referenceInfo.plural : referenceInfo.singular;
+      const scope = subtreeIds.length > 1 ? ' (y compris ses sous-dossiers)' : '';
       return res.status(409).json({
-        error: `${referenceCount} ${label} sont rattaché(s) à cette catégorie. Déplacez-les avant de la supprimer.`,
+        error: `${referenceCount} ${label} sont rattaché(s) à cette catégorie${scope}. Déplacez-les avant de la supprimer.`,
       });
     }
   }
