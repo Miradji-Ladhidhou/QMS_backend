@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
 
@@ -163,5 +163,73 @@ describe('Isolation multi-tenant', () => {
     } finally {
       await otherTenant.cleanup();
     }
+  });
+});
+
+describe('GET /api/quality-policy/acknowledgments', () => {
+  it('403 pour un member', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .get('/api/quality-policy/acknowledgments')
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('acknowledged: [], pending: [] avant toute publication', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .get('/api/quality-policy/acknowledgments')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ acknowledged: [], pending: [] });
+  });
+
+  it("liste acknowledged/pending pour un admin, un utilisateur désactivé n'apparaît pas dans pending", async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
+    const [memberA, memberB] = tenant.users;
+
+    await request(app)
+      .post('/api/quality-policy')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ content: 'Notre engagement qualité.' });
+    await request(app).post('/api/quality-policy/acknowledge').set('Authorization', `Bearer ${memberA.token}`).expect(201);
+    await admin.from('users').update({ is_active: false }).eq('id', memberB.id);
+
+    const res = await request(app)
+      .get('/api/quality-policy/acknowledgments')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.acknowledged.map((a) => a.user_id)).toContain(memberA.id);
+    expect(res.body.pending.map((u) => u.id)).not.toContain(memberB.id);
+    expect(res.body.pending.map((u) => u.id)).not.toContain(memberA.id);
+  });
+});
+
+describe('GET /api/quality-policy/pdf', () => {
+  it('404 avant toute publication', async () => {
+    tenant = await createTenant();
+    const res = await request(app).get('/api/quality-policy/pdf').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+
+  it('200, application/pdf, accessible à tout rôle (y compris member)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    await request(app)
+      .post('/api/quality-policy')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ content: 'Notre engagement qualité, exporté en PDF.' });
+
+    const res = await request(app)
+      .get('/api/quality-policy/pdf')
+      .set('Authorization', `Bearer ${member.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.body.length).toBeGreaterThan(0);
   });
 });

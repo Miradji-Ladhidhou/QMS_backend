@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { buildQualityPolicyPdf } from '../services/qualityPolicyPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
@@ -9,6 +11,20 @@ const MANAGER_ROLES = ['admin', 'manager'];
 router.use(requireAuth);
 
 const VERSION_SELECT = '*, author:users!quality_policy_versions_created_by_fkey(id, full_name)';
+
+// Factorisé : utilisé à la fois par GET / (affiché à l'écran) et GET /pdf (même chiffre dans
+// l'export, pour ne jamais diverger de ce que montre l'app). Retourne null en cas d'erreur
+// Supabase plutôt que de lever — chaque appelant décide comment réagir (500 pour l'un, PDF sans
+// le résumé pour l'autre).
+async function computeAcknowledgmentSummary(tenantId, versionId) {
+  const [{ count: acknowledgedCount, error: ackError }, { count: totalUsers, error: usersError }] = await Promise.all([
+    supabase.from('quality_policy_acknowledgments').select('id', { count: 'exact', head: true }).eq('quality_policy_version_id', versionId),
+    supabase.from('users').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('is_active', true),
+  ]);
+
+  if (ackError || usersError) return null;
+  return { acknowledged_count: acknowledgedCount || 0, total_users: totalUsers || 0 };
+}
 
 // GET /api/quality-policy — la politique qualité en vigueur (ISO 9001 §5.2), son historique, et
 // la preuve qu'elle est "communiquée et comprise" : accusé de lecture de l'appelant, et pour
@@ -48,19 +64,10 @@ router.get('/', async (req, res) => {
   // documents à accusé de lecture obligatoire).
   let acknowledgmentSummary = null;
   if (current && MANAGER_ROLES.includes(req.userRole)) {
-    const [{ count: acknowledgedCount, error: ackError }, { count: totalUsers, error: usersError }] = await Promise.all([
-      supabase
-        .from('quality_policy_acknowledgments')
-        .select('id', { count: 'exact', head: true })
-        .eq('quality_policy_version_id', current.id),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('tenant_id', req.tenantId).eq('is_active', true),
-    ]);
-
-    if (ackError || usersError) {
+    acknowledgmentSummary = await computeAcknowledgmentSummary(req.tenantId, current.id);
+    if (!acknowledgmentSummary) {
       return res.status(500).json({ error: 'Impossible de calculer le suivi des accusés de réception.' });
     }
-
-    acknowledgmentSummary = { acknowledged_count: acknowledgedCount || 0, total_users: totalUsers || 0 };
   }
 
   res.json({
@@ -133,6 +140,84 @@ router.post('/acknowledge', async (req, res) => {
   }
 
   res.status(201).json(acknowledgment);
+});
+
+// GET /api/quality-policy/acknowledgments — qui a pris connaissance de la version EN VIGUEUR /
+// qui n'a pas encore, réservé admin/manager. Même principe que GET /documents/:id/acknowledgments :
+// la liste "pending" compare aux utilisateurs ACTIFS du tenant, un compte désactivé n'a plus
+// besoin d'acquitter.
+router.get('/acknowledgments', requireRole(...MANAGER_ROLES), async (req, res) => {
+  const { data: current, error } = await supabase
+    .from('quality_policy_versions')
+    .select('id')
+    .eq('tenant_id', req.tenantId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer la politique qualité.' });
+  }
+  if (!current) {
+    return res.json({ acknowledged: [], pending: [] });
+  }
+
+  const [{ data: acknowledgments, error: ackError }, { data: activeUsers, error: usersError }] = await Promise.all([
+    supabase
+      .from('quality_policy_acknowledgments')
+      .select('user_id, acknowledged_at, user:users(id, full_name)')
+      .eq('quality_policy_version_id', current.id)
+      .order('acknowledged_at', { ascending: false }),
+    supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).eq('is_active', true),
+  ]);
+
+  if (ackError || usersError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les accusés de lecture.' });
+  }
+
+  const acknowledgedUserIds = new Set(acknowledgments.map((a) => a.user_id));
+  const pending = activeUsers.filter((user) => !acknowledgedUserIds.has(user.id));
+
+  res.json({ acknowledged: acknowledgments, pending });
+});
+
+// GET /api/quality-policy/pdf — export de la version EN VIGUEUR, ouvert à tout rôle comme
+// GET / (la politique qualité doit rester disponible pour tout le tenant, y compris à
+// emporter/imprimer). Le résumé des accusés de lecture n'est inclus que pour admin/manager,
+// même logique que sur GET / : un member exportant le PDF ne voit pas ce chiffre de pilotage.
+router.get('/pdf', async (req, res) => {
+  const { data: current, error } = await supabase
+    .from('quality_policy_versions')
+    .select(VERSION_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return res.status(500).json({ error: 'Impossible de récupérer la politique qualité.' });
+  }
+  if (!current) {
+    return res.status(404).json({ error: 'Aucune politique qualité publiée pour l’instant.' });
+  }
+
+  const acknowledgmentSummary = MANAGER_ROLES.includes(req.userRole)
+    ? await computeAcknowledgmentSummary(req.tenantId, current.id)
+    : null;
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+
+  const pdfBuffer = await buildQualityPolicyPdf({
+    tenantName: tenant?.name,
+    tenantLogo,
+    version: current,
+    acknowledgmentSummary,
+  });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="politique-qualite.pdf"');
+  res.send(pdfBuffer);
 });
 
 export default router;
