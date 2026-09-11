@@ -6,8 +6,8 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildCapaPdf } from '../services/capaPdf.js';
-import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
 
 const router = Router();
 
@@ -120,14 +120,6 @@ router.get('/', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
-  // Un partage (voir record_shares/recordSharing.js, bouton Partager) donne accès à une CAPA
-  // précise en plus des règles normales — jamais une restriction, uniquement un octroi
-  // supplémentaire. Calculé pour tous les rôles non-admin.
-  const sharedIds =
-    req.userRole === 'admin'
-      ? new Set()
-      : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'capa', userId: req.user.id, userRole: req.userRole });
-
   const { data, error } = await query;
 
   if (error) {
@@ -138,14 +130,17 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
-  // Catégorie restreinte (voir Paramètres > Catégories CAPA) : filterViewableByCategory laisse
-  // passer toute CAPA dont la catégorie n'est PAS restreinte (ou sans catégorie) — visible par
-  // tous dans ce cas. Sur une catégorie explicitement restreinte, seule la permission de
-  // catégorie (ou un partage individuel) donne accès, quel que soit le rôle ou l'assignation.
-  const categoryViewableIds = new Set(
-    (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
-  );
-  const visible = data.filter((capa) => sharedIds.has(capa.id) || categoryViewableIds.has(capa.id));
+  // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un
+  // manager/membre ne voit que ce qu'il a créé, ce qui lui est assigné, ce qu'on lui a
+  // partagé, ou ce qui est dans un dossier restreint où il a la permission — jamais "tout le
+  // tenant" par défaut, contrairement aux autres modules.
+  const visible = await filterOwnedOrShared({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'capa',
+    items: data,
+  });
 
   res.json(visible);
 });
@@ -168,28 +163,16 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'CAPA introuvable.' });
   }
 
-  // Même règle que GET / (liste) : visible par tout le tenant, sauf catégorie restreinte
-  // (voir Paramètres > Catégories) ou partage individuel qui en lève l'accès.
-  if (req.userRole !== 'admin') {
-    const shared = await isSharedWithUser({
-      tenantId: req.tenantId,
-      resourceType: 'capa',
-      resourceId: capa.id,
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
-    if (!shared) {
-      const categoryAllowed = await hasGenericCategoryPermission({
-        tenantId: req.tenantId,
-        userId: req.user.id,
-        userRole: req.userRole,
-        categoryId: capa.category_id,
-        permission: 'view',
-      });
-      if (!categoryAllowed) {
-        return res.status(404).json({ error: 'CAPA introuvable.' });
-      }
-    }
+  // Même règle que GET / (liste) — voir services/ownershipVisibility.js.
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'capa',
+    item: capa,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
   }
 
   const { data: comments, error: commentsError } = await supabase
@@ -253,26 +236,15 @@ router.get('/:id/pdf', async (req, res) => {
     return res.status(404).json({ error: 'CAPA introuvable.' });
   }
 
-  if (req.userRole !== 'admin') {
-    const shared = await isSharedWithUser({
-      tenantId: req.tenantId,
-      resourceType: 'capa',
-      resourceId: capa.id,
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
-    if (!shared) {
-      const categoryAllowed = await hasGenericCategoryPermission({
-        tenantId: req.tenantId,
-        userId: req.user.id,
-        userRole: req.userRole,
-        categoryId: capa.category_id,
-        permission: 'view',
-      });
-      if (!categoryAllowed) {
-        return res.status(404).json({ error: 'CAPA introuvable.' });
-      }
-    }
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'capa',
+    item: capa,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
   }
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
@@ -483,6 +455,32 @@ router.patch(
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+
+    // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un
+    // manager ne peut plus modifier n'importe quelle CAPA du tenant, seulement celles qu'il a
+    // créées, qui lui sont assignées, qu'on lui a partagées, ou qui sont dans un dossier
+    // restreint où il a la permission. 404, jamais 403 : on ne révèle pas l'existence de la CAPA.
+    const { data: existingCapa, error: existingCapaError } = await supabase
+      .from('capas')
+      .select(CAPA_SELECT)
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (existingCapaError || !existingCapa) {
+      return res.status(404).json({ error: 'CAPA introuvable.' });
+    }
+
+    const canAccess = await canAccessOwnedRecord({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      resourceType: 'capa',
+      item: existingCapa,
+    });
+    if (!canAccess) {
+      return res.status(404).json({ error: 'CAPA introuvable.' });
     }
 
     if ('effectiveness_verified' in update && update.effectiveness_verified !== null) {
@@ -737,6 +735,31 @@ router.delete(
 );
 
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
+  // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un manager
+  // ne peut supprimer que les CAPA qu'il peut voir (créées, assignées, partagées, ou dossier
+  // restreint accordé).
+  const { data: existingCapa, error: existingCapaError } = await supabase
+    .from('capas')
+    .select(CAPA_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (existingCapaError || !existingCapa) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
+  }
+
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'capa',
+    item: existingCapa,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'CAPA introuvable.' });
+  }
+
   const { data, error } = await supabase
     .from('capas')
     .delete()

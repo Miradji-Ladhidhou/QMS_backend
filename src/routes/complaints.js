@@ -4,8 +4,8 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
-import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
 
 const router = Router();
 
@@ -18,16 +18,12 @@ router.use(requireMenuVisible('complaints'));
 const COMPLAINT_SELECT =
   '*, assigned:users!complaints_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id), linked_capa:capas!complaints_linked_capa_id_fkey(id, number, title, status)';
 
-// GET /api/complaints — visible par tout le tenant par défaut (même modèle que les
-// Documents) — seule une catégorie explicitement restreinte (Paramètres > Catégories) limite
-// l'accès. Un member ne peut toujours MODIFIER que les réclamations qui lui sont assignées.
+// GET /api/complaints — un admin voit tout ; un manager/membre ne voit que ce qu'il a créé, ce
+// qui lui est assigné, ce qu'on lui a partagé, ou ce qui est dans un dossier restreint où il a
+// la permission (voir services/ownershipVisibility.js — pilote, contrairement à la plupart des
+// autres modules qui restent "ouverts par défaut").
 router.get('/', async (req, res) => {
   let query = supabase.from('complaints').select(COMPLAINT_SELECT).eq('tenant_id', req.tenantId).order('received_date', { ascending: false });
-
-  const sharedIds =
-    req.userRole === 'admin'
-      ? new Set()
-      : await getSharedResourceIds({ tenantId: req.tenantId, resourceType: 'complaint', userId: req.user.id, userRole: req.userRole });
 
   if (req.query.status) {
     query = query.eq('status', req.query.status);
@@ -42,14 +38,16 @@ router.get('/', async (req, res) => {
     return res.json(data);
   }
 
-  // Catégorie restreinte : filterViewableByCategory laisse passer toute réclamation dont la
-  // catégorie n'est PAS restreinte (ou sans catégorie) — visible par tous dans ce cas. Sur une
-  // catégorie explicitement restreinte, seule la permission de catégorie (ou un partage
-  // individuel) donne accès.
-  const categoryViewableIds = new Set(
-    (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((c) => c.id)
-  );
-  const visible = data.filter((complaint) => sharedIds.has(complaint.id) || categoryViewableIds.has(complaint.id));
+  // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un
+  // manager/membre ne voit que ce qu'il a créé, ce qui lui est assigné, ce qu'on lui a
+  // partagé, ou ce qui est dans un dossier restreint où il a la permission.
+  const visible = await filterOwnedOrShared({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'complaint',
+    items: data,
+  });
   res.json(visible);
 });
 
@@ -66,26 +64,15 @@ router.get('/:id', async (req, res) => {
     return res.status(404).json({ error: 'Réclamation introuvable.' });
   }
 
-  if (req.userRole !== 'admin') {
-    const shared = await isSharedWithUser({
-      tenantId: req.tenantId,
-      resourceType: 'complaint',
-      resourceId: data.id,
-      userId: req.user.id,
-      userRole: req.userRole,
-    });
-    if (!shared) {
-      const categoryAllowed = await hasGenericCategoryPermission({
-        tenantId: req.tenantId,
-        userId: req.user.id,
-        userRole: req.userRole,
-        categoryId: data.category_id,
-        permission: 'view',
-      });
-      if (!categoryAllowed) {
-        return res.status(404).json({ error: 'Réclamation introuvable.' });
-      }
-    }
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'complaint',
+    item: data,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'Réclamation introuvable.' });
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
@@ -243,6 +230,32 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
+    // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un
+    // manager ne peut plus modifier n'importe quelle réclamation du tenant, seulement celles
+    // qu'il a créées, qui lui sont assignées, qu'on lui a partagées, ou dans un dossier
+    // restreint où il a la permission. 404, jamais 403 : on ne révèle pas l'existence de la fiche.
+    const { data: existingComplaint, error: existingComplaintError } = await supabase
+      .from('complaints')
+      .select(COMPLAINT_SELECT)
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (existingComplaintError || !existingComplaint) {
+      return res.status(404).json({ error: 'Réclamation introuvable.' });
+    }
+
+    const canAccess = await canAccessOwnedRecord({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      resourceType: 'complaint',
+      item: existingComplaint,
+    });
+    if (!canAccess) {
+      return res.status(404).json({ error: 'Réclamation introuvable.' });
+    }
+
     if (update.status === 'resolved' || update.status === 'closed') {
       // "Résolue" exige d'avoir décrit COMMENT le problème a été traité ; "Clôturée" exige en
       // plus d'avoir interrogé le client (customer_satisfied renseigné, peu importe la valeur).
@@ -333,6 +346,31 @@ router.delete(
 );
 
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
+  // Visibilité cloisonnée par propriétaire (voir services/ownershipVisibility.js) : un manager
+  // ne peut supprimer que les réclamations qu'il peut voir (créées, assignées, partagées, ou
+  // dossier restreint accordé).
+  const { data: existingComplaint, error: existingComplaintError } = await supabase
+    .from('complaints')
+    .select(COMPLAINT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (existingComplaintError || !existingComplaint) {
+    return res.status(404).json({ error: 'Réclamation introuvable.' });
+  }
+
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'complaint',
+    item: existingComplaint,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'Réclamation introuvable.' });
+  }
+
   const { error, count } = await supabase
     .from('complaints')
     .delete({ count: 'exact' })

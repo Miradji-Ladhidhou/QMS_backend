@@ -132,21 +132,30 @@ describe('Catégories génériques (CAPA)', () => {
     expect(afterDetail.status).toBe(200);
   });
 
-  it("un membre voit une CAPA d'un autre sans catégorie restreinte, même sans permission de catégorie particulière (visible par tout le tenant par défaut)", async () => {
+  it("une catégorie restreinte ailleurs dans le tenant n'a aucun effet sur une CAPA non catégorisée — seule la visibilité par propriétaire s'applique", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
     const member = tenant.users[0];
     const otherManager = tenant.users[1];
 
     // Une catégorie restreinte existe ailleurs dans le tenant, sans lien avec cette CAPA — ne
-    // doit avoir aucun effet sur elle.
+    // doit avoir aucun effet sur elle : ni la bloquer, ni (bien sûr) la rendre visible.
     await createCategory(tenant.admin.token, { resourceType: 'capa', name: 'Restreinte', isRestricted: true });
 
     const uncategorizedCapa = await createCapa(tenant.admin.token, { assigned_to: otherManager.id });
 
-    const list = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
-    expect(list.body.map((c) => c.id)).toContain(uncategorizedCapa.id);
-    const detail = await request(app).get(`/api/capas/${uncategorizedCapa.id}`).set('Authorization', `Bearer ${member.token}`);
-    expect(detail.status).toBe(200);
+    // Non catégorisée : visibilité cloisonnée par propriétaire (pilote CAPA) — l'assigné voit,
+    // un membre non impliqué ne voit plus (contrairement à l'ancien modèle "ouvert par défaut").
+    const memberList = await request(app).get('/api/capas').set('Authorization', `Bearer ${member.token}`);
+    expect(memberList.body.map((c) => c.id)).not.toContain(uncategorizedCapa.id);
+    const memberDetail = await request(app).get(`/api/capas/${uncategorizedCapa.id}`).set('Authorization', `Bearer ${member.token}`);
+    expect(memberDetail.status).toBe(404);
+
+    const assigneeList = await request(app).get('/api/capas').set('Authorization', `Bearer ${otherManager.token}`);
+    expect(assigneeList.body.map((c) => c.id)).toContain(uncategorizedCapa.id);
+    const assigneeDetail = await request(app)
+      .get(`/api/capas/${uncategorizedCapa.id}`)
+      .set('Authorization', `Bearer ${otherManager.token}`);
+    expect(assigneeDetail.status).toBe(200);
   });
 
   it('une règle directe can_view=false est prioritaire sur un groupe autorisé (même fix que documents)', async () => {

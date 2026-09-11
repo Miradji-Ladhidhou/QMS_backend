@@ -258,7 +258,7 @@ describe('PATCH /api/capas/:id', () => {
     expect(res.body.error).toBe('Seuls les administrateurs et managers peuvent modifier une CAPA après sa création.');
   });
 
-  it('autorise un manager à modifier n’importe quelle CAPA', async () => {
+  it('un manager ne peut plus modifier une CAPA qu’il n’a ni créée, ni assignée, ni partagée (visibilité cloisonnée)', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
     const manager = tenant.users[0];
 
@@ -270,10 +270,36 @@ describe('PATCH /api/capas/:id', () => {
     const res = await request(app)
       .patch(`/api/capas/${created.body.id}`)
       .set('Authorization', `Bearer ${manager.token}`)
-      .send({ description: 'modifié par le manager' });
+      .send({ description: 'tentative depuis un autre manager' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.description).toBe('modifié par le manager');
+    expect(res.status).toBe(404);
+  });
+
+  it('un manager peut modifier une CAPA qu’il a lui-même créée, ou qui lui est assignée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [managerOwner, managerAssignee] = tenant.users;
+
+    const own = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${managerOwner.token}`)
+      .send({ title: 'CAPA du manager' });
+    const ownRes = await request(app)
+      .patch(`/api/capas/${own.body.id}`)
+      .set('Authorization', `Bearer ${managerOwner.token}`)
+      .send({ description: 'modifiée par sa créatrice' });
+    expect(ownRes.status).toBe(200);
+    expect(ownRes.body.description).toBe('modifiée par sa créatrice');
+
+    const assigned = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA assignée au manager', assigned_to: managerAssignee.id });
+    const assignedRes = await request(app)
+      .patch(`/api/capas/${assigned.body.id}`)
+      .set('Authorization', `Bearer ${managerAssignee.token}`)
+      .send({ description: 'modifiée par l’assigné' });
+    expect(assignedRes.status).toBe(200);
+    expect(assignedRes.body.description).toBe('modifiée par l’assigné');
   });
 
   it('refuse de clôturer une CAPA sans action corrective renseignée', async () => {
@@ -415,22 +441,69 @@ describe('POST /api/capas/:id/comments', () => {
   });
 });
 
-describe('GET /api/capas', () => {
-  it('un member voit toutes les CAPA du tenant par défaut (même modèle que les Documents), pas seulement les siennes', async () => {
+describe('GET /api/capas — visibilité cloisonnée par propriétaire', () => {
+  it('un member ne voit que ce qu’il a créé ou ce qui lui est assigné, jamais tout le tenant', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
 
-    await request(app).post('/api/capas').set('Authorization', `Bearer ${memberA.token}`).send({ title: 'Capa A' });
-    await request(app)
+    const ownedByA = await request(app).post('/api/capas').set('Authorization', `Bearer ${memberA.token}`).send({ title: 'Capa A' });
+    const assignedToB = await request(app)
       .post('/api/capas')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ title: 'Capa B', assigned_to: memberB.id });
 
     const listA = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberA.token}`);
-    expect(listA.body).toHaveLength(2);
+    expect(listA.body.map((c) => c.id)).toEqual([ownedByA.body.id]);
+
+    const listB = await request(app).get('/api/capas').set('Authorization', `Bearer ${memberB.token}`);
+    expect(listB.body.map((c) => c.id)).toEqual([assignedToB.body.id]);
 
     const listAdmin = await request(app).get('/api/capas').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(listAdmin.body).toHaveLength(2);
+  });
+
+  it('un manager voit une CAPA créée par un autre manager une fois qu’elle lui est partagée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [managerA, managerB] = tenant.users;
+
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({ title: 'Capa de A' });
+
+    const beforeShare = await request(app).get('/api/capas').set('Authorization', `Bearer ${managerB.token}`);
+    expect(beforeShare.body).toHaveLength(0);
+    const detailBeforeShare = await request(app).get(`/api/capas/${created.body.id}`).set('Authorization', `Bearer ${managerB.token}`);
+    expect(detailBeforeShare.status).toBe(404);
+
+    const share = await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({ resource_type: 'capa', resource_id: created.body.id, subject_type: 'user', subject_id: managerB.id });
+    expect(share.status).toBe(201);
+
+    const afterShare = await request(app).get('/api/capas').set('Authorization', `Bearer ${managerB.token}`);
+    expect(afterShare.body.map((c) => c.id)).toEqual([created.body.id]);
+    const detailAfterShare = await request(app).get(`/api/capas/${created.body.id}`).set('Authorization', `Bearer ${managerB.token}`);
+    expect(detailAfterShare.status).toBe(200);
+  });
+
+  it('un partage vers le rôle "manager" rend la CAPA visible à tous les managers du tenant', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [managerA, managerB] = tenant.users;
+
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({ title: 'Capa de A, partagée à tous les managers' });
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({ resource_type: 'capa', resource_id: created.body.id, subject_type: 'role', subject_id: 'manager' });
+
+    const listB = await request(app).get('/api/capas').set('Authorization', `Bearer ${managerB.token}`);
+    expect(listB.body.map((c) => c.id)).toEqual([created.body.id]);
   });
 });
 

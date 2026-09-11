@@ -41,8 +41,8 @@ describe('POST /api/complaints — création ouverte à tous les rôles, auto-as
   });
 });
 
-describe('GET /api/complaints — visible par tout le tenant par défaut', () => {
-  it('un member voit toutes les réclamations du tenant, pas seulement celles qui lui sont assignées', async () => {
+describe('GET /api/complaints — visibilité cloisonnée par propriétaire', () => {
+  it('un member ne voit que les réclamations qui lui sont assignées, pas tout le tenant', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [memberA, memberB] = tenant.users;
 
@@ -56,17 +56,38 @@ describe('GET /api/complaints — visible par tout le tenant par défaut', () =>
       .send({ customer_name: 'Pour B', received_date: '2026-08-10', description: 'Réclamation B', assigned_to: memberB.id });
 
     const memberARes = await request(app).get('/api/complaints').set('Authorization', `Bearer ${memberA.token}`);
-    expect(memberARes.body.map((c) => c.id).sort()).toEqual([forA.body.id, forB.body.id].sort());
+    expect(memberARes.body.map((c) => c.id)).toEqual([forA.body.id]);
+
+    const memberBRes = await request(app).get('/api/complaints').set('Authorization', `Bearer ${memberB.token}`);
+    expect(memberBRes.body.map((c) => c.id)).toEqual([forB.body.id]);
 
     const adminRes = await request(app).get('/api/complaints').set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(adminRes.body.length).toBe(2);
   });
+
+  it('un manager voit une réclamation créée par un autre manager une fois qu’elle lui est partagée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'manager' }] });
+    const [managerA, managerB] = tenant.users;
+
+    const created = await makeComplaint(managerA.token, { customer_name: 'Client de A' });
+
+    const before = await request(app).get('/api/complaints').set('Authorization', `Bearer ${managerB.token}`);
+    expect(before.body).toHaveLength(0);
+
+    await request(app)
+      .post('/api/shares')
+      .set('Authorization', `Bearer ${managerA.token}`)
+      .send({ resource_type: 'complaint', resource_id: created.body.id, subject_type: 'user', subject_id: managerB.id });
+
+    const after = await request(app).get('/api/complaints').set('Authorization', `Bearer ${managerB.token}`);
+    expect(after.body.map((c) => c.id)).toEqual([created.body.id]);
+  });
 });
 
 describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA', () => {
-  it('403 pour un member même sur sa propre réclamation assignée ; un manager peut la faire évoluer', async () => {
-    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
-    const [member, manager] = tenant.users;
+  it('403 pour un member même sur sa propre réclamation assignée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const [member] = tenant.users;
     const complaint = await makeComplaint(member.token);
 
     const memberAttempt = await request(app)
@@ -74,6 +95,24 @@ describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA',
       .set('Authorization', `Bearer ${member.token}`)
       .send({ status: 'investigating' });
     expect(memberAttempt.status).toBe(403);
+  });
+
+  it('un manager qui n’a ni créé ni ne s’est vu assigner la réclamation ne peut plus la modifier', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
+    const [member, manager] = tenant.users;
+    const complaint = await makeComplaint(member.token);
+
+    const managerAttempt = await request(app)
+      .patch(`/api/complaints/${complaint.body.id}`)
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ status: 'investigating' });
+    expect(managerAttempt.status).toBe(404);
+  });
+
+  it('un manager peut faire évoluer une réclamation qu’il a créée ou qui lui est assignée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const [manager] = tenant.users;
+    const complaint = await makeComplaint(manager.token);
 
     const managerUpdate = await request(app)
       .patch(`/api/complaints/${complaint.body.id}`)
