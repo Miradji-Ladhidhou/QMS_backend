@@ -1203,7 +1203,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'nonconforming_output',
-      'order_review', 'qms_change', 'customer_satisfaction', 'communication_plan', 'employee'
+      'qms_change', 'customer_satisfaction', 'communication_plan', 'employee'
     )
   ),
   name          text not null,
@@ -1452,40 +1452,6 @@ create table nonconforming_outputs (
   updated_at            timestamptz not null default now()
 );
 alter table capas add column nonconforming_output_id uuid references nonconforming_outputs (id) on delete set null;
-
--- Revue des exigences avant engagement (ISO 9001 §8.2.3). Un enregistrement par commande/
--- contrat/appel d'offres revu avant acceptation. specified_requirements couvre §8.2.3.1 a)
--- (exigences client, livraison et après-livraison incluses) ; implicit_requirements couvre
--- §8.2.2 b) (non énoncées mais nécessaires à l'usage prévu) ; regulatory_requirements couvre
--- §8.2.2 c)/§8.2.3.1 d). discrepancies documente les écarts avec ce qui avait été précédemment
--- exprimé (ex. devis) — §8.2.3.1 e), qui doivent être résolus (discrepancies_resolved) avant
--- acceptation. capability_confirmed matérialise l'exigence d'introduction de §8.2.3.1 (capacité
--- à répondre aux exigences confirmée avant engagement). Pas de lien CAPA : refuser une commande
--- est une décision commerciale, pas une non-conformité (voir routes/orderReviews.js).
-create table order_reviews (
-  id                       uuid primary key default gen_random_uuid(),
-  tenant_id                uuid not null references tenants (id) on delete cascade,
-  title                    text not null,
-  customer_name            text not null,
-  customer_contact         text,
-  reference                text,
-  received_at              date not null,
-  specified_requirements   text not null,
-  implicit_requirements    text,
-  regulatory_requirements  text,
-  discrepancies            text,
-  discrepancies_resolved   boolean not null default false,
-  capability_confirmed     boolean not null default false,
-  status                   text not null default 'pending' check (status in ('pending', 'accepted', 'rejected')),
-  decision_comment         text,
-  reviewed_by              uuid references users (id) on delete set null,
-  reviewed_at              timestamptz,
-  service_id               uuid references services (id) on delete set null,
-  category_id              uuid references categories (id) on delete set null,
-  created_by               uuid references users (id) on delete set null,
-  created_at               timestamptz not null default now(),
-  updated_at               timestamptz not null default now()
-);
 
 -- Planification des modifications du SMQ (ISO 9001 §6.3). purpose/potential_consequences
 -- couvrent a) ; integrity_impact couvre b) ; resources_needed couvre c) ;
@@ -1781,7 +1747,6 @@ create index idx_quality_policy_acknowledgments_version_id on quality_policy_ack
 create index idx_qms_context_versions_tenant_created on qms_context_versions (tenant_id, created_at desc);
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
-create index idx_order_reviews_tenant_id on order_reviews (tenant_id);
 create index idx_qms_changes_tenant_id on qms_changes (tenant_id);
 create index idx_customer_satisfaction_surveys_tenant_id on customer_satisfaction_surveys (tenant_id);
 create index idx_communication_plan_items_tenant_id on communication_plan_items (tenant_id);
@@ -1981,9 +1946,6 @@ create trigger trg_procedure_generation_jobs_updated_at before update on procedu
 create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
   for each row execute function set_updated_at();
 
-create trigger trg_order_reviews_updated_at before update on order_reviews
-  for each row execute function set_updated_at();
-
 create trigger trg_qms_changes_updated_at before update on qms_changes
   for each row execute function set_updated_at();
 
@@ -2162,7 +2124,6 @@ alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
 alter table qms_context_versions enable row level security;
 alter table nonconforming_outputs enable row level security;
-alter table order_reviews enable row level security;
 alter table qms_changes enable row level security;
 alter table customer_satisfaction_surveys enable row level security;
 alter table communication_plan_items enable row level security;
@@ -2507,11 +2468,6 @@ create policy qms_context_versions_isolation on qms_context_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy nonconforming_outputs_isolation on nonconforming_outputs
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy order_reviews_isolation on order_reviews
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

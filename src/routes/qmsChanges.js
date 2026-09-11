@@ -10,7 +10,7 @@ const router = Router();
 const STATUSES = ['planned', 'approved', 'implemented', 'cancelled'];
 
 // Graphe de transition explicite (ISO 9001 §6.3 : une modification du SMQ doit être réalisée
-// "de façon planifiée") — contrairement à orderReviews.js/nonconforming_outputs.js où status
+// "de façon planifiée") — contrairement à nonconforming_outputs.js où status
 // est un simple enum validé à l'arrivée, ici un saut direct planned -> implemented (sans être
 // jamais passé par 'approved') irait à l'encontre du sens même de la clause. planned/approved
 // mènent chacun à un sous-ensemble précis d'états suivants ; implemented/cancelled sont
@@ -26,9 +26,8 @@ router.use(requireMenuVisible('qms-changes'));
 const CHANGE_SELECT =
   '*, service:services(id, name), approver:users!qms_changes_approved_by_fkey(id, full_name), implementer:users!qms_changes_implemented_by_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)';
 
-// GET /api/qms-changes — liste tenant-wide, tous les rôles (comme order_reviews.js :
-// identifier le besoin d'une modification du SMQ n'est pas réservé au management).
-// Filtrable par statut.
+// GET /api/qms-changes — liste tenant-wide, tous les rôles : identifier le besoin d'une
+// modification du SMQ n'est pas réservé au management. Filtrable par statut.
 router.get('/', async (req, res) => {
   let query = supabase.from('qms_changes').select(CHANGE_SELECT).eq('tenant_id', req.tenantId).order('created_at', {
     ascending: false,
@@ -73,7 +72,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/qms-changes — ouvert à tous les rôles : identifier le besoin d'une modification
-// du SMQ n'est pas réservé au management (même principe que order_reviews.js/accidents.js).
+// du SMQ n'est pas réservé au management (même principe qu'accidents.js).
 // purpose/planned_date optionnels à la création ; potential_consequences/integrity_impact/
 // resources_needed/responsibilities_reallocation/status/approved_by/implemented_by/
 // cancellation_reason ne sont pas acceptés ici : l'instruction (les points a à d de §6.3)
@@ -239,13 +238,13 @@ router.patch(
     // garde-fou de transition ci-dessus, qui ne bloque que les changements de valeur) re-
     // déclencherait la validation des champs et surtout réécrirait approved_at/implemented_at/
     // cancelled_at sur un enregistrement déjà arrivé à cet état — précisément le défaut que le
-    // graphe de transition de ce module a été conçu pour éliminer (voir audit d'order_reviews.js).
+    // graphe de transition de ce module a été conçu pour éliminer.
     const statusChanging = 'status' in update && update.status !== existing.status;
 
     // Approuver sans avoir instruit les 4 points de §6.3 (finalité/conséquences, intégrité du
     // SMQ, ressources, responsabilités) viderait la revue de son sens. On relit l'existant pour
-    // couvrir le cas où un champ n'est pas dans CETTE requête (même idiome fetch-fallback que
-    // routes/order_reviews.js).
+    // couvrir le cas où un champ n'est pas dans CETTE requête (même idiome fetch-fallback
+    // qu'ailleurs dans ce fichier).
     if (statusChanging && update.status === 'approved') {
       const checks = [
         ['purpose', "la finalité et les conséquences potentielles (§6.3 a)"],
@@ -264,8 +263,7 @@ router.patch(
       // approved_by identifie qui a approuvé — par défaut la personne qui valide cette étape,
       // sauf précision explicite d'une autre personne. Valeur EFFECTIVE (pas simple présence de
       // clé) : un formulaire d'édition qui enverrait systématiquement `approved_by` (null si
-      // rien n'est sélectionné) contournerait sinon silencieusement ce défaut — leçon
-      // d'order_reviews.js#reviewed_by, appliquée dès le départ ici.
+      // rien n'est sélectionné) contournerait sinon silencieusement ce défaut.
       const approvedBy = 'approved_by' in update ? update.approved_by : existing.approved_by;
       if (!approvedBy) {
         update.approved_by = req.user.id;
@@ -283,7 +281,7 @@ router.patch(
 
     // Annuler une modification planifiée sans motif prive la décision de toute valeur de
     // preuve — même idiome "commentaire obligatoire sur verdict négatif" que les autres
-    // modules (audits, order_reviews...).
+    // modules (audits, etc.).
     if (statusChanging && update.status === 'cancelled') {
       const cancellationReason = 'cancellation_reason' in update ? update.cancellation_reason : existing.cancellation_reason;
       if (!cancellationReason) {
@@ -338,7 +336,7 @@ router.delete(
 );
 
 // DELETE /api/qms-changes/:id — admin/manager uniquement, sans exception créateur (même choix
-// que order_reviews.js/nonconforming_outputs.js).
+// que nonconforming_outputs.js).
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
   const { error, count } = await supabase
     .from('qms_changes')

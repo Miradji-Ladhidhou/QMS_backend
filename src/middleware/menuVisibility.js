@@ -23,7 +23,6 @@ export const MENU_ITEM_KEYS = [
   'accidents',
   'pdca',
   'nonconforming-outputs',
-  'order-reviews',
   'qms-changes',
   'customer-satisfaction',
   'communication-plan',

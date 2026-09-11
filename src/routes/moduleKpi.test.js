@@ -738,48 +738,6 @@ describe('KPI de module — PDCA', () => {
   });
 });
 
-describe('KPI de module — revue des exigences avant engagement', () => {
-  async function makeOrderReview(token, body) {
-    const res = await request(app)
-      .post('/api/order-reviews')
-      .set('Authorization', `Bearer ${token}`)
-      .send({
-        title: 'Commande',
-        customer_name: 'Client',
-        received_at: '2026-01-05',
-        specified_requirements: '10 000 pièces sous 3 semaines',
-        ...body,
-      });
-    if (res.status !== 201) throw new Error(`makeOrderReview a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
-    return res.body;
-  }
-
-  it('en attente, ancienneté, taux de refus', async () => {
-    tenant = await createTenant();
-    const t = tenant.admin.token;
-
-    await makeOrderReview(t); // reste en attente
-    const r2 = await makeOrderReview(t);
-    await request(app)
-      .patch(`/api/order-reviews/${r2.id}`)
-      .set('Authorization', `Bearer ${t}`)
-      .send({ status: 'rejected', decision_comment: 'Capacité insuffisante sur la période demandée.' });
-
-    const pending = await fromPreset(t, 'order_review_pending_backlog');
-    let rec = (pending.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-    expect(rec.period_date).toBe(currentMonthBucket());
-
-    const oldest = await fromPreset(t, 'order_review_oldest_pending_age');
-    rec = (oldest.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBeGreaterThanOrEqual(0);
-
-    const rejection = await fromPreset(t, 'order_review_rejection_rate');
-    rec = (rejection.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBeCloseTo(50, 1); // 1 refusée sur 2
-  });
-});
-
 describe('KPI de module — planification des modifications', () => {
   async function makeQmsChange(token, body) {
     const res = await request(app)

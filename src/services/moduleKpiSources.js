@@ -517,25 +517,6 @@ export const MODULE_KPI_SOURCES = {
     },
   },
 
-  // Revue des exigences avant engagement (§8.2.3).
-  order_review: {
-    table: 'order_reviews',
-    label: 'Revue des exigences',
-    async fetchRows(tenantId) {
-      const now = new Date();
-      const rows = await selectAll('order_reviews', 'id, status, received_at, reviewed_at, created_at', tenantId);
-      return rowsFrom(rows, (r) => {
-        const pending = r.status === 'pending';
-        return {
-          _pending: bool01(pending),
-          _pending_age_days: pending ? daysBetween(r.received_at, now) : '',
-          _rejected: bool01(r.status === 'rejected'),
-          _review_days: r.reviewed_at ? daysBetween(r.received_at, r.reviewed_at) : '',
-        };
-      });
-    },
-  },
-
   // Planification des modifications (§6.3).
   qms_change: {
     table: 'qms_changes',
@@ -1444,58 +1425,6 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'average', source_column: '_cycle_days', period_column: 'closed_at' },
-  },
-
-  // --- Revue des exigences avant engagement ---
-  // Jeu orienté audit (§8.2.3). Une question d'auditeur = un indicateur = une courbe.
-  {
-    id: 'order_review_pending_backlog',
-    module: 'order_review',
-    label: 'Revues en attente de décision',
-    description: 'Nombre de revues des exigences non encore acceptées ni refusées.',
-    unit: 'revues',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_pending', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'order_review_oldest_pending_age',
-    module: 'order_review',
-    label: 'Ancienneté de la plus vieille revue en attente',
-    description: 'Nombre de jours écoulés depuis la réception de la plus ancienne revue non encore décidée.',
-    unit: 'jours',
-    target: 7,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: {
-      calc_type: 'max',
-      source_column: '_pending_age_days',
-      period_column: '__snapshot__',
-      filters: [{ column: '_pending', operator: 'equals', value: '1' }],
-    },
-  },
-  {
-    id: 'order_review_rejection_rate',
-    module: 'order_review',
-    label: 'Taux de refus des revues des exigences',
-    description: 'Part des revues refusées, parmi l’ensemble du registre (revues encore en attente incluses au dénominateur).',
-    unit: '%',
-    target: 20,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_rejected', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'order_review_lead_days',
-    module: 'order_review',
-    label: 'Délai moyen de décision',
-    description: 'Nombre de jours moyen entre la réception d’une demande et la décision (acceptée ou refusée).',
-    unit: 'jours',
-    target: 3,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'average', source_column: '_review_days', period_column: 'reviewed_at' },
   },
 
   // --- Planification des modifications ---
