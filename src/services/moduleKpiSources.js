@@ -217,6 +217,27 @@ async function buildEquipmentRows(tenantId) {
     });
 }
 
+// Une ligne par danger HACCP SIGNIFICATIF (is_significant = true) — le seul cas où l'absence
+// d'un CCP est une non-conformité de la démarche (un danger jugé non significatif n'a, par
+// définition, pas besoin d'un point critique).
+async function buildHazardRows(tenantId) {
+  const [hazardsRes, ccpsRes] = await Promise.all([
+    supabase.from('haccp_hazards').select('id, is_significant').eq('tenant_id', tenantId).limit(50000),
+    supabase.from('haccp_ccps').select('hazard_id').eq('tenant_id', tenantId).limit(50000),
+  ]);
+  const err = hazardsRes.error || ccpsRes.error;
+  if (err) throw new Error(`Dangers HACCP : ${err.message}`);
+
+  const hazardsWithCcp = new Set((ccpsRes.data || []).map((c) => c.hazard_id));
+
+  return (hazardsRes.data || [])
+    .filter((h) => h.is_significant)
+    .map((h) => ({
+      row_index: h.id,
+      row_data: { _significant_no_ccp: bool01(!hazardsWithCcp.has(h.id)) },
+    }));
+}
+
 // Clés = valeur stockée dans kpis.source_module.
 export const MODULE_KPI_SOURCES = {
   capa: {
@@ -455,6 +476,91 @@ export const MODULE_KPI_SOURCES = {
     async fetchRows(tenantId) {
       const rows = await selectAll('equipment_calibrations', 'id, calibration_date, result', tenantId);
       return rowsFrom(rows, () => ({}));
+    },
+  },
+
+  // Objectifs qualité (§6.2).
+  quality_objective: {
+    table: 'quality_objectives',
+    label: 'Objectifs qualité',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const rows = await selectAll('quality_objectives', 'id, status, target_date, created_at', tenantId);
+      return rowsFrom(rows, (r) => {
+        const isOpen = r.status === 'in_progress';
+        return {
+          _is_open: bool01(isOpen),
+          _overdue: bool01(isOpen && r.target_date && r.target_date < today),
+          _achieved: bool01(r.status === 'achieved'),
+          // « Manqué » : constaté non atteint, ou abandonné — l'auditeur veut voir les deux.
+          _missed: bool01(r.status === 'not_achieved' || r.status === 'abandoned'),
+        };
+      });
+    },
+  },
+
+  // Documents (§7.5.3 — revue périodique). Seuls les documents APPROUVÉS ont un cycle de
+  // revue qui compte : un brouillon ou une version obsolète n'en a pas besoin.
+  document: {
+    table: 'documents',
+    label: 'Documents',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const soon = inDaysStr(RENEWAL_WINDOW_DAYS);
+      const rows = await selectAll('documents', 'id, status, review_date', tenantId);
+      return rowsFrom(
+        rows.filter((r) => r.status === 'approved'),
+        (r) => ({
+          _review_overdue: bool01(r.review_date && r.review_date < today),
+          _review_due_soon: bool01(r.review_date && r.review_date >= today && r.review_date <= soon),
+          _no_review_schedule: bool01(!r.review_date),
+        })
+      );
+    },
+  },
+
+  // HACCP — dangers significatifs (§ méthode HACCP, principe 6/7).
+  haccp_hazard: {
+    table: 'haccp_hazards',
+    label: 'HACCP',
+    fetchRows: buildHazardRows,
+  },
+  // HACCP — relevés de surveillance des CCP, bruts (un écart = within_limits === false).
+  // corrective_action_taken est déjà obligatoire côté API dès qu'un écart est saisi (voir
+  // routes/haccp.js POST .../monitoring-logs) : inutile de le re-vérifier ici, ce serait
+  // toujours vrai. Ce qui reste un vrai indicateur : l'écart relié ou non à une CAPA formelle.
+  haccp_monitoring: {
+    table: 'haccp_monitoring_logs',
+    label: 'HACCP',
+    async fetchRows(tenantId) {
+      const rows = await selectAll('haccp_monitoring_logs', 'id, within_limits, linked_capa_id, recorded_at', tenantId);
+      return rowsFrom(rows, (r) => ({
+        _within_limits: bool01(r.within_limits),
+        _deviation: bool01(!r.within_limits),
+        _deviation_no_capa: bool01(!r.within_limits && !r.linked_capa_id),
+      }));
+    },
+  },
+
+  // PDCA — projets d'amélioration continue.
+  pdca: {
+    table: 'pdca_projects',
+    label: 'PDCA',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const now = new Date();
+      const rows = await selectAll('pdca_projects', 'id, status, target_date, closed_at, created_at, updated_at', tenantId);
+      return rowsFrom(rows, (r) => {
+        const isOpen = r.status !== 'closed';
+        return {
+          _is_open: bool01(isOpen),
+          _overdue: bool01(isOpen && r.target_date && r.target_date < today),
+          // Aucune modification depuis 60 jours sur un projet non clôturé — proxy simple de
+          // « projet à l'arrêt » (toute mise à jour du contenu réinitialise ce compteur).
+          _stalled: bool01(isOpen && daysBetween(r.updated_at, now) > 60),
+          _cycle_days: daysBetween(r.created_at, r.closed_at),
+        };
+      });
     },
   },
 };
@@ -1253,6 +1359,194 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'calibration_date' },
+  },
+
+  // --- Objectifs qualité ---
+  // Jeu orienté audit (§6.2). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'objective_overdue_backlog',
+    module: 'quality_objective',
+    label: 'Objectifs qualité en retard',
+    description: 'Nombre d’objectifs en cours dont l’échéance est dépassée.',
+    unit: 'objectifs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'objective_open_backlog',
+    module: 'quality_objective',
+    label: 'Objectifs qualité en cours à ce jour',
+    description: 'Nombre d’objectifs qualité actuellement en cours.',
+    unit: 'objectifs',
+    target: 10,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'objective_achievement_rate',
+    module: 'quality_objective',
+    label: 'Taux d’objectifs atteints',
+    description: 'Part des objectifs qualité atteints, parmi l’ensemble du registre (objectifs encore en cours inclus au dénominateur).',
+    unit: '%',
+    target: 70,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_achieved', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'objective_missed_backlog',
+    module: 'quality_objective',
+    label: 'Objectifs qualité non atteints ou abandonnés',
+    description: 'Nombre d’objectifs constatés non atteints ou abandonnés — à examiner en revue de direction.',
+    unit: 'objectifs',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_missed', operator: 'equals', value: '1' }] },
+  },
+
+  // --- Documents ---
+  // Jeu orienté audit (§7.5.3). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'document_review_overdue_backlog',
+    module: 'document',
+    label: 'Documents dont la revue est en retard',
+    description: 'Nombre de documents approuvés dont la date de revue périodique est dépassée.',
+    unit: 'documents',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_review_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'document_review_due_soon_backlog',
+    module: 'document',
+    label: 'Documents à revoir sous 60 jours',
+    description: 'Nombre de documents approuvés dont la revue arrive à échéance dans les 60 jours — anticipation.',
+    unit: 'documents',
+    target: 10,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_review_due_soon', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'document_no_review_schedule_backlog',
+    module: 'document',
+    label: 'Documents approuvés sans date de revue',
+    description: 'Nombre de documents approuvés sans aucune date de revue programmée.',
+    unit: 'documents',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_review_schedule', operator: 'equals', value: '1' }] },
+  },
+
+  // --- HACCP ---
+  // Jeu orienté audit (méthode HACCP). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'haccp_significant_hazard_no_ccp_backlog',
+    module: 'haccp_hazard',
+    label: 'Dangers significatifs sans CCP',
+    description: 'Nombre de dangers jugés significatifs sans aucun point critique (CCP) associé.',
+    unit: 'dangers',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_significant_no_ccp', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'haccp_deviation_count',
+    module: 'haccp_monitoring',
+    label: 'Écarts CCP constatés',
+    description: 'Nombre de relevés de surveillance hors limites critiques sur la période.',
+    unit: 'écarts',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'recorded_at', filters: [{ column: '_deviation', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'haccp_compliance_rate',
+    module: 'haccp_monitoring',
+    label: 'Taux de conformité des relevés CCP',
+    description: 'Part des relevés de surveillance CCP dans les limites critiques.',
+    unit: '%',
+    target: 98,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: 'recorded_at', filters: [{ column: '_within_limits', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'haccp_deviation_no_capa_count',
+    module: 'haccp_monitoring',
+    label: 'Écarts CCP sans CAPA',
+    description: 'Nombre d’écarts constatés qui ne sont reliés à aucune action corrective formelle (CAPA).',
+    unit: 'écarts',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'recorded_at', filters: [{ column: '_deviation_no_capa', operator: 'equals', value: '1' }] },
+  },
+
+  // --- PDCA ---
+  // Jeu orienté audit. Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'pdca_overdue_backlog',
+    module: 'pdca',
+    label: 'Projets PDCA en retard',
+    description: 'Nombre de projets d’amélioration non clôturés dont la date cible est dépassée.',
+    unit: 'projets',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'pdca_open_backlog',
+    module: 'pdca',
+    label: 'Projets PDCA en cours à ce jour',
+    description: 'Nombre de projets d’amélioration continue actuellement en cours (non clôturés).',
+    unit: 'projets',
+    target: 5,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'pdca_stalled_backlog',
+    module: 'pdca',
+    label: 'Projets PDCA à l’arrêt',
+    description: 'Nombre de projets non clôturés sans aucune modification depuis plus de 60 jours.',
+    unit: 'projets',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_stalled', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'pdca_closed_count',
+    module: 'pdca',
+    label: 'Projets PDCA clôturés',
+    description: 'Nombre de projets d’amélioration menés jusqu’à la clôture sur la période.',
+    unit: 'projets',
+    target: 1,
+    target_direction: 'min',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: 'closed_at', filters: [{ column: '_is_open', operator: 'equals', value: '0' }] },
+  },
+  {
+    id: 'pdca_avg_cycle_days',
+    module: 'pdca',
+    label: 'Durée moyenne d’un cycle PDCA',
+    description: 'Nombre de jours moyen entre l’ouverture et la clôture d’un projet d’amélioration.',
+    unit: 'jours',
+    target: 90,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'average', source_column: '_cycle_days', period_column: 'closed_at' },
   },
 ];
 

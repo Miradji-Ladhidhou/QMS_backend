@@ -630,6 +630,182 @@ describe('KPI de module — étalonnage', () => {
   });
 });
 
+describe('KPI de module — objectifs qualité', () => {
+  async function makeObjective(token, body) {
+    const res = await request(app)
+      .post('/api/quality-objectives')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Objectif', ...body });
+    if (res.status !== 201) throw new Error(`makeObjective a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('en retard, en cours, atteint, manqué', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeObjective(t, { target_date: '2020-01-01' }); // en cours, échéance dépassée
+    const o2 = await makeObjective(t, {});
+    const o3 = await makeObjective(t, {});
+    await request(app).patch(`/api/quality-objectives/${o2.id}`).set('Authorization', `Bearer ${t}`).send({ status: 'achieved' });
+    await request(app)
+      .patch(`/api/quality-objectives/${o3.id}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ status: 'abandoned', status_comment: 'Priorités revues en cours d’année.' });
+
+    const overdue = await fromPreset(t, 'objective_overdue_backlog');
+    let rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+    expect(overdue.body.target).toBe(0);
+
+    const rate = await fromPreset(t, 'objective_achievement_rate');
+    rec = (rate.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeCloseTo(33.33, 1); // 1 atteint sur 3
+
+    const missed = await fromPreset(t, 'objective_missed_backlog');
+    rec = (missed.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+  });
+});
+
+describe('KPI de module — documents', () => {
+  async function makeDocument(token, number, extra = {}) {
+    const req = request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${token}`)
+      .field('number', number)
+      .field('title', `Titre ${number}`);
+    for (const [key, value] of Object.entries(extra)) req.field(key, value);
+    const res = await req;
+    if (res.status !== 201) throw new Error(`makeDocument a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+  async function approve(token, id) {
+    const res = await request(app).patch(`/api/documents/${id}/status`).set('Authorization', `Bearer ${token}`).send({ status: 'approved' });
+    if (res.status !== 200) throw new Error(`approve a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('revue en retard, sans date de revue — seuls les documents approuvés comptent', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const d1 = await makeDocument(t, 'DOC-001', { review_date: '2020-01-01' });
+    await approve(t, d1.id); // approuvé, revue dépassée
+    const d2 = await makeDocument(t, 'DOC-002');
+    await approve(t, d2.id); // approuvé, jamais de date de revue
+    await makeDocument(t, 'DOC-003', { review_date: '2020-01-01' }); // resté en brouillon → ignoré
+
+    const overdue = await fromPreset(t, 'document_review_overdue_backlog');
+    let rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+
+    const noSchedule = await fromPreset(t, 'document_no_review_schedule_backlog');
+    rec = (noSchedule.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+  });
+});
+
+describe('KPI de module — HACCP', () => {
+  async function buildCcpChain(token, { significant = true, log } = {}) {
+    const plan = (await request(app).post('/api/haccp/plans').set('Authorization', `Bearer ${token}`).send({ title: 'Plan' })).body;
+    const step = (
+      await request(app).post(`/api/haccp/plans/${plan.id}/steps`).set('Authorization', `Bearer ${token}`).send({ name: 'Étape' })
+    ).body;
+    const hazard = (
+      await request(app)
+        .post(`/api/haccp/steps/${step.id}/hazards`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ hazard_type: 'biological', description: 'Listeria', likelihood: 3, severity: 4, is_significant: significant })
+    ).body;
+    let ccp = null;
+    if (log) {
+      ccp = (
+        await request(app)
+          .post(`/api/haccp/hazards/${hazard.id}/ccps`)
+          .set('Authorization', `Bearer ${token}`)
+          .send({ critical_limits: '< 4°C', monitoring_procedure: 'Relevé 2x/jour' })
+      ).body;
+      const res = await request(app)
+        .post(`/api/haccp/ccps/${ccp.id}/monitoring-logs`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ recorded_value: '2°C', within_limits: true, ...log });
+      if (res.status !== 201) throw new Error(`monitoring-log a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    }
+    return { plan, step, hazard, ccp };
+  }
+
+  it('danger significatif sans CCP + écarts', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await buildCcpChain(t, { significant: true }); // pas de CCP créé
+    await buildCcpChain(t, {
+      significant: true,
+      log: { within_limits: false, corrective_action_taken: 'Lot bloqué et recuit.' },
+    });
+
+    const noCcp = await fromPreset(t, 'haccp_significant_hazard_no_ccp_backlog');
+    let rec = (noCcp.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+
+    const deviations = await fromPreset(t, 'haccp_deviation_count');
+    rec = (deviations.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const noCapa = await fromPreset(t, 'haccp_deviation_no_capa_count');
+    rec = (noCapa.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1); // écart documenté mais sans CAPA formelle
+  });
+});
+
+describe('KPI de module — PDCA', () => {
+  async function makePdca(token) {
+    const res = await request(app).post('/api/pdca').set('Authorization', `Bearer ${token}`).send({ title: 'Projet' });
+    if (res.status !== 201) throw new Error(`makePdca a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+  async function closePdca(token, id) {
+    await request(app).patch(`/api/pdca/${id}`).set('Authorization', `Bearer ${token}`).send({ plan_content: 'Analyse du problème.' });
+    for (const body of [
+      { do_content: 'Mise en place du changement.' },
+      { check_content: 'Mesure des résultats.' },
+      { act_content: 'Standardisation.' },
+      {},
+    ]) {
+      const res = await request(app).post(`/api/pdca/${id}/advance`).set('Authorization', `Bearer ${token}`).send(body);
+      if (res.status !== 200) throw new Error(`advance a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    }
+  }
+
+  it('en retard, en cours, clôturé', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makePdca(t); // reste en 'plan', pas d'échéance
+    const p2 = await makePdca(t);
+    await request(app).patch(`/api/pdca/${p2.id}`).set('Authorization', `Bearer ${t}`).send({ target_date: '2020-01-01' });
+    const p3 = await makePdca(t);
+    await closePdca(t, p3.id);
+
+    const overdue = await fromPreset(t, 'pdca_overdue_backlog');
+    let rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const open = await fromPreset(t, 'pdca_open_backlog');
+    rec = (open.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2); // p3 est clôturé, les deux autres restent ouverts
+
+    const closedCount = await fromPreset(t, 'pdca_closed_count');
+    rec = (closedCount.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+});
+
 describe('KPI de module — satisfaction (average)', () => {
   it('« Note moyenne » = moyenne des scores du mois', async () => {
     tenant = await createTenant();
