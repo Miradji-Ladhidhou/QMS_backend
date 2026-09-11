@@ -42,8 +42,27 @@ export function bucketDate(raw, frequency) {
   }
 }
 
+// Lit les lignes d'une source, avec réutilisation optionnelle entre plusieurs KPI qui
+// partagent le même (tenant, module) — voir jobs/moduleKpiJob.js, où un tenant avec 3 KPI sur
+// le module CAPA ne doit interroger `capas` qu'une seule fois par nuit, pas 3. Sûr par
+// construction : `source.fetchRows` ne renvoie que des données, jamais mutées ensuite (voir
+// plus bas — recomputeModuleKpi construit toujours de nouveaux objets, ne réécrit jamais
+// row_data en place). Sans rowsCache (appel unitaire — bouton « Actualiser », création depuis
+// un preset), comportement inchangé : une lecture fraîche à chaque appel.
+async function fetchSourceRows(source, sourceModule, tenantId, rowsCache) {
+  if (!rowsCache) return source.fetchRows(tenantId);
+  const key = `${tenantId}:${sourceModule}`;
+  if (rowsCache.has(key)) return rowsCache.get(key);
+  const rows = await source.fetchRows(tenantId);
+  rowsCache.set(key, rows);
+  return rows;
+}
+
 // Renvoie { periods, updated, deleted }. Lève si le KPI n'est pas un KPI de module valide.
-export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null }) {
+// `rowsCache` (Map optionnelle, clé "tenantId:sourceModule") permet à un appelant qui
+// recalcule plusieurs KPI d'affilée (le job nocturne) de ne lire chaque table source qu'une
+// fois par tenant plutôt qu'une fois par KPI — voir fetchSourceRows ci-dessus.
+export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null, rowsCache = null }) {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
     .select('id, tenant_id, calculation_type, source_module, frequency')
@@ -81,19 +100,23 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null })
   // recalcul du mois, qui construit une courbe de backlog au fil du temps.
   const isSnapshot = config.period_column === SNAPSHOT_COLUMN;
 
-  const rows = await source.fetchRows(tenantId);
-  if (isSnapshot) {
-    const bucket = bucketDate(new Date(), kpi.frequency);
-    for (const row of rows) {
-      row.row_data[SNAPSHOT_COLUMN] = bucket;
-    }
-  } else {
-    for (const row of rows) {
-      row.row_data[config.period_column] = bucketDate(row.row_data[config.period_column], kpi.frequency);
-    }
-  }
+  const rows = await fetchSourceRows(source, kpi.source_module, tenantId, rowsCache);
 
-  const groups = groupRowsByPeriod(rows, config.period_column, null);
+  // Ne JAMAIS muter row_data des lignes renvoyées par fetchSourceRows : avec rowsCache, ce
+  // même tableau est réutilisé tel quel par le prochain KPI qui partage cette source — le
+  // muter ici ferait fuiter le bucketage (voire la colonne de période) de ce KPI vers le
+  // suivant. On construit donc toujours de nouveaux objets row_data.
+  const bucketedRows = isSnapshot
+    ? (() => {
+        const bucket = bucketDate(new Date(), kpi.frequency);
+        return rows.map((row) => ({ row_index: row.row_index, row_data: { ...row.row_data, [SNAPSHOT_COLUMN]: bucket } }));
+      })()
+    : rows.map((row) => ({
+        row_index: row.row_index,
+        row_data: { ...row.row_data, [config.period_column]: bucketDate(row.row_data[config.period_column], kpi.frequency) },
+      }));
+
+  const groups = groupRowsByPeriod(bucketedRows, config.period_column, null);
   const { periods } = summarizeGroups(config, groups);
 
   const persisted = periods.filter((p) => p.persisted);
