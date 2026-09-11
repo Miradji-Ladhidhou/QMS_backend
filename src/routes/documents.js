@@ -42,6 +42,18 @@ const upload = multer({
   defParamCharset: 'utf8',
 });
 
+// Toutes les colonnes de `documents` SAUF extracted_text (et search_vector, jamais utile côté
+// client) : ce champ contient le texte OCR/extrait du fichier — potentiellement volumineux —
+// écrit uniquement pour alimenter search_vector côté base (trigger, voir schema.sql) et jamais
+// lu par le frontend (confirmé : aucune référence à `extracted_text` dans src/). Le renvoyer
+// sur chaque ligne de la liste des documents (GET /) alourdissait inutilement la réponse d'un
+// facteur proportionnel au nombre de documents du tenant — cause probable de lenteurs
+// perçues sur la page Documents à mesure que le tenant accumule des fichiers.
+const DOCUMENT_SELECT_COLUMNS =
+  'id, tenant_id, category_id, number, title, description, version, status, file_path, file_name, ' +
+  'created_by, approved_by, review_date, review_frequency_months, storage_provider, ' +
+  'requires_acknowledgment, created_at, updated_at';
+
 const DOCUMENT_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
 // Mêmes libellés que STATUS_LABELS côté frontend (lib/documentStatus.js) — utilisé pour la
 // colonne "Statut" du modèle d'import Excel (import de documents), en français comme le reste
@@ -303,7 +315,7 @@ async function uploadDocumentFile({ storage, file, categoryId, supabasePath }) {
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
-    .select('*, category:document_categories(id, name, color, is_restricted)')
+    .select(`${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color, is_restricted)`)
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
@@ -523,7 +535,7 @@ router.get('/import-template.xlsx', async (req, res) => {
 router.get('/:id', requireCategoryPermission('view', resolveDocumentById), async (req, res) => {
   const { data: document, error } = await supabase
     .from('documents')
-    .select('*, category:document_categories(id, name, color)')
+    .select(`${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color)`)
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
