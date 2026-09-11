@@ -383,7 +383,10 @@ export const MODULE_KPI_SOURCES = {
 
   audit_finding: {
     table: 'audit_findings',
-    label: 'Constats d’audit',
+    // Même groupe que `audit` (pas un label distinct) : dans le catalogue « Depuis un module »,
+    // les deux sources doivent apparaître comme une seule section « Audits internes », comme
+    // Formations/Fournisseurs/Étalonnage/Documents regroupent déjà leurs sources jumelles.
+    label: 'Audits internes',
     async fetchRows(tenantId) {
       const rows = await selectAll('audit_findings', 'id, type, created_at', tenantId);
       return rowsFrom(rows, () => ({}));

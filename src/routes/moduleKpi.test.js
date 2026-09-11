@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
 import { createTenant } from '../test-utils/tenant.js';
+import { MODULE_KPI_PRESETS } from '../services/moduleKpiSources.js';
 
 let tenant;
 
@@ -80,6 +81,29 @@ describe('KPI de module — catalogue', () => {
     const res = await fromPreset(tenant.admin.token, 'nope');
     expect(res.status).toBe(400);
   });
+
+  // Filet de sécurité pour tout le catalogue : chaque preset doit se créer et se recalculer
+  // sans planter sur un tenant sans aucune donnée (0 ligne dans la table source) — attrape une
+  // faute de frappe de table/colonne dans une source (Supabase renverrait une erreur SQL) ou une
+  // jointure cassée, même pour les ~40% de presets non couverts par un test dédié ci-dessous.
+  it(
+    'chaque preset du catalogue se crée sans erreur sur un tenant vide',
+    async () => {
+      tenant = await createTenant();
+      const t = tenant.admin.token;
+      const failures = [];
+
+      for (const preset of MODULE_KPI_PRESETS) {
+        const res = await fromPreset(t, preset.id);
+        if (res.status !== 201) {
+          failures.push({ id: preset.id, status: res.status, error: res.body?.error });
+        }
+      }
+
+      expect(failures).toEqual([]);
+    },
+    60000
+  );
 });
 
 describe('KPI de module — calcul (count)', () => {
