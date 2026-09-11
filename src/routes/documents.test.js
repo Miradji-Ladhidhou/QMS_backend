@@ -870,10 +870,12 @@ describe('DELETE /api/documents/bulk — suppression en masse', () => {
   });
 });
 
-// "Nouvelle version" et "Ajouter un document" sont deux boutons distincts côté frontend, qui
-// doivent rester deux actions indépendantes côté backend : l'un ne doit jamais changer l'autre
-// (voir demande explicite — POST /:id/versions ne bouge plus le numéro de version, et le nouveau
-// POST /:id/versions/bump ne touche jamais au fichier).
+// "Nouvelle version" et "Ajouter un document" sont deux boutons distincts côté frontend :
+// POST /:id/versions remplace le fichier sans bouger le numéro de version, et POST
+// /:id/versions/bump fait évoluer le numéro de version — en gardant le fichier actuel par
+// défaut, ou en le remplaçant du même coup si un fichier est joint à la requête (demande
+// explicite : pouvoir joindre le nouveau document en même temps que la montée de version,
+// sans passer par deux actions séparées).
 describe('POST /api/documents/:id/versions et /versions/bump — fichier et numéro de version indépendants', () => {
   it('POST /:id/versions remplace le fichier sans changer le numéro de version', async () => {
     tenant = await createTenant();
@@ -935,6 +937,40 @@ describe('POST /api/documents/:id/versions et /versions/bump — fichier et num�
     expect(archived.version).toBe(originalVersion);
     expect(archived.file_name).toBe('original.txt');
     expect(archived.change_note).toBe('Révision administrative');
+  });
+
+  it('POST /:id/versions/bump avec un fichier joint fait évoluer le numéro de version ET remplace le fichier', async () => {
+    tenant = await createTenant();
+
+    const created = await request(app)
+      .post('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('number', 'DOC-SPLIT-004')
+      .field('title', 'Document à faire évoluer avec fichier')
+      .attach('file', Buffer.from('contenu v1'), 'v1.txt');
+    const originalVersion = created.body.version;
+    const originalFilePath = created.body.file_path;
+
+    const res = await request(app)
+      .post(`/api/documents/${created.body.id}/versions/bump`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .field('change_note', 'Nouvelle version avec fichier à jour')
+      .attach('file', Buffer.from('contenu v2'), 'v2.txt');
+
+    expect(res.status).toBe(201);
+    expect(res.body.version).not.toBe(originalVersion);
+    expect(res.body.file_name).toBe('v2.txt');
+    expect(res.body.file_path).not.toBe(originalFilePath);
+    expect(res.body.status).toBe('draft');
+
+    const { data: archived } = await admin
+      .from('document_versions')
+      .select('version, file_name, change_note')
+      .eq('document_id', created.body.id)
+      .single();
+    expect(archived.version).toBe(originalVersion);
+    expect(archived.file_name).toBe('v1.txt');
+    expect(archived.change_note).toBe('Nouvelle version avec fichier à jour');
   });
 
   it('POST /:id/versions/bump respecte requireCategoryPermission("edit") comme /:id/versions', async () => {

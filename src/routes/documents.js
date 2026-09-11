@@ -893,9 +893,14 @@ router.post(
   res.status(201).json(data);
 });
 
-// POST /api/documents/:id/versions/bump — fait évoluer le numéro de version, sans changer le fichier
+// POST /api/documents/:id/versions/bump — fait évoluer le numéro de version. Le fichier est
+// optionnel : sans lui, le fichier actuel est conservé tel quel (comportement historique) ;
+// avec lui, il est remplacé EN MÊME TEMPS que le numéro de version monte — évite l'aller-retour
+// "Nouvelle version" puis "Ajouter un document" pour le cas le plus courant (une révision
+// s'accompagne presque toujours d'un nouveau fichier).
 router.post(
   '/:id/versions/bump',
+  upload.single('file'),
   requireCategoryPermission('edit', resolveDocumentById),
   async (req, res) => {
   const { data: document, error: fetchError } = await supabase
@@ -921,6 +926,38 @@ router.post(
     approved_by: null,
     ...(await computeReviewDateUpdate(document, req)),
   };
+
+  if (req.file) {
+    let storage;
+    try {
+      storage = await resolveTenantStorageProvider(req.tenantId);
+    } catch (storageError) {
+      return res
+        .status(409)
+        .json({ error: storageError.message, code: storageError.driveConnectionError ? 'drive_connection_error' : undefined });
+    }
+
+    let uploadResult;
+    try {
+      uploadResult = await uploadDocumentFile({
+        storage,
+        file: req.file,
+        categoryId: document.category_id || null,
+        // Le numéro de version vient de changer (update.version ci-dessus) : chemin unique
+        // garanti sans recourir à Date.now() comme POST .../versions (qui, lui, réutilise le
+        // même numéro de version et doit donc se distinguer autrement).
+        supabasePath: `${req.tenantId}/${document.id}/${update.version}-${sanitizeFileName(req.file.originalname)}`,
+      });
+    } catch (uploadError) {
+      console.error("Échec de l'upload d'un document :", uploadError);
+      return res.status(500).json({ error: uploadError.message || "Échec de l'upload du fichier." });
+    }
+
+    update.file_path = uploadResult.filePath;
+    update.file_name = uploadResult.fileName;
+    update.storage_provider = uploadResult.storageProvider;
+    update.extracted_text = await extractText(req.file);
+  }
 
   const { data, error } = await supabase
     .from('documents')
