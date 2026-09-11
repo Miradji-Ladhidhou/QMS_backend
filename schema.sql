@@ -1202,7 +1202,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure', 'accident', 'pdca', 'measuring_equipment', 'nonconforming_output',
+      'haccp_plan', 'procedure', 'accident', 'pdca', 'nonconforming_output',
       'order_review', 'qms_change', 'customer_satisfaction', 'communication_plan', 'employee'
     )
   ),
@@ -1422,45 +1422,6 @@ create table qms_context_versions (
   created_by            uuid references users (id) on delete set null,
   created_at            timestamptz not null default now()
 );
-
--- Équipements de mesure et de surveillance (ISO 9001 §7.1.5). next_calibration_date vit sur
--- l'équipement lui-même (pas dérivé du dernier étalonnage) — même principe que
--- suppliers.next_evaluation_date : un admin peut reprogrammer la prochaine échéance
--- indépendamment de l'historique.
-create table measuring_equipment (
-  id                    uuid primary key default gen_random_uuid(),
-  tenant_id             uuid not null references tenants (id) on delete cascade,
-  name                  text not null,
-  identifier            text,
-  category              text,
-  service_id            uuid references services (id) on delete set null,
-  is_active             boolean not null default true,
-  next_calibration_date date,
-  category_id           uuid references categories (id) on delete set null,
-  created_by            uuid references users (id) on delete set null,
-  created_at            timestamptz not null default now(),
-  updated_at            timestamptz not null default now()
-);
-
--- Un étalonnage/vérification par ligne, jamais réécrite après coup (comme
--- supplier_evaluations/training_records) : on ajoute un nouvel enregistrement plutôt que de
--- corriger l'historique. result = 'non_conform' doit être expliqué (voir routes/
--- measuringEquipment.js POST .../calibrations) : c'est précisément le cas où §7.1.5 demande
--- d'évaluer l'impact sur les mesures déjà faites avec cet équipement.
-create table equipment_calibrations (
-  id                    uuid primary key default gen_random_uuid(),
-  tenant_id             uuid not null references tenants (id) on delete cascade,
-  equipment_id          uuid not null references measuring_equipment (id) on delete cascade,
-  calibration_date      date not null,
-  result                text not null default 'conform' check (result in ('conform', 'non_conform')),
-  comment               text,
-  performed_by          text,
-  certificate_reference text,
-  linked_capa_id        uuid references capas (id) on delete set null,
-  recorded_by           uuid references users (id) on delete set null,
-  created_at            timestamptz not null default now()
-);
-alter table capas add column equipment_calibration_id uuid references equipment_calibrations (id) on delete set null;
 
 -- Maîtrise des éléments de sortie non conformes (ISO 9001 §8.7). disposition couvre les
 -- traitements listés par §8.7.1 d) ; concession_reference documente la dérogation obtenue
@@ -1819,10 +1780,6 @@ create index idx_quality_policy_acknowledgments_version_id on quality_policy_ack
 
 create index idx_qms_context_versions_tenant_created on qms_context_versions (tenant_id, created_at desc);
 
-create index idx_measuring_equipment_tenant_id on measuring_equipment (tenant_id);
-create index idx_equipment_calibrations_tenant_id on equipment_calibrations (tenant_id);
-create index idx_equipment_calibrations_equipment_id on equipment_calibrations (equipment_id);
-
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
 create index idx_order_reviews_tenant_id on order_reviews (tenant_id);
 create index idx_qms_changes_tenant_id on qms_changes (tenant_id);
@@ -2021,9 +1978,6 @@ create trigger trg_procedure_templates_updated_at before update on procedure_tem
 create trigger trg_procedure_generation_jobs_updated_at before update on procedure_generation_jobs
   for each row execute function set_updated_at();
 
-create trigger trg_measuring_equipment_updated_at before update on measuring_equipment
-  for each row execute function set_updated_at();
-
 create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
   for each row execute function set_updated_at();
 
@@ -2207,8 +2161,6 @@ alter table google_drive_connections enable row level security;
 alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
 alter table qms_context_versions enable row level security;
-alter table measuring_equipment enable row level security;
-alter table equipment_calibrations enable row level security;
 alter table nonconforming_outputs enable row level security;
 alter table order_reviews enable row level security;
 alter table qms_changes enable row level security;
@@ -2550,16 +2502,6 @@ create policy quality_policy_acknowledgments_isolation on quality_policy_acknowl
   with check (tenant_id = auth_tenant_id());
 
 create policy qms_context_versions_isolation on qms_context_versions
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy measuring_equipment_isolation on measuring_equipment
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy equipment_calibrations_isolation on equipment_calibrations
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

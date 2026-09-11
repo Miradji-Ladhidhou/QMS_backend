@@ -601,59 +601,6 @@ describe('KPI de module — fournisseurs', () => {
   });
 });
 
-describe('KPI de module — étalonnage', () => {
-  async function makeEquipment(token, body) {
-    const res = await request(app)
-      .post('/api/measuring-equipment')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ name: 'Équipement', ...body });
-    if (res.status !== 201) throw new Error(`makeEquipment a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
-    return res.body;
-  }
-  async function addCalibration(token, equipmentId, body) {
-    const res = await request(app)
-      .post(`/api/measuring-equipment/${equipmentId}/calibrations`)
-      .set('Authorization', `Bearer ${token}`)
-      .send({ calibration_date: '2026-01-10', ...body });
-    if (res.status !== 201) throw new Error(`addCalibration a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
-    return res.body;
-  }
-
-  it('dépassés, sans échéance, dernier étalonnage non conforme', async () => {
-    tenant = await createTenant();
-    const t = tenant.admin.token;
-
-    const e1 = await makeEquipment(t, { next_calibration_date: '2020-01-01' }); // dépassé
-    await makeEquipment(t, {}); // sans échéance
-    const e3 = await makeEquipment(t, { next_calibration_date: '2999-01-01' });
-    await addCalibration(t, e3.id, { result: 'non_conform', comment: 'écart de 0,3 mm constaté' });
-
-    const overdue = await fromPreset(t, 'calibration_overdue_backlog');
-    let rec = (overdue.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-    expect(rec.period_date).toBe(currentMonthBucket());
-    expect(overdue.body.target).toBe(0);
-
-    const oldest = await fromPreset(t, 'calibration_oldest_overdue_days');
-    rec = (oldest.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBeGreaterThan(0);
-
-    const noSched = await fromPreset(t, 'calibration_no_schedule_backlog');
-    rec = (noSched.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-
-    const nc = await fromPreset(t, 'calibration_non_conform_backlog');
-    rec = (nc.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-
-    // 3 équipements actifs : e3 à jour, e1 dépassé, e2 sans échéance → couverture 1/3.
-    const coverage = await fromPreset(t, 'calibration_coverage_rate');
-    rec = (coverage.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBeCloseTo(33.33, 1);
-    expect(e1.next_calibration_date).toBe('2020-01-01');
-  });
-});
-
 describe('KPI de module — documents', () => {
   async function makeDocument(token, number, extra = {}) {
     const req = request(app)

@@ -22,7 +22,6 @@ export const MENU_ITEM_KEYS = [
   'procedures',
   'accidents',
   'pdca',
-  'measuring-equipment',
   'nonconforming-outputs',
   'order-reviews',
   'qms-changes',
