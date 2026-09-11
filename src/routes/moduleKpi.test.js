@@ -806,6 +806,174 @@ describe('KPI de module — PDCA', () => {
   });
 });
 
+describe('KPI de module — revue des exigences avant engagement', () => {
+  async function makeOrderReview(token, body) {
+    const res = await request(app)
+      .post('/api/order-reviews')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        title: 'Commande',
+        customer_name: 'Client',
+        received_at: '2026-01-05',
+        specified_requirements: '10 000 pièces sous 3 semaines',
+        ...body,
+      });
+    if (res.status !== 201) throw new Error(`makeOrderReview a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('en attente, ancienneté, taux de refus', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeOrderReview(t); // reste en attente
+    const r2 = await makeOrderReview(t);
+    await request(app)
+      .patch(`/api/order-reviews/${r2.id}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ status: 'rejected', decision_comment: 'Capacité insuffisante sur la période demandée.' });
+
+    const pending = await fromPreset(t, 'order_review_pending_backlog');
+    let rec = (pending.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+
+    const oldest = await fromPreset(t, 'order_review_oldest_pending_age');
+    rec = (oldest.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeGreaterThanOrEqual(0);
+
+    const rejection = await fromPreset(t, 'order_review_rejection_rate');
+    rec = (rejection.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeCloseTo(50, 1); // 1 refusée sur 2
+  });
+});
+
+describe('KPI de module — planification des modifications', () => {
+  async function makeQmsChange(token, body) {
+    const res = await request(app)
+      .post('/api/qms-changes')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ title: 'Changement', description: 'Migration du logiciel de gestion.', ...body });
+    if (res.status !== 201) throw new Error(`makeQmsChange a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
+    return res.body;
+  }
+
+  it('en attente d’approbation, approuvée en retard', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await makeQmsChange(t); // reste 'planned'
+    const c2 = await makeQmsChange(t, { planned_date: '2020-01-01' });
+    const approve = await request(app)
+      .patch(`/api/qms-changes/${c2.id}`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({
+        status: 'approved',
+        purpose: 'Fiabiliser la saisie des commandes.',
+        potential_consequences: 'Interruption possible pendant la bascule.',
+        integrity_impact: 'Aucun impact sur les processus certifiés.',
+        resources_needed: 'Formation de 2 jours pour les utilisateurs.',
+        responsibilities_reallocation: 'Le service informatique pilote la bascule.',
+      });
+    expect(approve.status).toBe(200);
+
+    const pending = await fromPreset(t, 'qms_change_pending_approval_backlog');
+    let rec = (pending.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const overdue = await fromPreset(t, 'qms_change_overdue_backlog');
+    rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+});
+
+describe('KPI de module — revues de direction', () => {
+  it('actions sans CAPA / non soldées', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    const review = (
+      await request(app)
+        .post('/api/management-reviews')
+        .set('Authorization', `Bearer ${t}`)
+        .send({ title: 'Revue annuelle', review_date: '2026-01-15' })
+    ).body;
+
+    const a1 = await request(app)
+      .post(`/api/management-reviews/${review.id}/actions`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ description: 'Renforcer le contrôle réception.' }); // sans CAPA
+    expect(a1.status).toBe(201);
+
+    const a2 = await request(app)
+      .post(`/api/management-reviews/${review.id}/actions`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ description: 'Recruter un second technicien qualité.' });
+    const linkCapa = await request(app)
+      .post(`/api/management-reviews/${review.id}/actions/${a2.body.id}/create-capa`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ title: 'Recruter un second technicien qualité' }); // CAPA créée et liée, reste ouverte
+    expect(linkCapa.status).toBe(201);
+
+    const noCapa = await fromPreset(t, 'management_review_action_no_capa_backlog');
+    let rec = (noCapa.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+
+    const unresolved = await fromPreset(t, 'management_review_action_unresolved_backlog');
+    rec = (unresolved.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(2); // ni l'une ni l'autre n'est soldée
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+});
+
+describe('KPI de module — procédures', () => {
+  it('revue en retard sur une procédure non obsolète', async () => {
+    tenant = await createTenant();
+    const t = tenant.admin.token;
+
+    await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${t}`)
+      .send({ number: 'PR-001', title: 'Contrôle réception', next_review_date: '2020-01-01' });
+    await request(app)
+      .post('/api/procedures')
+      .set('Authorization', `Bearer ${t}`)
+      .send({ number: 'PR-002', title: 'Gestion des achats' }); // pas de date de revue
+
+    const overdue = await fromPreset(t, 'procedure_review_overdue_backlog');
+    const rec = (overdue.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+  });
+});
+
+describe('KPI de module — approbations documentaires', () => {
+  it('circuit d’approbation en attente', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const t = tenant.admin.token;
+    const approverId = tenant.users[0].id;
+
+    const doc = (
+      await request(app).post('/api/documents').set('Authorization', `Bearer ${t}`).field('number', 'DOC-A1').field('title', 'Manuel qualité')
+    ).body;
+    const submit = await request(app)
+      .post(`/api/documents/${doc.id}/submit-for-approval`)
+      .set('Authorization', `Bearer ${t}`)
+      .send({ approver_ids: [approverId] });
+    expect(submit.status).toBe(201);
+
+    const pending = await fromPreset(t, 'document_approval_pending_backlog');
+    let rec = (pending.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBe(1);
+    expect(rec.period_date).toBe(currentMonthBucket());
+
+    const oldest = await fromPreset(t, 'document_approval_oldest_pending_age');
+    rec = (oldest.body.records || []).find((r) => r.value !== null);
+    expect(Number(rec.value)).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe('KPI de module — satisfaction (average)', () => {
   it('« Note moyenne » = moyenne des scores du mois', async () => {
     tenant = await createTenant();

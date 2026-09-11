@@ -238,6 +238,32 @@ async function buildHazardRows(tenantId) {
     }));
 }
 
+// Une ligne par action issue d'une revue de direction, croisée avec le statut de la CAPA
+// éventuellement liée (§9.3.3 : les décisions/actions de revue doivent être suivies).
+async function buildManagementReviewActionRows(tenantId) {
+  const [actionsRes, capasRes] = await Promise.all([
+    supabase.from('management_review_actions').select('id, linked_capa_id, created_at').eq('tenant_id', tenantId).limit(50000),
+    supabase.from('capas').select('id, status').eq('tenant_id', tenantId).limit(50000),
+  ]);
+  const err = actionsRes.error || capasRes.error;
+  if (err) throw new Error(`Actions de revue de direction : ${err.message}`);
+
+  const capaStatusById = new Map((capasRes.data || []).map((c) => [c.id, c.status]));
+
+  return (actionsRes.data || []).map((a) => {
+    const capaStatus = a.linked_capa_id ? capaStatusById.get(a.linked_capa_id) : null;
+    const noCapa = !a.linked_capa_id;
+    const capaOpen = Boolean(a.linked_capa_id) && capaStatus && capaStatus !== 'closed';
+    return {
+      row_index: a.id,
+      row_data: {
+        _no_capa: bool01(noCapa),
+        _unresolved: bool01(noCapa || capaOpen),
+      },
+    };
+  });
+}
+
 // Clés = valeur stockée dans kpis.source_module.
 export const MODULE_KPI_SOURCES = {
   capa: {
@@ -559,6 +585,82 @@ export const MODULE_KPI_SOURCES = {
           // « projet à l'arrêt » (toute mise à jour du contenu réinitialise ce compteur).
           _stalled: bool01(isOpen && daysBetween(r.updated_at, now) > 60),
           _cycle_days: daysBetween(r.created_at, r.closed_at),
+        };
+      });
+    },
+  },
+
+  // Revue des exigences avant engagement (§8.2.3).
+  order_review: {
+    table: 'order_reviews',
+    label: 'Revue des exigences',
+    async fetchRows(tenantId) {
+      const now = new Date();
+      const rows = await selectAll('order_reviews', 'id, status, received_at, reviewed_at, created_at', tenantId);
+      return rowsFrom(rows, (r) => {
+        const pending = r.status === 'pending';
+        return {
+          _pending: bool01(pending),
+          _pending_age_days: pending ? daysBetween(r.received_at, now) : '',
+          _rejected: bool01(r.status === 'rejected'),
+          _review_days: r.reviewed_at ? daysBetween(r.received_at, r.reviewed_at) : '',
+        };
+      });
+    },
+  },
+
+  // Planification des modifications (§6.3).
+  qms_change: {
+    table: 'qms_changes',
+    label: 'Planification des modifications',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const rows = await selectAll('qms_changes', 'id, status, planned_date, implemented_at, created_at', tenantId);
+      return rowsFrom(rows, (r) => ({
+        _pending_approval: bool01(r.status === 'planned'),
+        // Approuvée mais toujours pas mise en œuvre alors que sa date prévue est dépassée.
+        _overdue: bool01(r.status === 'approved' && r.planned_date && r.planned_date < today),
+        _lead_days: r.implemented_at ? daysBetween(r.created_at, r.implemented_at) : '',
+      }));
+    },
+  },
+
+  // Actions issues d'une revue de direction (§9.3.3).
+  management_review_action: {
+    table: 'management_review_actions',
+    label: 'Revues de direction',
+    fetchRows: buildManagementReviewActionRows,
+  },
+
+  // Procédures — cycle de revue et blocages en relecture.
+  procedure: {
+    table: 'procedures',
+    label: 'Procédures',
+    async fetchRows(tenantId) {
+      const today = todayStr();
+      const now = new Date();
+      const rows = await selectAll('procedures', 'id, status, next_review_date, updated_at', tenantId);
+      return rowsFrom(rows, (r) => ({
+        _review_overdue: bool01(r.status !== 'obsolete' && r.next_review_date && r.next_review_date < today),
+        // Aucune modification depuis 30 jours sur une procédure en relecture — proxy de blocage
+        // (même principe que PDCA _stalled).
+        _stuck_in_review: bool01(r.status === 'in_review' && daysBetween(r.updated_at, now) > 30),
+      }));
+    },
+  },
+
+  // Circuits d'approbation documentaire (§7.5.3 — maîtrise avant diffusion).
+  document_workflow: {
+    table: 'document_workflows',
+    label: 'Documents',
+    async fetchRows(tenantId) {
+      const now = new Date();
+      const rows = await selectAll('document_workflows', 'id, status, created_at', tenantId);
+      return rowsFrom(rows, (r) => {
+        const pending = r.status === 'pending';
+        return {
+          _pending: bool01(pending),
+          _pending_age_days: pending ? daysBetween(r.created_at, now) : '',
         };
       });
     },
@@ -1547,6 +1649,171 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'average', source_column: '_cycle_days', period_column: 'closed_at' },
+  },
+
+  // --- Revue des exigences avant engagement ---
+  // Jeu orienté audit (§8.2.3). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'order_review_pending_backlog',
+    module: 'order_review',
+    label: 'Revues en attente de décision',
+    description: 'Nombre de revues des exigences non encore acceptées ni refusées.',
+    unit: 'revues',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_pending', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'order_review_oldest_pending_age',
+    module: 'order_review',
+    label: 'Ancienneté de la plus vieille revue en attente',
+    description: 'Nombre de jours écoulés depuis la réception de la plus ancienne revue non encore décidée.',
+    unit: 'jours',
+    target: 7,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'max',
+      source_column: '_pending_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_pending', operator: 'equals', value: '1' }],
+    },
+  },
+  {
+    id: 'order_review_rejection_rate',
+    module: 'order_review',
+    label: 'Taux de refus des revues des exigences',
+    description: 'Part des revues refusées, parmi l’ensemble du registre (revues encore en attente incluses au dénominateur).',
+    unit: '%',
+    target: 20,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_rejected', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'order_review_lead_days',
+    module: 'order_review',
+    label: 'Délai moyen de décision',
+    description: 'Nombre de jours moyen entre la réception d’une demande et la décision (acceptée ou refusée).',
+    unit: 'jours',
+    target: 3,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'average', source_column: '_review_days', period_column: 'reviewed_at' },
+  },
+
+  // --- Planification des modifications ---
+  // Jeu orienté audit (§6.3). Une question d'auditeur = un indicateur = une courbe.
+  {
+    id: 'qms_change_overdue_backlog',
+    module: 'qms_change',
+    label: 'Modifications approuvées en retard de mise en œuvre',
+    description: 'Nombre de modifications approuvées dont la date prévue est dépassée sans être mises en œuvre.',
+    unit: 'modifications',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'qms_change_pending_approval_backlog',
+    module: 'qms_change',
+    label: 'Modifications en attente d’approbation',
+    description: 'Nombre de modifications planifiées mais pas encore approuvées.',
+    unit: 'modifications',
+    target: 5,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_pending_approval', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'qms_change_lead_days',
+    module: 'qms_change',
+    label: 'Délai moyen de mise en œuvre d’une modification',
+    description: 'Nombre de jours moyen entre le signalement d’une modification et sa mise en œuvre effective.',
+    unit: 'jours',
+    target: 30,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'average', source_column: '_lead_days', period_column: 'implemented_at' },
+  },
+
+  // --- Revues de direction ---
+  {
+    id: 'management_review_action_no_capa_backlog',
+    module: 'management_review_action',
+    label: 'Actions de revue de direction sans suivi formalisé',
+    description: 'Nombre d’actions décidées en revue de direction sans aucune CAPA associée.',
+    unit: 'actions',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_no_capa', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'management_review_action_unresolved_backlog',
+    module: 'management_review_action',
+    label: 'Actions de revue de direction non soldées',
+    description: 'Nombre d’actions de revue de direction sans CAPA associée ou dont la CAPA associée n’est pas clôturée.',
+    unit: 'actions',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_unresolved', operator: 'equals', value: '1' }] },
+  },
+
+  // --- Procédures ---
+  {
+    id: 'procedure_review_overdue_backlog',
+    module: 'procedure',
+    label: 'Procédures dont la revue est en retard',
+    description: 'Nombre de procédures (hors obsolètes) dont la date de prochaine revue est dépassée.',
+    unit: 'procédures',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_review_overdue', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'procedure_stuck_in_review_backlog',
+    module: 'procedure',
+    label: 'Procédures bloquées en relecture',
+    description: 'Nombre de procédures en statut « en relecture » sans modification depuis plus de 30 jours.',
+    unit: 'procédures',
+    target: 0,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_stuck_in_review', operator: 'equals', value: '1' }] },
+  },
+
+  // --- Approbations documentaires ---
+  {
+    id: 'document_approval_pending_backlog',
+    module: 'document_workflow',
+    label: 'Approbations documentaires en attente',
+    description: 'Nombre de circuits d’approbation de documents actuellement en attente d’une décision.',
+    unit: 'circuits',
+    target: 5,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_pending', operator: 'equals', value: '1' }] },
+  },
+  {
+    id: 'document_approval_oldest_pending_age',
+    module: 'document_workflow',
+    label: 'Ancienneté de la plus vieille approbation en attente',
+    description: 'Nombre de jours écoulés depuis l’ouverture du plus ancien circuit d’approbation encore en attente.',
+    unit: 'jours',
+    target: 10,
+    target_direction: 'max',
+    frequency: 'monthly',
+    recipe: {
+      calc_type: 'max',
+      source_column: '_pending_age_days',
+      period_column: '__snapshot__',
+      filters: [{ column: '_pending', operator: 'equals', value: '1' }],
+    },
   },
 ];
 
