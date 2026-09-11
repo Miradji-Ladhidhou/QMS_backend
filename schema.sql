@@ -1402,27 +1402,6 @@ create table quality_policy_acknowledgments (
 );
 
 
--- Contexte de l'organisme et parties intéressées (ISO 9001 §4.1-4.3). Même principe que
--- quality_policy_versions : la version en vigueur est la plus récente par created_at, un
--- nouvel enregistrement admin devient directement la version courante. Pas d'accusé de
--- lecture ici (contrairement à la politique qualité) : c'est un exercice de direction, pas
--- une communication descendante à tout le tenant. interested_parties en jsonb : §4.2 exige
--- plusieurs parties intéressées, chacune avec ses propres exigences — un tableau structuré
--- plutôt qu'un champ texte libre unique, même raisonnement que
--- procedure_templates.section_structure pour une liste répétable sans table enfant dédiée.
-create table qms_context_versions (
-  id                    uuid primary key default gen_random_uuid(),
-  tenant_id             uuid not null references tenants (id) on delete cascade,
-  external_issues       text,
-  internal_issues       text,
-  interested_parties    jsonb not null default '[]',
-  products_services     text,
-  scope_description     text,
-  excluded_requirements text,
-  created_by            uuid references users (id) on delete set null,
-  created_at            timestamptz not null default now()
-);
-
 -- Maîtrise des éléments de sortie non conformes (ISO 9001 §8.7). disposition couvre les
 -- traitements listés par §8.7.1 d) ; concession_reference documente la dérogation obtenue
 -- (§8.7.2 c) quand disposition = 'concession' — obligatoire dans ce cas (voir routes/
@@ -1709,8 +1688,6 @@ create index idx_dashboard_metric_snapshots_tenant_date on dashboard_metric_snap
 create index idx_quality_policy_versions_tenant_created on quality_policy_versions (tenant_id, created_at desc);
 create index idx_quality_policy_acknowledgments_tenant_id on quality_policy_acknowledgments (tenant_id);
 create index idx_quality_policy_acknowledgments_version_id on quality_policy_acknowledgments (quality_policy_version_id);
-
-create index idx_qms_context_versions_tenant_created on qms_context_versions (tenant_id, created_at desc);
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
 create index idx_customer_satisfaction_surveys_tenant_id on customer_satisfaction_surveys (tenant_id);
@@ -2084,7 +2061,6 @@ alter table tenant_storage_settings enable row level security;
 alter table google_drive_connections enable row level security;
 alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
-alter table qms_context_versions enable row level security;
 alter table nonconforming_outputs enable row level security;
 alter table customer_satisfaction_surveys enable row level security;
 alter table communication_plan_items enable row level security;
@@ -2419,11 +2395,6 @@ create policy quality_policy_versions_isolation on quality_policy_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy quality_policy_acknowledgments_isolation on quality_policy_acknowledgments
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy qms_context_versions_isolation on qms_context_versions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
