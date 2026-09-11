@@ -654,45 +654,6 @@ describe('KPI de module — étalonnage', () => {
   });
 });
 
-describe('KPI de module — objectifs qualité', () => {
-  async function makeObjective(token, body) {
-    const res = await request(app)
-      .post('/api/quality-objectives')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'Objectif', ...body });
-    if (res.status !== 201) throw new Error(`makeObjective a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
-    return res.body;
-  }
-
-  it('en retard, en cours, atteint, manqué', async () => {
-    tenant = await createTenant();
-    const t = tenant.admin.token;
-
-    await makeObjective(t, { target_date: '2020-01-01' }); // en cours, échéance dépassée
-    const o2 = await makeObjective(t, {});
-    const o3 = await makeObjective(t, {});
-    await request(app).patch(`/api/quality-objectives/${o2.id}`).set('Authorization', `Bearer ${t}`).send({ status: 'achieved' });
-    await request(app)
-      .patch(`/api/quality-objectives/${o3.id}`)
-      .set('Authorization', `Bearer ${t}`)
-      .send({ status: 'abandoned', status_comment: 'Priorités revues en cours d’année.' });
-
-    const overdue = await fromPreset(t, 'objective_overdue_backlog');
-    let rec = (overdue.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-    expect(rec.period_date).toBe(currentMonthBucket());
-    expect(overdue.body.target).toBe(0);
-
-    const rate = await fromPreset(t, 'objective_achievement_rate');
-    rec = (rate.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBeCloseTo(33.33, 1); // 1 atteint sur 3
-
-    const missed = await fromPreset(t, 'objective_missed_backlog');
-    rec = (missed.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-  });
-});
-
 describe('KPI de module — documents', () => {
   async function makeDocument(token, number, extra = {}) {
     const req = request(app)

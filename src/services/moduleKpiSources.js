@@ -508,26 +508,6 @@ export const MODULE_KPI_SOURCES = {
     },
   },
 
-  // Objectifs qualité (§6.2).
-  quality_objective: {
-    table: 'quality_objectives',
-    label: 'Objectifs qualité',
-    async fetchRows(tenantId) {
-      const today = todayStr();
-      const rows = await selectAll('quality_objectives', 'id, status, target_date, created_at', tenantId);
-      return rowsFrom(rows, (r) => {
-        const isOpen = r.status === 'in_progress';
-        return {
-          _is_open: bool01(isOpen),
-          _overdue: bool01(isOpen && r.target_date && r.target_date < today),
-          _achieved: bool01(r.status === 'achieved'),
-          // « Manqué » : constaté non atteint, ou abandonné — l'auditeur veut voir les deux.
-          _missed: bool01(r.status === 'not_achieved' || r.status === 'abandoned'),
-        };
-      });
-    },
-  },
-
   // Documents (§7.5.3 — revue périodique). Seuls les documents APPROUVÉS ont un cycle de
   // revue qui compte : un brouillon ou une version obsolète n'en a pas besoin.
   document: {
@@ -1464,53 +1444,6 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'min',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: 'calibration_date' },
-  },
-
-  // --- Objectifs qualité ---
-  // Jeu orienté audit (§6.2). Une question d'auditeur = un indicateur = une courbe.
-  {
-    id: 'objective_overdue_backlog',
-    module: 'quality_objective',
-    label: 'Objectifs qualité en retard',
-    description: 'Nombre d’objectifs en cours dont l’échéance est dépassée.',
-    unit: 'objectifs',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'objective_open_backlog',
-    module: 'quality_objective',
-    label: 'Objectifs qualité en cours à ce jour',
-    description: 'Nombre d’objectifs qualité actuellement en cours.',
-    unit: 'objectifs',
-    target: 10,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_is_open', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'objective_achievement_rate',
-    module: 'quality_objective',
-    label: 'Taux d’objectifs atteints',
-    description: 'Part des objectifs qualité atteints, parmi l’ensemble du registre (objectifs encore en cours inclus au dénominateur).',
-    unit: '%',
-    target: 70,
-    target_direction: 'min',
-    frequency: 'monthly',
-    recipe: { calc_type: 'ratio', period_column: '__snapshot__', filters: [{ column: '_achieved', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'objective_missed_backlog',
-    module: 'quality_objective',
-    label: 'Objectifs qualité non atteints ou abandonnés',
-    description: 'Nombre d’objectifs constatés non atteints ou abandonnés — à examiner en revue de direction.',
-    unit: 'objectifs',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_missed', operator: 'equals', value: '1' }] },
   },
 
   // --- Documents ---
