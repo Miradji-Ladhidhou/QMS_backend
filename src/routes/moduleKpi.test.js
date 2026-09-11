@@ -738,46 +738,6 @@ describe('KPI de module — PDCA', () => {
   });
 });
 
-describe('KPI de module — planification des modifications', () => {
-  async function makeQmsChange(token, body) {
-    const res = await request(app)
-      .post('/api/qms-changes')
-      .set('Authorization', `Bearer ${token}`)
-      .send({ title: 'Changement', description: 'Migration du logiciel de gestion.', ...body });
-    if (res.status !== 201) throw new Error(`makeQmsChange a échoué (${res.status}) : ${JSON.stringify(res.body)}`);
-    return res.body;
-  }
-
-  it('en attente d’approbation, approuvée en retard', async () => {
-    tenant = await createTenant();
-    const t = tenant.admin.token;
-
-    await makeQmsChange(t); // reste 'planned'
-    const c2 = await makeQmsChange(t, { planned_date: '2020-01-01' });
-    const approve = await request(app)
-      .patch(`/api/qms-changes/${c2.id}`)
-      .set('Authorization', `Bearer ${t}`)
-      .send({
-        status: 'approved',
-        purpose: 'Fiabiliser la saisie des commandes.',
-        potential_consequences: 'Interruption possible pendant la bascule.',
-        integrity_impact: 'Aucun impact sur les processus certifiés.',
-        resources_needed: 'Formation de 2 jours pour les utilisateurs.',
-        responsibilities_reallocation: 'Le service informatique pilote la bascule.',
-      });
-    expect(approve.status).toBe(200);
-
-    const pending = await fromPreset(t, 'qms_change_pending_approval_backlog');
-    let rec = (pending.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-
-    const overdue = await fromPreset(t, 'qms_change_overdue_backlog');
-    rec = (overdue.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-    expect(rec.period_date).toBe(currentMonthBucket());
-  });
-});
-
 describe('KPI de module — revues de direction', () => {
   it('actions sans CAPA / non soldées', async () => {
     tenant = await createTenant();

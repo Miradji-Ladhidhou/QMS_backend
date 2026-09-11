@@ -517,22 +517,6 @@ export const MODULE_KPI_SOURCES = {
     },
   },
 
-  // Planification des modifications (§6.3).
-  qms_change: {
-    table: 'qms_changes',
-    label: 'Planification des modifications',
-    async fetchRows(tenantId) {
-      const today = todayStr();
-      const rows = await selectAll('qms_changes', 'id, status, planned_date, implemented_at, created_at', tenantId);
-      return rowsFrom(rows, (r) => ({
-        _pending_approval: bool01(r.status === 'planned'),
-        // Approuvée mais toujours pas mise en œuvre alors que sa date prévue est dépassée.
-        _overdue: bool01(r.status === 'approved' && r.planned_date && r.planned_date < today),
-        _lead_days: r.implemented_at ? daysBetween(r.created_at, r.implemented_at) : '',
-      }));
-    },
-  },
-
   // Actions issues d'une revue de direction (§9.3.3).
   management_review_action: {
     table: 'management_review_actions',
@@ -1425,42 +1409,6 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'average', source_column: '_cycle_days', period_column: 'closed_at' },
-  },
-
-  // --- Planification des modifications ---
-  // Jeu orienté audit (§6.3). Une question d'auditeur = un indicateur = une courbe.
-  {
-    id: 'qms_change_overdue_backlog',
-    module: 'qms_change',
-    label: 'Modifications approuvées en retard de mise en œuvre',
-    description: 'Nombre de modifications approuvées dont la date prévue est dépassée sans être mises en œuvre.',
-    unit: 'modifications',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_overdue', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'qms_change_pending_approval_backlog',
-    module: 'qms_change',
-    label: 'Modifications en attente d’approbation',
-    description: 'Nombre de modifications planifiées mais pas encore approuvées.',
-    unit: 'modifications',
-    target: 5,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_pending_approval', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'qms_change_lead_days',
-    module: 'qms_change',
-    label: 'Délai moyen de mise en œuvre d’une modification',
-    description: 'Nombre de jours moyen entre le signalement d’une modification et sa mise en œuvre effective.',
-    unit: 'jours',
-    target: 30,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'average', source_column: '_lead_days', period_column: 'implemented_at' },
   },
 
   // --- Revues de direction ---

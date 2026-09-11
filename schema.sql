@@ -1203,7 +1203,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'nonconforming_output',
-      'qms_change', 'customer_satisfaction', 'communication_plan', 'employee'
+      'customer_satisfaction', 'communication_plan', 'employee'
     )
   ),
   name          text not null,
@@ -1452,40 +1452,6 @@ create table nonconforming_outputs (
   updated_at            timestamptz not null default now()
 );
 alter table capas add column nonconforming_output_id uuid references nonconforming_outputs (id) on delete set null;
-
--- Planification des modifications du SMQ (ISO 9001 §6.3). purpose/potential_consequences
--- couvrent a) ; integrity_impact couvre b) ; resources_needed couvre c) ;
--- responsibilities_reallocation couvre d). Contrairement aux modules précédents, le statut
--- suit un graphe de transition explicite (voir routes/qmsChanges.js) plutôt qu'un simple enum
--- validé à l'arrivée : planned -> approved -> implemented, avec cancelled en sortie depuis
--- planned ou approved — jamais de saut direct planned -> implemented, précisément parce que
--- §6.3 exige une réalisation "de façon planifiée". Pas de lien CAPA : un changement planifié
--- n'est pas une non-conformité.
-create table qms_changes (
-  id                             uuid primary key default gen_random_uuid(),
-  tenant_id                      uuid not null references tenants (id) on delete cascade,
-  title                          text not null,
-  description                    text not null,
-  purpose                        text,
-  potential_consequences         text,
-  integrity_impact               text,
-  resources_needed               text,
-  responsibilities_reallocation  text,
-  planned_date                   date,
-  status                         text not null default 'planned'
-                                   check (status in ('planned', 'approved', 'implemented', 'cancelled')),
-  approved_by                    uuid references users (id) on delete set null,
-  approved_at                    timestamptz,
-  implemented_by                 uuid references users (id) on delete set null,
-  implemented_at                 timestamptz,
-  cancellation_reason            text,
-  cancelled_at                   timestamptz,
-  service_id                     uuid references services (id) on delete set null,
-  category_id                    uuid references categories (id) on delete set null,
-  created_by                     uuid references users (id) on delete set null,
-  created_at                     timestamptz not null default now(),
-  updated_at                     timestamptz not null default now()
-);
 
 -- Mesure proactive de la satisfaction client (ISO 9001 §9.1.2) — complète le suivi réactif
 -- déjà couvert par complaints.customer_satisfied. Un enregistrement par enquête/mesure
@@ -1747,7 +1713,6 @@ create index idx_quality_policy_acknowledgments_version_id on quality_policy_ack
 create index idx_qms_context_versions_tenant_created on qms_context_versions (tenant_id, created_at desc);
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
-create index idx_qms_changes_tenant_id on qms_changes (tenant_id);
 create index idx_customer_satisfaction_surveys_tenant_id on customer_satisfaction_surveys (tenant_id);
 create index idx_communication_plan_items_tenant_id on communication_plan_items (tenant_id);
 
@@ -1946,9 +1911,6 @@ create trigger trg_procedure_generation_jobs_updated_at before update on procedu
 create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
   for each row execute function set_updated_at();
 
-create trigger trg_qms_changes_updated_at before update on qms_changes
-  for each row execute function set_updated_at();
-
 create trigger trg_customer_satisfaction_surveys_updated_at before update on customer_satisfaction_surveys
   for each row execute function set_updated_at();
 
@@ -2124,7 +2086,6 @@ alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
 alter table qms_context_versions enable row level security;
 alter table nonconforming_outputs enable row level security;
-alter table qms_changes enable row level security;
 alter table customer_satisfaction_surveys enable row level security;
 alter table communication_plan_items enable row level security;
 
@@ -2468,11 +2429,6 @@ create policy qms_context_versions_isolation on qms_context_versions
   with check (tenant_id = auth_tenant_id());
 
 create policy nonconforming_outputs_isolation on nonconforming_outputs
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy qms_changes_isolation on qms_changes
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
