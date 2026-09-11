@@ -106,15 +106,14 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null, r
   // même tableau est réutilisé tel quel par le prochain KPI qui partage cette source — le
   // muter ici ferait fuiter le bucketage (voire la colonne de période) de ce KPI vers le
   // suivant. On construit donc toujours de nouveaux objets row_data.
-  const bucketedRows = isSnapshot
-    ? (() => {
-        const bucket = bucketDate(new Date(), kpi.frequency);
-        return rows.map((row) => ({ row_index: row.row_index, row_data: { ...row.row_data, [SNAPSHOT_COLUMN]: bucket } }));
-      })()
-    : rows.map((row) => ({
-        row_index: row.row_index,
-        row_data: { ...row.row_data, [config.period_column]: bucketDate(row.row_data[config.period_column], kpi.frequency) },
-      }));
+  const snapshotBucket = isSnapshot ? bucketDate(new Date(), kpi.frequency) : null;
+  const bucketedRows = rows.map((row) => ({
+    row_index: row.row_index,
+    row_data: {
+      ...row.row_data,
+      [config.period_column]: isSnapshot ? snapshotBucket : bucketDate(row.row_data[config.period_column], kpi.frequency),
+    },
+  }));
 
   const groups = groupRowsByPeriod(bucketedRows, config.period_column, null);
   const { periods } = summarizeGroups(config, groups);
