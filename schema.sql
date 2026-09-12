@@ -1208,7 +1208,7 @@ create table categories (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
       'haccp_plan', 'procedure', 'accident', 'pdca', 'nonconforming_output',
-      'customer_satisfaction', 'communication_plan', 'employee'
+      'customer_satisfaction', 'employee'
     )
   ),
   name          text not null,
@@ -1479,29 +1479,6 @@ create table customer_satisfaction_surveys (
 );
 alter table capas add column customer_satisfaction_survey_id uuid references customer_satisfaction_surveys (id) on delete set null;
 
--- Plan de communication du SMQ (ISO 9001 §7.4). Une ligne = une communication planifiée.
--- subject = quoi ; audience = à qui ; scope distingue interne/externe (§7.4 vise
--- explicitement les deux) ; timing = quand (texte libre : "Annuelle", "À chaque révision"...) ;
--- channel = comment ; responsible_user_id = qui communique. Référentiel stable géré par
--- l'admin, consulté par tous — pas de catégories/dossiers, pas de workflow (voir
--- routes/communicationPlan.js).
-create table communication_plan_items (
-  id                  uuid primary key default gen_random_uuid(),
-  tenant_id           uuid not null references tenants (id) on delete cascade,
-  subject             text not null,
-  audience            text not null,
-  scope               text not null default 'internal' check (scope in ('internal', 'external')),
-  timing              text not null,
-  channel             text not null,
-  responsible_user_id uuid references users (id) on delete set null,
-  notes               text,
-  is_active           boolean not null default true,
-  category_id         uuid references categories (id) on delete set null,
-  created_by          uuid references users (id) on delete set null,
-  created_at          timestamptz not null default now(),
-  updated_at          timestamptz not null default now()
-);
-
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
 -- SECURITY DEFINER + search_path fixe : contourne le RLS de public.users pour
 -- éviter une récursion de policy, sans exposer de faille de search_path.
@@ -1716,7 +1693,6 @@ create index idx_quality_policy_acknowledgments_version_id on quality_policy_ack
 
 create index idx_nonconforming_outputs_tenant_id on nonconforming_outputs (tenant_id);
 create index idx_customer_satisfaction_surveys_tenant_id on customer_satisfaction_surveys (tenant_id);
-create index idx_communication_plan_items_tenant_id on communication_plan_items (tenant_id);
 
 -- =============================================================================
 -- TRIGGERS
@@ -1916,9 +1892,6 @@ create trigger trg_nonconforming_outputs_updated_at before update on nonconformi
 create trigger trg_customer_satisfaction_surveys_updated_at before update on customer_satisfaction_surveys
   for each row execute function set_updated_at();
 
-create trigger trg_communication_plan_items_updated_at before update on communication_plan_items
-  for each row execute function set_updated_at();
-
 -- =============================================================================
 -- RECHERCHE
 -- =============================================================================
@@ -2088,7 +2061,6 @@ alter table quality_policy_versions enable row level security;
 alter table quality_policy_acknowledgments enable row level security;
 alter table nonconforming_outputs enable row level security;
 alter table customer_satisfaction_surveys enable row level security;
-alter table communication_plan_items enable row level security;
 
 -- tenants : un utilisateur ne voit que son propre tenant
 create policy tenants_isolation on tenants
@@ -2430,11 +2402,6 @@ create policy nonconforming_outputs_isolation on nonconforming_outputs
   with check (tenant_id = auth_tenant_id());
 
 create policy customer_satisfaction_surveys_isolation on customer_satisfaction_surveys
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy communication_plan_items_isolation on communication_plan_items
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

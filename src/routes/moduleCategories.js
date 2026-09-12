@@ -28,7 +28,6 @@ const RESOURCE_TYPES = [
   'pdca',
   'nonconforming_output',
   'customer_satisfaction',
-  'communication_plan',
   'employee',
 ];
 
@@ -51,7 +50,6 @@ const RESOURCE_TABLE_INFO = {
   pdca: { table: 'pdca_projects', singular: 'projet PDCA', plural: 'projets PDCA' },
   nonconforming_output: { table: 'nonconforming_outputs', singular: 'non-conformité produit/service', plural: 'non-conformités produit/service' },
   customer_satisfaction: { table: 'customer_satisfaction_surveys', singular: 'enquête de satisfaction', plural: 'enquêtes de satisfaction' },
-  communication_plan: { table: 'communication_plan_items', singular: 'ligne de plan de communication', plural: 'lignes de plan de communication' },
   employee: { table: 'employees', singular: 'personne', plural: 'personnes' },
 };
 
