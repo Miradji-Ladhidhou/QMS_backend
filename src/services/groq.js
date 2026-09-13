@@ -154,6 +154,106 @@ export async function generateHaccpHazardSuggestion(stepData) {
   return callGroq(HACCP_HAZARD_SYSTEM_PROMPT, buildHazardUserPrompt(stepData));
 }
 
+const HACCP_SIGNIFICANCE_RESPONSE_CONTRACT = `Rédige la valeur de justification en français, quelle que soit la langue du contexte fourni en entrée.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "is_significant": true,
+  "justification": "string"
+}
+justification résume en 2-3 phrases le raisonnement de l'arbre de décision qui mène à cette conclusion (mentionne les questions déterminantes, pas toutes systématiquement).`;
+
+// Arbre de décision Codex Alimentarius classique (4 questions), appliqué en une fois plutôt
+// qu'un assistant interactif question par question — voir le commentaire sur haccp_hazards
+// dans schema.sql ("une évaluation manuelle documentée plutôt qu'un assistant guidé, en V1") :
+// ceci reste une SUGGESTION à valider, la case à cocher et la justification restent modifiables
+// manuellement par l'utilisateur avant enregistrement.
+//
+// Q4 (une étape ultérieure élimine-t-elle le danger ?) exige de connaître les étapes
+// RÉELLEMENT postérieures du plan — sans elles, un test manuel a montré que l'IA suppose leur
+// existence (typiquement une cuisson) au lieu de rester prudente. D'où l'instruction explicite
+// ci-dessous de ne raisonner que sur les étapes fournies, jamais sur une étape supposée.
+const HACCP_SIGNIFICANCE_SYSTEM_PROMPT = `Tu es un expert en sécurité alimentaire (méthode HACCP, Codex Alimentarius) qui aide à déterminer si un danger déjà identifié constitue un point critique de maîtrise (CCP), en appliquant l'arbre de décision Codex classique :
+Q1. Existe-t-il des mesures de maîtrise pour ce danger à cette étape ou à une étape ultérieure ? Si non et que la maîtrise est nécessaire à la sécurité du produit, l'étape ou le procédé doit être modifié — CE N'EST PAS un CCP.
+Q2. Cette étape est-elle spécifiquement conçue pour éliminer le danger ou le réduire à un niveau acceptable ? Si oui — C'EST un CCP.
+Q3. Une contamination pourrait-elle survenir ou atteindre un niveau inacceptable à cette étape ? Si non — CE N'EST PAS un CCP.
+Q4. Une étape ultérieure DÉJÀ DÉCRITE CI-DESSOUS (liste "Étapes suivantes du procédé") permettra-t-elle d'éliminer le danger ou de le réduire à un niveau acceptable ? Si oui — CE N'EST PAS un CCP à CETTE étape. Si non, ou si aucune étape ultérieure n'est listée — C'EST un CCP.
+
+Ne suppose JAMAIS l'existence d'une étape ultérieure non listée (par exemple une cuisson) : si la liste des étapes suivantes est vide ou ne mentionne aucune maîtrise de ce danger, traite le danger comme non maîtrisé en aval.
+
+À partir du danger décrit (type, description, mesures de maîtrise déjà existantes, probabilité, gravité) et des étapes du procédé qui suivent réellement celle-ci, applique ce raisonnement et conclus.
+
+${HACCP_SIGNIFICANCE_RESPONSE_CONTRACT}`;
+
+const HAZARD_TYPE_FRENCH = { biological: 'biologique', chemical: 'chimique', physical: 'physique', allergen: 'allergène' };
+
+function buildSignificanceUserPrompt({ hazardType, description, existingControls, likelihood, severity, laterSteps }) {
+  const laterStepsText =
+    laterSteps && laterSteps.length > 0
+      ? laterSteps.map((s) => `- ${s.name}${s.description ? ` : ${s.description}` : ''}`).join('\n')
+      : '(aucune — ce danger est sur la dernière étape du procédé, ou les étapes suivantes ne sont pas encore renseignées)';
+
+  return `Type de danger : ${HAZARD_TYPE_FRENCH[hazardType] || hazardType}
+Description : ${description}
+Mesures de maîtrise déjà en place à cette étape : ${existingControls || 'aucune renseignée'}
+Probabilité : ${likelihood}/5, Gravité : ${severity}/5
+
+Étapes suivantes du procédé (réellement postérieures à celle-ci, dans l'ordre) :
+${laterStepsText}`;
+}
+
+// { hazardType, description, existingControls, likelihood, severity, laterSteps? } — voir POST
+// /ai/haccp-significance-suggestion. laterSteps (optionnel, [{ name, description }]) : les
+// étapes du plan réellement postérieures à celle du danger, voir HaccpDetail.jsx — nécessaire
+// pour que la question 4 de l'arbre de décision soit répondue à partir de données réelles
+// plutôt que supposée. Rien n'est persisté par cet appel : le frontend
+// (AiCcpSignificanceSuggestion.jsx) ne fait que préremplir la case "danger significatif" et sa
+// justification dans HazardFormModal (HaccpDetail.jsx), à valider avant d'enregistrer.
+export async function generateHaccpSignificanceSuggestion(data) {
+  return callGroq(HACCP_SIGNIFICANCE_SYSTEM_PROMPT, buildSignificanceUserPrompt(data));
+}
+
+const HACCP_CCP_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs en français, quelle que soit la langue du contexte fourni en entrée.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "critical_limits": "string",
+  "monitoring_procedure": "string",
+  "monitoring_frequency": "string",
+  "corrective_action_procedure": "string",
+  "verification_procedure": "string",
+  "verification_frequency": "string",
+  "record_keeping_procedure": "string"
+}
+critical_limits : des valeurs mesurables et vérifiables (température, durée, pH, concentration...), jamais une formulation vague du type "produit conforme".
+monitoring_procedure/monitoring_frequency : comment et à quelle fréquence on vérifie le respect des limites critiques.
+corrective_action_procedure : ce qui doit être fait immédiatement si une limite critique est dépassée (produit, procédé, enregistrement).
+verification_procedure/verification_frequency : comment et à quelle fréquence on vérifie que le système de surveillance lui-même fonctionne correctement (distinct de la surveillance elle-même).
+record_keeping_procedure : quels enregistrements conserver et où.`;
+
+const HACCP_CCP_SYSTEM_PROMPT = `Tu es un expert en sécurité alimentaire (méthode HACCP, Codex Alimentarius) qui aide à définir un point critique de maîtrise (CCP) pour un danger déjà jugé significatif.
+
+À partir du danger décrit (type, description, mesures de maîtrise déjà existantes, probabilité, gravité, justification de sa significativité), propose des limites critiques mesurables et les procédures de surveillance, d'action corrective, de vérification et d'enregistrement associées — concrètes et exploitables telles quelles, jamais un texte générique du type "à définir selon le contexte".
+
+${HACCP_CCP_RESPONSE_CONTRACT}`;
+
+function buildCcpUserPrompt({ hazardType, description, existingControls, likelihood, severity, justification }) {
+  return `Type de danger : ${HAZARD_TYPE_FRENCH[hazardType] || hazardType}
+Description : ${description}
+Mesures de maîtrise déjà en place : ${existingControls || 'aucune renseignée'}
+Probabilité : ${likelihood}/5, Gravité : ${severity}/5
+Pourquoi ce danger est jugé significatif : ${justification || 'non renseigné'}`;
+}
+
+// { hazardType, description, existingControls, likelihood, severity, justification } — voir
+// POST /ai/haccp-ccp-suggestion. Rien n'est persisté par cet appel : le frontend
+// (AiCcpDefinitionSuggestion.jsx) ne fait que préremplir les champs de CcpFormModal
+// (HaccpDetail.jsx), à valider ou corriger avant d'enregistrer via POST/PATCH
+// /haccp/hazards/:hazardId/ccps.
+export async function generateHaccpCcpSuggestion(data) {
+  return callGroq(HACCP_CCP_SYSTEM_PROMPT, buildCcpUserPrompt(data));
+}
+
 const RISK_SUGGESTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (title, category, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de type reste l'un des identifiants anglais fixes ci-dessous.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :

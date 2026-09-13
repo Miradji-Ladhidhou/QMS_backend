@@ -69,3 +69,58 @@ describe('POST /api/ai/risk-treatment-suggestion — authentification et validat
     expect(res.body.error).toBeTruthy();
   });
 });
+
+// Même principe que les routes IA ci-dessus : POST /api/ai/haccp-significance-suggestion et
+// POST /api/ai/haccp-ccp-suggestion appellent Groq en direct, non couverts par un test
+// automatisé — uniquement l'authentification et la validation d'entrée ici.
+describe('POST /api/ai/haccp-significance-suggestion — authentification et validation', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app)
+      .post('/api/ai/haccp-significance-suggestion')
+      .send({ hazardType: 'biological', description: 'Listeria', likelihood: 2, severity: 4 });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si le type de danger est invalide', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .post('/api/ai/haccp-significance-suggestion')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ hazardType: 'radioactive', description: 'Listeria', likelihood: 2, severity: 4 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  it('400 si la description est manquante', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/ai/haccp-significance-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ hazardType: 'biological', likelihood: 2, severity: 4 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+});
+
+describe('POST /api/ai/haccp-ccp-suggestion — authentification et validation', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app)
+      .post('/api/ai/haccp-ccp-suggestion')
+      .send({ hazardType: 'biological', description: 'Listeria', likelihood: 2, severity: 4 });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si probabilité/gravité sont hors de 1-5', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/ai/haccp-ccp-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ hazardType: 'biological', description: 'Listeria', likelihood: 2, severity: 12 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+});
