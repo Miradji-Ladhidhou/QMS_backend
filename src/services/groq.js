@@ -191,6 +191,43 @@ export async function generateRiskSuggestion(data) {
   return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data));
 }
 
+const RISK_TREATMENT_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (treatment_plan, rationale) en français, quelle que soit la langue du contexte fourni en entrée.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "treatment_plan": "string",
+  "residual_likelihood": 2,
+  "residual_impact": 2,
+  "rationale": "string"
+}
+Où residual_likelihood/residual_impact sont des entiers entre 1 et 5 (même échelle que likelihood/impact : 1 = très improbable/négligeable, 5 = quasi certain/critique) — TOUJOURS inférieurs ou égaux aux valeurs initiales fournies (un plan de traitement ne peut pas aggraver le risque), et rationale explique en 1-2 phrases pourquoi ce niveau résiduel est atteignable avec ce plan.`;
+
+const RISK_TREATMENT_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001:2015 §6.1 — approche par les risques) qui aide à définir le plan de traitement d'un risque ou d'une opportunité déjà identifié dans le registre des risques, et à estimer son niveau résiduel une fois ce plan mis en œuvre.
+
+À partir du risque/de l'opportunité décrit (titre, description, catégorie, évaluation initiale, contrôles déjà en place), propose :
+- treatment_plan : des actions CONCRÈTES et réalistes à mettre en œuvre, distinctes des contrôles déjà existants (les compléter, pas les répéter) — jamais un texte générique du type "mettre en place des mesures de suivi"
+- Pour un risque : des actions qui réduisent la probabilité et/ou la gravité. Pour une opportunité : des actions qui en augmentent les chances de réalisation ou les bénéfices.
+- residual_likelihood/residual_impact : le niveau atteignable UNE FOIS ce plan appliqué, pas le niveau actuel
+
+${RISK_TREATMENT_RESPONSE_CONTRACT}`;
+
+function buildRiskTreatmentUserPrompt({ title, description, category, type, likelihood, impact, currentControls }) {
+  return `${type === 'opportunity' ? 'Opportunité' : 'Risque'} : ${title}
+Description : ${description || 'non renseignée'}
+Catégorie : ${category || 'non renseignée'}
+Évaluation initiale : probabilité ${likelihood}/5, gravité/impact ${impact}/5
+Contrôles déjà en place : ${currentControls || 'aucun renseigné'}`;
+}
+
+// { title, description, category, type, likelihood, impact, currentControls } — voir POST
+// /ai/risk-treatment-suggestion. Rien n'est persisté par cet appel : le frontend
+// (AiRiskTreatmentSuggestion.jsx) ne fait que préremplir le plan de traitement et l'évaluation
+// résiduelle du formulaire d'édition (RiskDetail.jsx), à valider ou corriger avant
+// d'enregistrer via PATCH /risks/:id — même principe que generateCapaSuggestion.
+export async function generateRiskTreatmentSuggestion(data) {
+  return callGroq(RISK_TREATMENT_SYSTEM_PROMPT, buildRiskTreatmentUserPrompt(data));
+}
+
 const PDCA_PHASE_RESPONSE_CONTRACT = `Rédige la valeur en français, quelle que soit la langue du contexte fourni en entrée.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :

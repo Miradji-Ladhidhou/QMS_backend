@@ -34,3 +34,38 @@ describe('POST /api/ai/capa-suggestion — authentification et validation', () =
     expect(res.body.error).toBeTruthy();
   });
 });
+
+// Même principe que POST /api/ai/capa-suggestion ci-dessus : POST /api/ai/risk-treatment-suggestion
+// appelle Groq en direct, non couvert par un test automatisé — uniquement l'authentification et
+// la validation d'entrée ici.
+describe('POST /api/ai/risk-treatment-suggestion — authentification et validation', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app)
+      .post('/api/ai/risk-treatment-suggestion')
+      .send({ title: 'Panne serveur', likelihood: 3, impact: 4 });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si le titre est manquant, pour tout rôle (aucune restriction de rôle sur cette route)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .post('/api/ai/risk-treatment-suggestion')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ likelihood: 3, impact: 4 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  it('400 si probabilité/gravité sont hors de 1-5', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/ai/risk-treatment-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Panne serveur', likelihood: 9, impact: 4 });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+});
