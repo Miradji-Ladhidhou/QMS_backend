@@ -1,14 +1,9 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, RULE, HEADER_FILL, drawLetterheadHeader } from './pdfTheme.js';
 
-// Mêmes teintes que qqoqccpPdf.js/kpiReportPdf.js pour une identité visuelle cohérente entre
-// les rapports PDF de l'application — dupliquées plutôt qu'importées, ces services n'ont pas
-// d'autre couplage.
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const GRID = '#e2e8f0';
-const INK = '#1e293b';
+// RED/AMBER restent des couleurs sémantiques (obsolescence/retard), pas des couleurs de
+// marque — volontairement non touchées par le passage à l'en-tête neutre.
 const RED = '#dc2626';
 const RED_LIGHT = '#fef2f2';
 const AMBER = '#b45309';
@@ -27,36 +22,6 @@ function formatDate(dateStr) {
 
 function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
-}
-
-// Hauteur du bandeau calculée depuis le titre réel (numéro + titre de la procédure, longueur
-// arbitraire saisie par l'utilisateur) plutôt que fixée à 86 — un titre assez long pour passer
-// sur 2 lignes chevauchait sinon le nom du tenant/la date juste en dessous, positionnés à des
-// y fixes qui ne tenaient pas compte du rendu réel du titre.
-function drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor) {
-  const titleText = `${procedure.number} — ${procedure.title}`;
-  const titleWidth = CONTENT_WIDTH - 72;
-  doc.font('Body-Bold').fontSize(18);
-  const titleHeight = doc.heightOfString(titleText, { width: titleWidth });
-  const bandHeight = Math.max(86, 22 + titleHeight + 34);
-
-  doc.rect(0, 0, PAGE_WIDTH, bandHeight).fill(accentColor);
-  doc.fillColor('#ffffff').text(titleText, PAGE_MARGIN, 22, { width: titleWidth });
-  doc.font('Body');
-  const subtitleY = 22 + titleHeight + 8;
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, subtitleY);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, subtitleY + 13);
-  doc.fillColor(INK);
-  doc.y = bandHeight + 18;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, (bandHeight - 62) / 2, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
 }
 
 // Même esprit que les encadrés "Important" d'un gabarit de procédure imprimé : un bandeau de
@@ -221,8 +186,13 @@ function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, acc
 // différents peuvent s'exécuter en concurrence dans le même process Node, une couleur globale
 // mutable ferait fuiter le thème d'un tenant vers le PDF d'un autre.
 export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions, renderStyle }) {
-  const accentColor = renderStyle?.accentColor || NAVY;
-  const infoBoxStyle = { background: renderStyle?.boxBackground || NAVY_LIGHT, border: renderStyle?.boxBorder || NAVY };
+  // Défaut neutre (INK/HEADER_FILL/RULE) quand le gabarit de la procédure n'a pas explicitement
+  // choisi de style — un gabarit qui EN a choisi un garde le sien tel quel : ce mécanisme reste
+  // une personnalisation du contenu de la procédure par son auteur, pas la couleur de marque de
+  // l'app (voir data/procedureTemplatePresets.js), donc hors périmètre du passage à l'en-tête
+  // neutre ci-dessous — seule la lettre à en-tête elle-même (logo/nom/titre) devient uniforme.
+  const accentColor = renderStyle?.accentColor || INK;
+  const infoBoxStyle = { background: renderStyle?.boxBackground || HEADER_FILL, border: renderStyle?.boxBorder || RULE };
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
@@ -232,15 +202,17 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     doc.on('error', reject);
     useUnicodeFont(doc);
 
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: `${procedure.number} — ${procedure.title}` };
+
     // Suit la page courante pour construire le sommaire (voir plus bas) — incrémenté au même
     // rythme que les pages réellement ajoutées, y compris la page réservée au sommaire lui-même.
     let currentPageNumber = 1;
     doc.on('pageAdded', () => {
       currentPageNumber += 1;
-      drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor);
+      drawLetterheadHeader(doc, headerArgs);
     });
 
-    drawPageHeader(doc, tenantName, tenantLogo, procedure, accentColor);
+    drawLetterheadHeader(doc, headerArgs);
 
     doc
       .fontSize(9)

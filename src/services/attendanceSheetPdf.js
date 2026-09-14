@@ -1,13 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
-
-// Mêmes teintes que listReportPdf.js/skillMatrixPdf.js, dupliquées pour la même raison (pas
-// de module de constantes partagé entre les générateurs PDF, voir la note dans listReportPdf.js).
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const INK = '#1e293b';
-const GRID = '#cbd5e1';
+import { INK, MUTED, RULE, HEADER_FILL, drawLetterheadHeader } from './pdfTheme.js';
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
@@ -25,31 +18,10 @@ function formatDate(dateStr) {
   return new Date(`${dateStr}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
-function formatDateTime(date) {
-  return date.toLocaleString('fr-FR');
-}
-
 // Référence courte et stable dérivée de l'id de formation — permet de relier sans ambiguïté
 // une fiche imprimée à la formation en base, même sans système de numérotation dédié.
 function attendanceSheetReference(trainingId, date) {
   return `FP-${trainingId.slice(0, 8).toUpperCase()}-${date}`;
-}
-
-function drawPageHeader(doc, tenantName, tenantLogo, trainingTitle) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text('Fiche de participation', PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 72 });
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(trainingTitle, PAGE_MARGIN, 65);
-  doc.fillColor(INK);
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
-  doc.y = 104;
 }
 
 // rows : [{ name, jobTitle }] — jobTitle peut être vide (personne sans fonction renseignée).
@@ -76,13 +48,15 @@ export function buildAttendanceSheetPdf({
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, trainingTitle));
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Fiche de participation', subtitle: trainingTitle };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, tenantName, tenantLogo, trainingTitle);
+    drawLetterheadHeader(doc, headerArgs);
 
+    // "Document généré le" ne se répète pas ici : la lettre à en-tête l'affiche déjà (voir
+    // drawLetterheadHeader) — seule la référence, propre à cette fiche, reste à part.
     doc.fontSize(8).fillColor(MUTED);
     doc.text(`Réf. ${attendanceSheetReference(trainingId, date)}`, PAGE_MARGIN, doc.y);
-    doc.text(`Document généré le ${formatDateTime(new Date())}`, PAGE_MARGIN, doc.y);
     doc.moveDown(0.6);
 
     const sessionInfo = [
@@ -109,13 +83,13 @@ export function buildAttendanceSheetPdf({
 
     function drawTableHeader() {
       const headerY = doc.y;
-      doc.rect(PAGE_MARGIN, headerY, CONTENT_WIDTH, HEADER_ROW_HEIGHT).fill(NAVY);
-      doc.fontSize(9).fillColor('#ffffff');
+      doc.rect(PAGE_MARGIN, headerY, CONTENT_WIDTH, HEADER_ROW_HEIGHT).fill(HEADER_FILL);
+      doc.font('Body-Bold').fontSize(9).fillColor(INK);
       doc.text('Nom', PAGE_MARGIN + 6, headerY + 6, { width: NAME_COL_WIDTH - 12 });
       doc.text('Fonction', PAGE_MARGIN + NAME_COL_WIDTH + 6, headerY + 6, { width: JOB_TITLE_COL_WIDTH - 12 });
       doc.text('Signature', signatureColX + 6, headerY + 6, { width: signatureColWidth - 12 });
       doc.y = headerY + HEADER_ROW_HEIGHT;
-      doc.fillColor(INK);
+      doc.font('Body').fillColor(INK);
     }
 
     drawTableHeader();
@@ -140,18 +114,18 @@ export function buildAttendanceSheetPdf({
       doc
         .moveTo(PAGE_MARGIN, rowY + ROW_HEIGHT)
         .lineTo(PAGE_MARGIN + CONTENT_WIDTH, rowY + ROW_HEIGHT)
-        .strokeColor(GRID)
+        .strokeColor(RULE)
         .lineWidth(0.5)
         .stroke();
       doc
         .moveTo(signatureColX, rowY)
         .lineTo(signatureColX, rowY + ROW_HEIGHT)
-        .strokeColor(GRID)
+        .strokeColor(RULE)
         .stroke();
       doc
         .moveTo(PAGE_MARGIN + NAME_COL_WIDTH, rowY)
         .lineTo(PAGE_MARGIN + NAME_COL_WIDTH, rowY + ROW_HEIGHT)
-        .strokeColor(GRID)
+        .strokeColor(RULE)
         .stroke();
 
       doc.fillColor(INK);

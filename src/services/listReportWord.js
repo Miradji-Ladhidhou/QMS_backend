@@ -15,11 +15,13 @@ import {
   VerticalAlign,
 } from 'docx';
 
-// Même teinte que listReportPdf.js/listReportXlsx.js (navy) pour une identité visuelle cohérente
-// entre les 3 formats d'un même export — dupliquée plutôt qu'importée, même convention que le
-// reste des services de rapport (voir la note en tête de listReportPdf.js).
-const NAVY = '1F3864';
-const MUTED = '888888';
+// Mêmes teintes neutres que listReportPdf.js/listReportXlsx.js (fond clair + encre foncée
+// plutôt qu'un bandeau bleu marine) pour une identité visuelle cohérente entre les 3 formats
+// d'un même export — dupliquée plutôt qu'importée, même convention que le reste des services
+// de rapport (voir pdfTheme.js pour le contexte du passage à une palette neutre).
+const INK = '1E293B';
+const HEADER_FILL = 'F1F5F9';
+const MUTED = '64748B';
 const BORDER = 'D9D9D9';
 
 const CELL_BORDER = { style: 'single', size: 2, color: BORDER };
@@ -33,9 +35,9 @@ function titleRow(title, columnCount) {
         children: [
           new TableCell({
             columnSpan: columnCount,
-            shading: { type: ShadingType.CLEAR, fill: NAVY },
+            shading: { type: ShadingType.CLEAR, fill: HEADER_FILL },
             margins: { top: 120, bottom: 120, left: 100, right: 100 },
-            children: [new Paragraph({ children: [new TextRun({ text: title, bold: true, size: 28, color: 'FFFFFF' })] })],
+            children: [new Paragraph({ children: [new TextRun({ text: title, bold: true, size: 28, color: INK })] })],
           }),
         ],
       }),
@@ -50,11 +52,11 @@ function metaParagraph(tenantName, generatedBy) {
 
 function dataCellText(text, { header } = {}) {
   return new TableCell({
-    shading: header ? { type: ShadingType.CLEAR, fill: NAVY } : undefined,
+    shading: header ? { type: ShadingType.CLEAR, fill: HEADER_FILL } : undefined,
     verticalAlign: VerticalAlign.CENTER,
     borders: CELL_BORDERS,
     margins: { top: 60, bottom: 60, left: 100, right: 100 },
-    children: [new Paragraph({ children: [new TextRun({ text, bold: !!header, color: header ? 'FFFFFF' : undefined, size: 18 })] })],
+    children: [new Paragraph({ children: [new TextRun({ text, bold: !!header, color: header ? INK : undefined, size: 18 })] })],
   });
 }
 

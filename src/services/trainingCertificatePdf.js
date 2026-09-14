@@ -1,14 +1,13 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED } from './pdfTheme.js';
 
-// Mêmes teintes que les autres générateurs PDF (voir listReportPdf.js) — un peu plus de
-// couleurs ici pour un rendu "diplôme" plutôt que tableau de données. Fichier séparé de
-// services/certificatePdf.js, qui génère un tout autre document (certificat de signature
+// GOLD reste un ornement décoratif "diplôme" (double filet, ligne de signature), pas une
+// couleur de marque — le bleu marine utilisé ailleurs a en revanche été retiré au profit de
+// l'encre neutre, même principe que le reste des documents (voir pdfTheme.js). Fichier séparé
+// de services/certificatePdf.js, qui génère un tout autre document (certificat de signature
 // électronique eIDAS d'un workflow d'approbation) — même mot "certificat", objet différent.
-const NAVY = '#1F3864';
 const GOLD = '#B08D57';
-const MUTED = '#64748b';
-const INK = '#1e293b';
 
 // Paysage : un certificat se lit plus naturellement à l'italienne, comme les diplômes/attestations imprimés.
 const PAGE_WIDTH = 841.89; // A4 paysage
@@ -59,24 +58,26 @@ export function buildTrainingCertificatePdf({
 
     // Cadre décoratif double filet, façon diplôme.
     doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill('#ffffff');
-    doc.lineWidth(2).strokeColor(NAVY).rect(MARGIN, MARGIN, PAGE_WIDTH - MARGIN * 2, PAGE_HEIGHT - MARGIN * 2).stroke();
+    doc.lineWidth(2).strokeColor(INK).rect(MARGIN, MARGIN, PAGE_WIDTH - MARGIN * 2, PAGE_HEIGHT - MARGIN * 2).stroke();
     doc.lineWidth(0.75).strokeColor(GOLD).rect(MARGIN + 8, MARGIN + 8, PAGE_WIDTH - (MARGIN + 8) * 2, PAGE_HEIGHT - (MARGIN + 8) * 2).stroke();
 
     if (tenantLogo) {
       try {
-        doc.image(tenantLogo, PAGE_WIDTH / 2 - 28, MARGIN + 22, { fit: [56, 56], align: 'center' });
+        doc.image(tenantLogo, PAGE_WIDTH / 2 - 40, MARGIN + 16, { fit: [80, 80], align: 'center' });
       } catch {
         // Format non supporté par pdfkit ou fichier corrompu : certificat sans logo, pas d'erreur.
       }
     }
 
-    doc.fillColor(MUTED).fontSize(11).text((tenantName || 'Entreprise').toUpperCase(), MARGIN, MARGIN + 84, {
+    // Décalés de +20 vers le bas par rapport à l'ancien logo (56pt) : le logo agrandi (80pt)
+    // chevauchait sinon le nom de l'entreprise juste en dessous.
+    doc.fillColor(MUTED).fontSize(11).text((tenantName || 'Entreprise').toUpperCase(), MARGIN, MARGIN + 104, {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
       characterSpacing: 1.5,
     });
 
-    doc.fillColor(NAVY).fontSize(30).text('Certificat de réussite', MARGIN, MARGIN + 118, {
+    doc.fillColor(INK).fontSize(30).text('Certificat de réussite', MARGIN, MARGIN + 138, {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
     });
@@ -88,7 +89,7 @@ export function buildTrainingCertificatePdf({
     });
 
     doc.moveDown(0.3);
-    doc.fillColor(NAVY).fontSize(23).text(personName, {
+    doc.fillColor(INK).fontSize(23).text(personName, {
       width: PAGE_WIDTH - MARGIN * 2,
       align: 'center',
     });
@@ -100,7 +101,7 @@ export function buildTrainingCertificatePdf({
     });
 
     doc.moveDown(0.25);
-    doc.fillColor(NAVY).fontSize(16).text(trainingTitle, MARGIN + 60, doc.y, {
+    doc.fillColor(INK).fontSize(16).text(trainingTitle, MARGIN + 60, doc.y, {
       width: PAGE_WIDTH - (MARGIN + 60) * 2,
       align: 'center',
     });

@@ -1,15 +1,11 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, HEADER_FILL, ROW_ALT, drawLetterheadHeader } from './pdfTheme.js';
 
-// Mêmes teintes que les autres rapports PDF de l'application (voir qqoqccpPdf.js pour la note
-// sur l'absence de module de constantes partagé).
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const INK = '#1e293b';
+// RED reste une couleur sémantique (danger significatif / dérive hors limites non couverte par
+// une CAPA), pas une couleur de marque — volontairement non touchée par l'en-tête neutre.
 const RED = '#dc2626';
 const RED_LIGHT = '#fef2f2';
-const ROW_ALT = '#f8fafc';
 
 const PAGE_MARGIN = 40;
 // Paysage : les tableaux HACCP (limites critiques, procédures de surveillance...) sont
@@ -22,34 +18,9 @@ const TABLE_HEADER_HEIGHT = 20;
 const PLAN_STATUS_LABELS = { draft: 'Brouillon', active: 'Actif', under_review: 'En revue', archived: 'Archivé' };
 const HAZARD_TYPE_LABELS = { biological: 'Biologique', chemical: 'Chimique', physical: 'Physique', allergen: 'Allergène' };
 
-function formatDateTime(dateStr) {
-  return new Date(dateStr).toLocaleString('fr-FR');
-}
-
 function formatDate(dateStr) {
   if (!dateStr) return '—';
   return new Date(dateStr).toLocaleDateString('fr-FR');
-}
-
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js, même try/catch que les
-// autres rapports (un format que pdfkit ne sait pas décoder ne doit jamais faire échouer toute
-// la génération).
-function drawPageHeader(doc, tenantName, tenantLogo) {
-  doc.rect(0, 0, PAGE_WIDTH, 70).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(16).text('Analyse HACCP', PAGE_MARGIN, 20);
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 42);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 54);
-  doc.fillColor(INK);
-  doc.y = 86;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 54, 8, { fit: [54, 54], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
 }
 
 // columns : [{ key, label, width }] (width en fraction de CONTENT_WIDTH). rows : tableau
@@ -57,7 +28,8 @@ function drawPageHeader(doc, tenantName, tenantLogo) {
 // plan (dangers, CCP, surveillance) — même logique de saut de page/ré-affichage d'en-tête que
 // listReportPdf.js, mais paramétrable pour être appelée plusieurs fois dans le même document.
 function drawTable(doc, { sectionTitle, columns, rows, emptyLabel }) {
-  doc.fontSize(11).fillColor(NAVY).text(sectionTitle, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body-Bold').fontSize(11).fillColor(INK).text(sectionTitle, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
   doc.moveDown(0.3);
 
   const widths = columns.map((col) => col.width * CONTENT_WIDTH);
@@ -70,13 +42,13 @@ function drawTable(doc, { sectionTitle, columns, rows, emptyLabel }) {
 
   function drawTableHeader() {
     const headerY = doc.y;
-    doc.rect(PAGE_MARGIN, headerY, CONTENT_WIDTH, TABLE_HEADER_HEIGHT).fill(NAVY);
-    doc.fontSize(7.5).fillColor('#ffffff');
+    doc.rect(PAGE_MARGIN, headerY, CONTENT_WIDTH, TABLE_HEADER_HEIGHT).fill(HEADER_FILL);
+    doc.font('Body-Bold').fontSize(7.5).fillColor(INK);
     columns.forEach((col, i) => {
       doc.text(col.label, positions[i] + CELL_PADDING, headerY + 6, { width: widths[i] - CELL_PADDING * 2 });
     });
     doc.y = headerY + TABLE_HEADER_HEIGHT;
-    doc.fillColor(INK);
+    doc.font('Body').fillColor(INK);
   }
 
   drawTableHeader();
@@ -156,7 +128,8 @@ function drawScopeList(doc, scope) {
     .map((line) => line.replace(/^[•\-*]\s*/, '').trim())
     .filter(Boolean);
 
-  doc.fontSize(9).fillColor(NAVY).text('Périmètre', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body-Bold').fontSize(9).fillColor(INK).text('Périmètre', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
   doc.moveDown(0.25);
 
   if (items.length <= 1) {
@@ -177,7 +150,8 @@ function drawScopeList(doc, scope) {
 // outOfLimits, linkedCapas, lastRecordedAt } — calculée par l'appelant (voir routes/haccp.js),
 // pas ici : ce module ne fait aucun accès base de données.
 function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
-  doc.fontSize(14).fillColor(NAVY).text(plan.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body-Bold').fontSize(14).fillColor(INK).text(plan.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
   doc.moveDown(0.3);
 
   const infoFields = [{ label: 'Statut', value: PLAN_STATUS_LABELS[plan.status] || plan.status }];
@@ -292,9 +266,10 @@ export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSu
     doc.on('error', reject);
 
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Analyse HACCP' };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, tenantName, tenantLogo);
+    drawLetterheadHeader(doc, headerArgs);
 
     plans.forEach((plan, index) => {
       if (index > 0) doc.addPage();

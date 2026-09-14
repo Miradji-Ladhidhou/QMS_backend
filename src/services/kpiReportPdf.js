@@ -1,11 +1,9 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const GRID = '#e2e8f0';
-const INK = '#1e293b';
+// GOOD/BAD/NEUTRAL restent des couleurs de statut sémantique (objectif atteint ou non), pas
+// des couleurs de marque — non touchées par le passage à l'en-tête neutre.
 const GOOD = '#10b981';
 const BAD = '#ef4444';
 const NEUTRAL = '#94a3b8';
@@ -16,10 +14,6 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 
 function formatDateShort(dateStr) {
   return new Date(dateStr).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short' });
-}
-
-function formatDateTime(dateStr) {
-  return new Date(dateStr).toLocaleString('fr-FR');
 }
 
 // Même fenêtre que routes/dashboard.js#KPI_RECENT_WINDOW et Kpis.jsx (frontend) : le statut
@@ -139,7 +133,7 @@ function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
     records.length === 1 ? plotLeft + plotWidth / 2 : plotLeft + (index / (records.length - 1)) * plotWidth;
   const scaleY = (value) => plotTop + plotHeight - ((value - minValue) / (maxValue - minValue)) * plotHeight;
 
-  doc.strokeColor(GRID).lineWidth(0.5);
+  doc.strokeColor(RULE_LIGHT).lineWidth(0.5);
   doc
     .moveTo(plotLeft, plotTop)
     .lineTo(plotLeft, plotTop + plotHeight)
@@ -160,7 +154,7 @@ function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
     doc.undash();
   }
 
-  doc.strokeColor(NAVY).lineWidth(1.3);
+  doc.strokeColor(INK).lineWidth(1.3);
   records.forEach((record, index) => {
     const px = scaleX(index);
     const py = scaleY(record.value);
@@ -170,7 +164,7 @@ function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
   doc.stroke();
 
   records.forEach((record, index) => {
-    doc.circle(scaleX(index), scaleY(record.value), 1.4).fillColor(NAVY).fill();
+    doc.circle(scaleX(index), scaleY(record.value), 1.4).fillColor(INK).fill();
   });
 
   // Une date par point (pas seulement la première/dernière) : voir drawRotatedDateLabels.
@@ -230,7 +224,7 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, un
   const scaleX = (index) => (periods.length === 1 ? plotLeft + plotWidth / 2 : plotLeft + (index / (periods.length - 1)) * plotWidth);
   const scaleY = (value) => plotTop + plotHeight - ((value - minValue) / (maxValue - minValue)) * plotHeight;
 
-  doc.strokeColor(GRID).lineWidth(0.5);
+  doc.strokeColor(RULE_LIGHT).lineWidth(0.5);
   doc
     .moveTo(plotLeft, plotTop)
     .lineTo(plotLeft, plotTop + plotHeight)
@@ -319,25 +313,12 @@ function drawSeriesAverages(doc, x, y, maxWidth, seriesList, unit) {
   return cursorY + lineHeight;
 }
 
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js. Dans un try/catch
-// séparé du reste du dessin : un logo dans un format que pdfkit ne sait pas décoder (SVG,
-// WEBP...) ne doit jamais faire échouer toute la génération du rapport, juste rester absent.
+// Enveloppe locale de drawLetterheadHeader (pdfTheme.js) qui garde la même signature
+// (doc, tenantName, tenantLogo) que l'ancien drawPageHeader — évite de faire remonter un objet
+// headerArgs à travers ensureSpace/drawKpiSection/drawSummaryPage, déjà tous paramétrés sur
+// tenantName/tenantLogo séparément.
 function drawPageHeader(doc, tenantName, tenantLogo) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text('Rapport des indicateurs qualité (KPI)', PAGE_MARGIN, 26);
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
-  doc.fillColor(INK);
-  doc.y = 104;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
+  drawLetterheadHeader(doc, { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Rapport des indicateurs qualité (KPI)' });
 }
 
 function ensureSpace(doc, tenantName, tenantLogo, requiredHeight) {
@@ -377,8 +358,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     ensureSpace(doc, tenantName, tenantLogo, requiredHeight);
 
     const sectionTop = doc.y;
-    doc.fontSize(12).fillColor(NAVY).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH });
-    doc.fontSize(9).fillColor('#555555').text(targetLine, PAGE_MARGIN, sectionTop + 16);
+    doc.font('Body-Bold').fontSize(12).fillColor(INK).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH });
+    doc.font('Body').fontSize(9).fillColor('#555555').text(targetLine, PAGE_MARGIN, sectionTop + 16);
 
     const averagesY = drawSeriesAverages(doc, PAGE_MARGIN, sectionTop + 30, CONTENT_WIDTH, seriesList, kpi.unit);
 
@@ -408,7 +389,7 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     doc
       .moveTo(PAGE_MARGIN, doc.y)
       .lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y)
-      .strokeColor(GRID)
+      .strokeColor(RULE_LIGHT)
       .lineWidth(0.5)
       .stroke();
     doc.moveDown(0.8);
@@ -429,7 +410,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   ensureSpace(doc, tenantName, tenantLogo, requiredHeight);
 
   const sectionTop = doc.y;
-  doc.fontSize(12).fillColor(NAVY).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH - 90 });
+  doc.font('Body-Bold').fontSize(12).fillColor(INK).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH - 90 });
+  doc.font('Body');
 
   drawStatusDot(doc, PAGE_MARGIN + CONTENT_WIDTH - 6, sectionTop + 6, status);
   doc.fontSize(8).fillColor(STATUS_COLORS[status]).text(STATUS_LABELS[status], PAGE_MARGIN, sectionTop, {
@@ -463,7 +445,7 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   doc
     .moveTo(tableX, rowY)
     .lineTo(tableX + tableWidth, rowY)
-    .strokeColor(GRID)
+    .strokeColor(RULE_LIGHT)
     .lineWidth(0.5)
     .stroke();
   rowY += 3;
@@ -496,7 +478,7 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   doc
     .moveTo(PAGE_MARGIN, doc.y)
     .lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y)
-    .strokeColor(GRID)
+    .strokeColor(RULE_LIGHT)
     .lineWidth(0.5)
     .stroke();
   doc.moveDown(0.8);
@@ -505,7 +487,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
 function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
   doc.addPage();
   drawPageHeader(doc, tenantName, tenantLogo);
-  doc.fontSize(15).fillColor(NAVY).text('Synthèse', PAGE_MARGIN, doc.y);
+  doc.font('Body-Bold').fontSize(15).fillColor(INK).text('Synthèse', PAGE_MARGIN, doc.y);
+  doc.font('Body');
   doc.moveDown(0.8);
 
   const columns = { name: 0.42, value: 0.2, target: 0.23, status: 0.15 };
@@ -525,7 +508,7 @@ function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
     doc
       .moveTo(PAGE_MARGIN, rowY)
       .lineTo(PAGE_MARGIN + CONTENT_WIDTH, rowY)
-      .strokeColor(NAVY)
+      .strokeColor(INK)
       .lineWidth(1)
       .stroke();
     rowY += 6;

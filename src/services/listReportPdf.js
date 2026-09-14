@@ -1,14 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
-
-// Mêmes teintes que qqoqccpPdf.js/kpiReportPdf.js pour une identité visuelle cohérente entre
-// tous les rapports PDF de l'application — dupliquées plutôt qu'importées, voir la note dans
-// qqoqccpPdf.js sur l'absence de module de constantes partagé.
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const INK = '#1e293b';
-const ROW_ALT = '#f8fafc';
+import { INK, MUTED, HEADER_FILL, ROW_ALT, drawLetterheadHeader } from './pdfTheme.js';
 
 const PAGE_MARGIN = 50;
 // A4 portrait par défaut ; on bascule en paysage (dimensions inversées) au-delà de
@@ -30,38 +22,9 @@ const MIN_COLUMN_WIDTH = 40;
 // mesurer les 5000 lignes possibles (voir routes/reports.js) à chaque génération.
 const WIDTH_SAMPLE_SIZE = 200;
 
-function formatDateTime(dateStr) {
-  return new Date(dateStr).toLocaleString('fr-FR');
-}
-
 function cellDisplayValue(row, key) {
   const value = row[key];
   return value === null || value === undefined || value === '' ? '—' : String(value);
-}
-
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
-// dans qqoqccpPdf.js/kpiReportPdf.js (un format que pdfkit ne sait pas décoder ne doit jamais
-// faire échouer toute la génération du rapport).
-function drawPageHeader(doc, layout, tenantName, title, generatedBy) {
-  doc.rect(0, 0, layout.width, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text(title, PAGE_MARGIN, 26, { width: layout.contentWidth - 72 });
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  const generatedLine = generatedBy
-    ? `Généré par ${generatedBy} le ${formatDateTime(new Date().toISOString())}`
-    : `Généré le ${formatDateTime(new Date().toISOString())}`;
-  doc.text(generatedLine, PAGE_MARGIN, 65);
-  doc.fillColor(INK);
-  doc.y = 104;
-}
-
-function drawLogo(doc, layout, tenantLogo) {
-  if (!tenantLogo) return;
-  try {
-    doc.image(tenantLogo, layout.width - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
-  } catch {
-    // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-  }
 }
 
 // widths : fraction de contentWidth (0-1) par colonne, fournie pour toutes ou aucune. Dans ce
@@ -127,30 +90,22 @@ export function buildListReportPdf({ tenantName, tenantLogo, title, subtitle, ge
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => {
-      drawPageHeader(doc, layout, tenantName, title, generatedBy);
-      drawLogo(doc, layout, tenantLogo);
-    });
+    const headerArgs = { pageWidth: layout.width, marginX: PAGE_MARGIN, tenantName, tenantLogo, title, subtitle, generatedBy };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, layout, tenantName, title, generatedBy);
-    drawLogo(doc, layout, tenantLogo);
-
-    if (subtitle) {
-      doc.fontSize(9).fillColor(MUTED).text(subtitle, PAGE_MARGIN, doc.y, { width: layout.contentWidth });
-      doc.moveDown(0.6);
-    }
+    drawLetterheadHeader(doc, headerArgs);
 
     const { widths, positions } = resolveColumnWidths(doc, columns, rows, layout.contentWidth);
 
     function drawTableHeader() {
       const headerY = doc.y;
-      doc.rect(PAGE_MARGIN, headerY, layout.contentWidth, TABLE_HEADER_HEIGHT).fill(NAVY);
-      doc.fontSize(CELL_FONT_SIZE).fillColor('#ffffff');
+      doc.rect(PAGE_MARGIN, headerY, layout.contentWidth, TABLE_HEADER_HEIGHT).fill(HEADER_FILL);
+      doc.font('Body-Bold').fontSize(CELL_FONT_SIZE).fillColor(INK);
       columns.forEach((col, i) => {
         doc.text(col.label, positions[i] + CELL_PADDING, headerY + 6, { width: widths[i] - CELL_PADDING * 2 });
       });
       doc.y = headerY + TABLE_HEADER_HEIGHT;
-      doc.fillColor(INK);
+      doc.font('Body').fillColor(INK);
     }
 
     drawTableHeader();

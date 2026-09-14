@@ -1,14 +1,9 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
-// Mêmes teintes que procedurePdf.js/qqoqccpPdf.js/kpiReportPdf.js pour une identité visuelle
-// cohérente entre les rapports PDF de l'application — dupliquées plutôt qu'importées, ces
-// services n'ont pas d'autre couplage.
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const GRID = '#e2e8f0';
-const INK = '#1e293b';
+// RED/AMBER restent des couleurs sémantiques (retard/efficacité non vérifiée), pas des
+// couleurs de marque — volontairement non touchées par le passage à l'en-tête neutre.
 const RED = '#dc2626';
 const RED_LIGHT = '#fef2f2';
 const AMBER = '#b45309';
@@ -33,35 +28,6 @@ function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
 }
 
-// Hauteur du bandeau calculée depuis le titre réel (numéro + titre de la CAPA, longueur
-// arbitraire saisie par l'utilisateur) plutôt que fixée à 86 — un titre assez long pour passer
-// sur 2 lignes chevauchait sinon le nom du tenant/la date juste en dessous, positionnés à des
-// y fixes qui ne tenaient pas compte du rendu réel du titre.
-function drawPageHeader(doc, tenantName, tenantLogo, capa) {
-  const titleText = `${capa.number ? `${capa.number} — ` : ''}${capa.title}`;
-  const titleWidth = CONTENT_WIDTH - 72;
-  doc.fontSize(16);
-  const titleHeight = doc.heightOfString(titleText, { width: titleWidth });
-  const bandHeight = Math.max(86, 22 + titleHeight + 34);
-
-  doc.rect(0, 0, PAGE_WIDTH, bandHeight).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(16).text(titleText, PAGE_MARGIN, 22, { width: titleWidth });
-  const subtitleY = 22 + titleHeight + 8;
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, subtitleY);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, subtitleY + 13);
-  doc.fillColor(INK);
-  doc.y = bandHeight + 18;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, (bandHeight - 62) / 2, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
-}
-
 // Même esprit que drawImportantBox de procedurePdf.js — réservé à une information déjà
 // affichée à l'écran (bannière "En retard" sur CapaDetail.jsx), jamais un contenu inventé.
 function drawImportantBox(doc, { color, background, label, text }) {
@@ -75,7 +41,8 @@ function drawImportantBox(doc, { color, background, label, text }) {
 }
 
 function drawSection(doc, number, title, body) {
-  doc.fontSize(11).fillColor(NAVY).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body-Bold').fontSize(11).fillColor(INK).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body');
   doc.moveDown(0.2);
   if (body) {
     doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
@@ -115,9 +82,16 @@ export function buildCapaPdf({ tenantName, tenantLogo, capa }) {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo, capa));
+    const headerArgs = {
+      pageWidth: PAGE_WIDTH,
+      marginX: PAGE_MARGIN,
+      tenantName,
+      tenantLogo,
+      title: `${capa.number ? `${capa.number} — ` : ''}${capa.title}`,
+    };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, tenantName, tenantLogo, capa);
+    drawLetterheadHeader(doc, headerArgs);
 
     doc
       .fontSize(9)
@@ -159,7 +133,7 @@ export function buildCapaPdf({ tenantName, tenantLogo, capa }) {
     ]);
 
     doc.moveDown(0.3);
-    doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(GRID).lineWidth(0.5).stroke();
+    doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(RULE_LIGHT).lineWidth(0.5).stroke();
     doc.moveDown(0.6);
 
     drawSection(doc, 1, 'Description de la non-conformité', capa.description);

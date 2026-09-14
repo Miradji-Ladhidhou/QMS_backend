@@ -1,10 +1,11 @@
 import ExcelJS from 'exceljs';
 
-// Mêmes teintes que listReportPdf.js (navy) pour une identité visuelle cohérente entre le PDF
-// et l'Excel d'un même export.
-const NAVY_ARGB = 'FF1F3864';
-const WHITE_ARGB = 'FFFFFFFF';
-const MUTED_ARGB = 'FF94A3B8';
+// Mêmes teintes neutres que listReportPdf.js/pdfTheme.js (fond clair + encre foncée plutôt
+// qu'un bandeau bleu marine) pour une identité visuelle cohérente entre le PDF et l'Excel d'un
+// même export — voir pdfTheme.js pour le contexte du passage à une palette neutre.
+const INK_ARGB = 'FF1E293B';
+const MUTED_ARGB = 'FF64748B';
+const HEADER_FILL_ARGB = 'FFF1F5F9';
 const BORDER_ARGB = 'FFE2E8F0';
 const THIN_BORDER = { style: 'thin', color: { argb: BORDER_ARGB } };
 
@@ -55,8 +56,8 @@ export async function buildListReportXlsx({ tenantName, title, subtitle, generat
   sheet.columns = columns.map((col) => ({ key: col.key, width: estimateColumnWidth(col, rows) }));
 
   fillMergedRow(sheet, 1, columns.length, title, {
-    font: { bold: true, size: 14, color: { argb: WHITE_ARGB } },
-    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY_ARGB } },
+    font: { bold: true, size: 14, color: { argb: INK_ARGB } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL_ARGB } },
   });
   sheet.getRow(1).height = 22;
 
@@ -75,8 +76,8 @@ export async function buildListReportXlsx({ tenantName, title, subtitle, generat
   columns.forEach((col, i) => {
     const cell = headerRow.getCell(i + 1);
     cell.value = col.label;
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: NAVY_ARGB } };
-    cell.font = { bold: true, color: { argb: WHITE_ARGB } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEADER_FILL_ARGB } };
+    cell.font = { bold: true, color: { argb: INK_ARGB } };
     cell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
   });
   headerRow.commit();

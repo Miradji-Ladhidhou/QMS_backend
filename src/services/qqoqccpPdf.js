@@ -1,14 +1,10 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
-// Mêmes teintes que kpiReportPdf.js pour une identité visuelle cohérente entre les rapports
-// PDF de l'application — dupliquées plutôt qu'importées, ces deux services n'ont pas d'autre
-// couplage et n'ont pas besoin d'un module de constantes partagé pour si peu.
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const GRID = '#e2e8f0';
-const INK = '#1e293b';
+// PURPLE reste la couleur sémantique "contenu généré par IA" (même convention que le badge
+// violet côté frontend, ex. AiRiskSuggestion.jsx) — pas une couleur de marque, volontairement
+// non touchée par le passage à l'en-tête neutre ci-dessous.
 const PURPLE = '#7c3aed';
 const PURPLE_LIGHT = '#f5f3ff';
 
@@ -32,27 +28,6 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
-// dans kpiReportPdf.js (un format que pdfkit ne sait pas décoder ne doit jamais faire
-// échouer toute la génération du rapport).
-function drawPageHeader(doc, tenantName, tenantLogo) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text('Analyse QQOQCCP', PAGE_MARGIN, 26);
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
-  doc.fillColor(INK);
-  doc.y = 104;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
-}
-
 // Le PDF est construit en flux libre (doc.text sans y explicite) plutôt qu'en positions
 // fixes comme kpiReportPdf.js : les réponses aux 7 questions ont une longueur imprévisible,
 // contrairement aux sections KPI de hauteur bornée. pdfkit déclenche 'pageAdded' à chaque
@@ -66,11 +41,13 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Analyse QQOQCCP' };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, tenantName, tenantLogo);
+    drawLetterheadHeader(doc, headerArgs);
 
-    doc.fontSize(15).fillColor(NAVY).text(analysis.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.font('Body-Bold').fontSize(15).fillColor(INK).text(analysis.title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.font('Body');
     doc.moveDown(0.2);
     doc
       .fontSize(9)
@@ -84,7 +61,8 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
     doc.moveDown(1);
 
     QUESTIONS.forEach(({ key, label }) => {
-      doc.fontSize(11).fillColor(NAVY).text(label, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.font('Body-Bold').fontSize(11).fillColor(INK).text(label, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.font('Body');
       doc.moveDown(0.15);
       const answer = analysis[key];
       if (answer) {
@@ -102,7 +80,7 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
       doc
         .moveTo(PAGE_MARGIN, doc.y)
         .lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y)
-        .strokeColor(GRID)
+        .strokeColor(RULE_LIGHT)
         .lineWidth(0.5)
         .stroke();
       doc.moveDown(0.8);
@@ -113,7 +91,8 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
       doc.moveDown(0.7);
 
       if (rootCauses.length > 0) {
-        doc.fontSize(10).fillColor(NAVY).text('Causes racines probables', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        doc.font('Body-Bold').fontSize(10).fillColor(INK).text('Causes racines probables', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        doc.font('Body');
         doc.moveDown(0.2);
         rootCauses.forEach((cause) => {
           doc.fontSize(9).fillColor(INK).text(`•  ${cause}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
@@ -123,7 +102,8 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
       }
 
       if (suggestedActions.length > 0) {
-        doc.fontSize(10).fillColor(NAVY).text('Actions suggérées', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        doc.font('Body-Bold').fontSize(10).fillColor(INK).text('Actions suggérées', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        doc.font('Body');
         doc.moveDown(0.3);
         suggestedActions.forEach((action) => {
           const boxTop = doc.y;

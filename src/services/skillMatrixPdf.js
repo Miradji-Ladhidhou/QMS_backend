@@ -1,13 +1,8 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
-// Mêmes teintes que kpiReportPdf.js / qqoqccpPdf.js, dupliquées pour la même raison (pas de
-// couplage utile entre ces services au-delà de la charte de couleur).
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const GRID = '#e2e8f0';
-const INK = '#1e293b';
+// Palette de statut (à jour/expiré/...) : sémantique, pas une couleur de marque — non touchée.
 const GOOD = '#059669';
 const WARN = '#d97706';
 const BAD = '#dc2626';
@@ -33,29 +28,6 @@ const STATUS_STYLES = {
   not_applicable: { color: NOT_APPLICABLE, label: 'Non concerné' },
 };
 
-function formatDateTime(dateStr) {
-  return new Date(dateStr).toLocaleString('fr-FR');
-}
-
-// tenantLogo : Buffer (PNG/JPEG) ou null — voir services/tenantLogo.js et le même try/catch
-// dans kpiReportPdf.js.
-function drawPageHeader(doc, tenantName, tenantLogo) {
-  doc.rect(0, 0, PAGE_WIDTH, 70).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(16).text('Matrice des compétences', PAGE_MARGIN, 20);
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 42);
-  doc.text(`Généré le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 54);
-  doc.fillColor(INK);
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 54, 8, { fit: [54, 54], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
-}
-
 function drawLegend(doc, y) {
   let x = PAGE_MARGIN;
   Object.values(STATUS_STYLES).forEach(({ color, label }) => {
@@ -71,14 +43,15 @@ function drawTableHeaderRow(doc, trainingsChunk, y) {
 
   trainingsChunk.forEach((training, index) => {
     const x = PAGE_MARGIN + PERSON_COL_WIDTH + index * TRAINING_COL_WIDTH;
-    doc.fontSize(7.5).fillColor(NAVY).text(training.title, x + 4, y, { width: TRAINING_COL_WIDTH - 8, height: HEADER_ROW_HEIGHT - 4 });
+    doc.font('Body-Bold').fontSize(7.5).fillColor(INK).text(training.title, x + 4, y, { width: TRAINING_COL_WIDTH - 8, height: HEADER_ROW_HEIGHT - 4 });
+    doc.font('Body');
   });
 
   const lineY = y + HEADER_ROW_HEIGHT;
   doc
     .moveTo(PAGE_MARGIN, lineY)
     .lineTo(PAGE_MARGIN + PERSON_COL_WIDTH + trainingsChunk.length * TRAINING_COL_WIDTH, lineY)
-    .strokeColor(NAVY)
+    .strokeColor(INK)
     .lineWidth(1)
     .stroke();
 
@@ -102,7 +75,7 @@ function drawPersonRow(doc, person, trainingsChunk, findEntry, y) {
   doc
     .moveTo(PAGE_MARGIN, y + ROW_HEIGHT)
     .lineTo(PAGE_MARGIN + PERSON_COL_WIDTH + trainingsChunk.length * TRAINING_COL_WIDTH, y + ROW_HEIGHT)
-    .strokeColor(GRID)
+    .strokeColor(RULE_LIGHT)
     .lineWidth(0.5)
     .stroke();
 }
@@ -141,13 +114,17 @@ export function buildSkillMatrixPdf({ tenantName, tenantLogo, matrix }) {
 
     const trainingsPerPage = Math.max(1, Math.floor((CONTENT_WIDTH - PERSON_COL_WIDTH) / TRAINING_COL_WIDTH));
     const columnGroups = trainings.length > 0 ? chunk(trainings, trainingsPerPage) : [[]];
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Matrice des compétences' };
 
     columnGroups.forEach((group, groupIndex) => {
       doc.addPage();
-      drawPageHeader(doc, tenantName, tenantLogo);
-      if (groupIndex === 0) drawLegend(doc, 78);
+      drawLetterheadHeader(doc, headerArgs);
+      let y = doc.y;
+      if (groupIndex === 0) {
+        drawLegend(doc, y);
+        y += 18;
+      }
 
-      let y = groupIndex === 0 ? 96 : 90;
       y = drawTableHeaderRow(doc, group, y);
 
       if (people.length === 0) {
@@ -158,8 +135,8 @@ export function buildSkillMatrixPdf({ tenantName, tenantLogo, matrix }) {
       people.forEach((person) => {
         if (y + ROW_HEIGHT > PAGE_HEIGHT - PAGE_MARGIN) {
           doc.addPage();
-          drawPageHeader(doc, tenantName, tenantLogo);
-          y = drawTableHeaderRow(doc, group, 90);
+          drawLetterheadHeader(doc, headerArgs);
+          y = drawTableHeaderRow(doc, group, doc.y);
         }
         drawPersonRow(doc, person, group, findEntry, y);
         y += ROW_HEIGHT;

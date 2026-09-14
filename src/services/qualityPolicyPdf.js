@@ -1,13 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
-
-// Mêmes teintes que certificatePdf.js/kpiReportPdf.js pour une identité visuelle cohérente
-// entre tous les rapports PDF de l'application — dupliquées plutôt qu'importées, voir la note
-// dans qqoqccpPdf.js sur l'absence de module de constantes partagé.
-const NAVY = '#1F3864';
-const NAVY_LIGHT = '#D5DCE8';
-const MUTED = '#94a3b8';
-const INK = '#1e293b';
+import { INK, MUTED, drawLetterheadHeader } from './pdfTheme.js';
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
@@ -15,24 +8,6 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 
 function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
-}
-
-function drawPageHeader(doc, tenantName, tenantLogo) {
-  doc.rect(0, 0, PAGE_WIDTH, 86).fill(NAVY);
-  doc.fillColor('#ffffff').fontSize(18).text('Politique qualité', PAGE_MARGIN, 26, { width: CONTENT_WIDTH - 72 });
-  doc.fontSize(9).fillColor(NAVY_LIGHT);
-  doc.text(tenantName || 'Entreprise', PAGE_MARGIN, 52);
-  doc.text(`Exporté le ${formatDateTime(new Date().toISOString())}`, PAGE_MARGIN, 65);
-  doc.fillColor(INK);
-  doc.y = 104;
-
-  if (tenantLogo) {
-    try {
-      doc.image(tenantLogo, PAGE_WIDTH - PAGE_MARGIN - 62, 12, { fit: [62, 62], align: 'right', valign: 'center' });
-    } catch {
-      // Format non supporté par pdfkit ou fichier corrompu : en-tête sans logo, pas d'erreur.
-    }
-  }
 }
 
 // Génère le PDF en mémoire (pas de fichier temporaire), même principe que
@@ -48,9 +23,10 @@ export function buildQualityPolicyPdf({ tenantName, tenantLogo, version, acknowl
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
-    doc.on('pageAdded', () => drawPageHeader(doc, tenantName, tenantLogo));
+    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: 'Politique qualité' };
+    doc.on('pageAdded', () => drawLetterheadHeader(doc, headerArgs));
 
-    drawPageHeader(doc, tenantName, tenantLogo);
+    drawLetterheadHeader(doc, headerArgs);
 
     doc.fontSize(9).fillColor(MUTED);
     doc.text(`Révisée le ${formatDateTime(version.created_at)}${version.author?.full_name ? ` par ${version.author.full_name}` : ''}`, PAGE_MARGIN, doc.y, {
