@@ -22,11 +22,19 @@ function stripLeadingNumbering(text) {
   return (text || '').replace(/^\s*\d+[.)]\s*/, '');
 }
 
+// Même principe que stripLeadingNumbering ci-dessus : malgré la consigne du prompt (voir
+// PROCEDURE_SUBSECTION_RESPONSE_CONTRACT dans groq.js), le modèle glisse parfois du Markdown
+// (**gras**) dans intro/actions.text — jamais interprété par Word, ça apparaîtrait tel quel
+// (astérisques compris).
+function stripMarkdownArtifacts(text) {
+  return (text || '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^#{1,6}\s+/, '');
+}
+
 function formatActions(actions) {
   return (actions || [])
     .map((action, index) => {
-      const subBullets = (action.sub_bullets || []).map((bullet) => `   - ${bullet}`).join('\n');
-      return `${index + 1}. ${stripLeadingNumbering(action.text)}${subBullets ? `\n${subBullets}` : ''}`;
+      const subBullets = (action.sub_bullets || []).map((bullet) => `   - ${stripMarkdownArtifacts(bullet)}`).join('\n');
+      return `${index + 1}. ${stripMarkdownArtifacts(stripLeadingNumbering(action.text))}${subBullets ? `\n${subBullets}` : ''}`;
     })
     .join('\n');
 }
@@ -40,13 +48,13 @@ function formatActions(actions) {
 // ..." dans un bloc paragraphe, hors périmètre du prompt.
 function subsectionToBlocks(subsectionTitle, { intro, actions, callout, photo_placeholders: photoPlaceholders }) {
   const blocks = [{ type: 'sous_titre', id: makeBlockId(), text: subsectionTitle }];
-  if (intro) blocks.push({ type: 'paragraphe', id: makeBlockId(), text: intro });
+  if (intro) blocks.push({ type: 'paragraphe', id: makeBlockId(), text: stripMarkdownArtifacts(intro) });
   const actionsText = formatActions(actions);
   if (actionsText) blocks.push({ type: 'paragraphe', id: makeBlockId(), text: actionsText });
   // callout.severity (info/warning/danger) n'est conservé nulle part : un seul traitement
   // visuel pour tout encadré, quelle que soit la gravité perçue par l'IA — voir
   // services/procedureWord.js#calloutParagraphs / services/procedurePdf.js#drawBlocks.
-  if (callout?.text) blocks.push({ type: 'encadre', id: makeBlockId(), text: callout.text });
+  if (callout?.text) blocks.push({ type: 'encadre', id: makeBlockId(), text: stripMarkdownArtifacts(callout.text) });
   (photoPlaceholders || []).forEach((caption) => {
     blocks.push({ type: 'photo_placeholder', id: makeBlockId(), caption });
   });

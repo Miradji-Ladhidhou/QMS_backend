@@ -15,6 +15,15 @@ describe('textToParagraphBlocks', () => {
     expect(textToParagraphBlocks(undefined)).toEqual([]);
     expect(textToParagraphBlocks('   \n  \n')).toEqual([]);
   });
+
+  it('retire le Markdown que le modèle glisse parfois malgré la consigne du prompt (bug réel : astérisques visibles dans le Word)', () => {
+    const blocks = textToParagraphBlocks('**Préparation de l’étiquetage**\n# Titre en trop\nTexte normal avec *un seul astérisque* préservé.');
+    expect(blocks.map((b) => b.text)).toEqual([
+      'Préparation de l’étiquetage',
+      'Titre en trop',
+      'Texte normal avec *un seul astérisque* préservé.',
+    ]);
+  });
 });
 
 describe('draftToBlockContent', () => {

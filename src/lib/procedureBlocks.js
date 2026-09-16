@@ -11,6 +11,17 @@ export function makeBlockId() {
   return randomUUID();
 }
 
+// Défense en profondeur (même principe que stripLeadingNumbering dans
+// procedureFullDraftJob.js/procedurePdf.js) : malgré la consigne des prompts IA, le modèle
+// glisse parfois du Markdown (**gras**, "# Titre") dans un texte censé être brut — jamais
+// interprété par Word, ça apparaîtrait tel quel, astérisques compris (bug réel constaté sur une
+// procédure générée depuis une analyse QQOQCCP). Ne retire QUE le gras et les titres # en début
+// de ligne — jamais les astérisques simples isolés, trop ambigus (pourraient faire partie du
+// texte légitime, ex. une formule ou un renvoi).
+function stripMarkdownArtifacts(text) {
+  return (text || '').replace(/\*\*(.+?)\*\*/g, '$1').replace(/^#{1,6}\s+/, '');
+}
+
 // Convertit un texte à plat (réponse IA "un coup" — generateProcedureDraft/
 // generateProcedureDraftFromQqoqccp — ou ancien contenu de section avant la refonte à blocs) en
 // blocs paragraphe : un bloc par ligne non vide, pour rester éditable finement dans l'éditeur
@@ -19,7 +30,7 @@ export function makeBlockId() {
 export function textToParagraphBlocks(text) {
   return (text || '')
     .split('\n')
-    .map((line) => line.trim())
+    .map((line) => stripMarkdownArtifacts(line.trim()))
     .filter(Boolean)
     .map((line) => ({ type: 'paragraphe', id: makeBlockId(), text: line }));
 }
