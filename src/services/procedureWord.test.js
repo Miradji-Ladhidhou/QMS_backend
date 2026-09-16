@@ -153,6 +153,32 @@ describe('buildProcedureWordDocument', () => {
     expect(text).toContain('Annexes');
   });
 
+  it('un sommaire réécrit à la main (section key "sommaire") est rendu tel quel, jamais écrasé par le calcul automatique', async () => {
+    const version = richVersion();
+    // Texte délibérément DIFFÉRENT des libellés de section réels — la preuve que ce n'est pas le
+    // calcul automatique qui s'applique : si l'auto-génération l'emportait, ce texte n'apparaîtrait
+    // jamais et les vrais libellés de section ("Processus", "Contrôles et indicateurs") seraient
+    // listés à la place.
+    version.content.sections.unshift({
+      key: 'sommaire',
+      label: 'Sommaire',
+      blocks: [{ type: 'liste_puces', id: 's1', items: ['Introduction (réécrite à la main)', 'Voir annexe C pour le détail'] }],
+    });
+
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure: PROCEDURE,
+      version,
+      versions: [version],
+    });
+    const text = await textOf(buffer);
+    expect(text).toContain('Introduction (réécrite à la main)');
+    expect(text).toContain('Voir annexe C pour le détail');
+    // Le calcul automatique n'a pas tourné en plus : un seul "Sommaire" dans le document (celui
+    // du contenu manuel), pas un deuxième généré automatiquement à la suite.
+    expect(text.match(/Sommaire/g)).toHaveLength(1);
+  });
+
   it('table à colonnes libres : cantSplit sur chaque ligne (identité + historique + tableau manuel)', async () => {
     const buffer = await buildProcedureWordDocument({
       tenantName: 'Entreprise Test',

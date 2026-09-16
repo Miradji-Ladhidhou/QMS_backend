@@ -50,6 +50,31 @@ describe('migrateProcedureTemplatePresetsToCustom', () => {
     expect(after.body.section_structure).toEqual(customSections);
   });
 
+  it('les 4 anciennes configurations sont mappées vers la bonne couleur', async () => {
+    const mapping = {
+      'mtl-logistique': '#44546A',
+      'iso-generique': '#3A3A3A',
+      'moderne-tertiaire': '#1F5C5C',
+      'industriel-securite': '#7A2E3B',
+    };
+    const tenants = await Promise.all(Object.keys(mapping).map(() => createTenant()));
+    try {
+      await Promise.all(tenants.map((t, i) => seedLegacyPreset(t.tenantId, Object.keys(mapping)[i])));
+
+      await migrateProcedureTemplatePresetsToCustom({ dryRun: false });
+
+      const rows = await Promise.all(
+        tenants.map((t) => admin.from('procedure_templates').select('accent_color, active_preset_id').eq('tenant_id', t.tenantId).single())
+      );
+      Object.keys(mapping).forEach((presetId, i) => {
+        expect(rows[i].data.accent_color).toBe(mapping[presetId]);
+        expect(rows[i].data.active_preset_id).toBeNull();
+      });
+    } finally {
+      await Promise.all(tenants.map((t) => t.cleanup()));
+    }
+  });
+
   it('idempotent : un second passage ne modifie pas une ligne déjà migrée', async () => {
     tenant = await createTenant();
     await seedLegacyPreset(tenant.tenantId, 'moderne-tertiaire');

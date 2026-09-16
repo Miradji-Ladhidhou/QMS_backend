@@ -389,19 +389,30 @@ export async function buildProcedureWordDocument({ accentColor, visualOptions, t
   body.push(identityTable(style, { procedure, version }));
   body.push(new Paragraph({ text: '' }));
 
-  // Sommaire généré automatiquement à partir de la structure RÉELLE au moment du rendu — jamais
-  // saisi séparément (voir le plan : un sommaire à part créerait un risque de décalage avec le
-  // contenu si l'un change sans l'autre). Contrairement au PDF, Word ne connaît pas les numéros
-  // de page au moment de la génération (la pagination réelle dépend du rendu chez le lecteur) :
-  // la liste reste donc sans numéro, comme le sommaire de l'écran lui-même.
-  const tocLabels = [...sections.map((s) => s.label), content.documents_associes?.length > 0 && 'Documents associés', 'Historique des versions'].filter(
-    Boolean
-  );
-
-  if (tocLabels.length >= 3) {
-    body.push(sectionTitleParagraph('Sommaire'));
-    tocLabels.forEach((label) => body.push(new Paragraph({ children: [new TextRun(`•  ${label}`)] })));
-    body.push(new Paragraph({ text: '' }));
+  // Le sommaire est un bloc de contenu comme un autre (voir le plan de refonte) : une section
+  // portant la clé "sommaire" — typiquement en tête, ajoutée par défaut par l'éditeur (voir
+  // frontend/src/lib/procedureBlocks.js#ensureSommaireSection) ou réécrite librement à la main —
+  // est rendue par le walker ci-dessous SANS aucun traitement spécial, exactement comme
+  // n'importe quelle autre section (donc jamais régénérée/écrasée automatiquement au rendu).
+  // Repli UNIQUEMENT pour le contenu qui n'a encore aucune section "sommaire" explicite (contenu
+  // migré depuis l'ancien format, ou tenant qui n'en a jamais ajouté) : un sommaire calculé à la
+  // volée à partir de la structure réelle, comme avant cette évolution — jamais stocké, donc
+  // jamais en décalage avec le contenu tant qu'aucune section "sommaire" n'existe.
+  const hasSommaireSection = sections.some((s) => s.key === 'sommaire');
+  if (!hasSommaireSection) {
+    // Contrairement au PDF, Word ne connaît pas les numéros de page au moment de la génération
+    // (la pagination réelle dépend du rendu chez le lecteur) : la liste reste donc sans numéro,
+    // comme le sommaire de l'écran lui-même.
+    const autoTocLabels = [
+      ...sections.map((s) => s.label),
+      content.documents_associes?.length > 0 && 'Documents associés',
+      'Historique des versions',
+    ].filter(Boolean);
+    if (autoTocLabels.length >= 3) {
+      body.push(sectionTitleParagraph('Sommaire'));
+      autoTocLabels.forEach((label) => body.push(new Paragraph({ children: [new TextRun(`•  ${label}`)] })));
+      body.push(new Paragraph({ text: '' }));
+    }
   }
 
   // Saut de page avant le corps de la procédure : c'est la partie la plus longue du document,

@@ -242,13 +242,19 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     const sections = version.content?.sections || [];
     const documentsAssocies = version.content?.documents_associes || [];
 
-    // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) : une entrée par
-    // section, Documents associés s'il y en a — plus Historique des versions, propre à l'imprimé.
-    // Le seuil de 3 reprend celui de l'écran : sous 3 entrées, naviguer n'apporte rien face à un
+    // Le sommaire est un bloc de contenu comme un autre (voir le plan de refonte) : une section
+    // portant la clé "sommaire" — ajoutée par défaut par l'éditeur ou réécrite librement à la
+    // main — est déjà rendue par la boucle sections.forEach ci-dessous, sans aucun traitement
+    // spécial (jamais régénérée/écrasée automatiquement). Le mécanisme ci-dessous (page réservée
+    // + numéros de page par entrée) ne sert donc QUE de repli pour le contenu qui n'a encore
+    // aucune section "sommaire" explicite (contenu migré, ou tenant qui n'en a jamais ajouté) —
+    // jamais les deux en même temps, sous peine de doublon. Le seuil de 3 reprend celui de
+    // l'écran (ProcedureContentView.jsx) : sous 3 entrées, naviguer n'apporte rien face à un
     // document déjà court.
-    const tocLabels = [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(
-      Boolean
-    );
+    const hasSommaireSection = sections.some((s) => s.key === 'sommaire');
+    const tocLabels = hasSommaireSection
+      ? []
+      : [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(Boolean);
 
     let sommairePageIndex = null;
     let sommaireStartY = null;
