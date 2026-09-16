@@ -50,51 +50,6 @@ function drawImportantBox(doc, { color, background, label, text }) {
   doc.y = boxTop + height + 10;
 }
 
-function drawNumberedSection(doc, number, title, body, accentColor) {
-  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${number}. ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.font('Body');
-  doc.moveDown(0.3);
-  if (body) {
-    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
-  } else {
-    doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  }
-  doc.moveDown(0.8);
-}
-
-function drawSubSection(doc, number, title, body, accentColor) {
-  doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(`${number} ${title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  doc.font('Body');
-  doc.moveDown(0.3);
-  if (body) {
-    doc.fontSize(10).fillColor(INK).text(body, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
-  } else {
-    doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-  }
-  doc.moveDown(0.8);
-}
-
-// Le modèle préfixe parfois lui-même action.text par une numérotation malgré la consigne du
-// prompt (voir services/procedureFullDraftJob.js#stripLeadingNumbering, même correctif
-// appliqué ici indépendamment car ce renderer lit subsection.actions directement, pas le texte
-// à plat déjà nettoyé de section.content).
-function stripLeadingNumbering(text) {
-  return (text || '').replace(/^\s*\d+[.)]\s*/, '');
-}
-
-// Sévérité -> couleurs. danger/warning restent FIXES (rouge/ambre) quel que soit le gabarit du
-// tenant : ce sont des couleurs d'alerte sécurité/conformité, pas un choix de style — les
-// presets eux-mêmes ne définissent d'ailleurs qu'UNE seule paire boxBackground/boxBorder, pas
-// une par sévérité (voir data/procedureTemplatePresets.js). Seule la sévérité "info" (le
-// simple "Important :"/"Note :"/"À retenir" neutre) reflète le style du tenant.
-function calloutStyles(infoBoxStyle) {
-  return {
-    danger: { color: RED, background: RED_LIGHT, label: 'DANGER' },
-    warning: { color: AMBER, background: AMBER_LIGHT, label: 'ATTENTION' },
-    info: { color: infoBoxStyle.border, background: infoBoxStyle.background, label: 'IMPORTANT' },
-  };
-}
-
 // Miroir du PhotoPlaceholder de ProcedureContentView.jsx (écran) — jusqu'ici silencieusement
 // absent du PDF, alors que ces emplacements réservés font partie du contenu réel de la
 // procédure au même titre qu'un callout.
@@ -114,85 +69,120 @@ function drawPhotoPlaceholder(doc, caption) {
   doc.y = boxTop + boxHeight + 8;
 }
 
-// Rendu d'une section issue du pipeline de génération complète (voir
-// services/procedureFullDraftJob.js) : contrairement à drawSubSection ci-dessus (un seul bloc
-// de texte plat), chaque sous-section du plan est rendue individuellement avec son propre
-// encadré coloré si elle porte un callout — plutôt que de laisser le callout fondu dans le
-// texte plat de section.content.
-function drawGeneratedSection(doc, sectionNumber, sectionLabel, subsections, accentColor, infoBoxStyle) {
-  const styles = calloutStyles(infoBoxStyle);
+// Tableau à colonnes/lignes libres (bloc "tableau" du modèle à blocs, voir
+// services/procedureWord.js#tableBlockToDocxTable pour l'équivalent Word) — pdfkit n'a pas de
+// primitive tableau native, donc quadrillage dessiné à la main avec les mêmes briques que
+// drawImportantBox (doc.rect()). Chaque ligne vérifie l'espace restant AVANT de se dessiner
+// (comme drawImportantBox) pour ne jamais couper une ligne en deux pages — pas d'équivalent
+// strict du cantSplit du renderer Word, mais le même résultat pratique par construction.
+function drawTableBlock(doc, headers, rows, accentColor) {
+  const columnCount = Math.max(1, headers?.length || 0);
+  const columnWidth = CONTENT_WIDTH / columnCount;
+  const cellPadding = 6;
+
+  function cellsHeight(cells, header) {
+    doc.font(header ? 'Body-Bold' : 'Body').fontSize(9);
+    return Math.max(...cells.map((c) => doc.heightOfString(c || '', { width: columnWidth - cellPadding * 2 }))) + cellPadding * 2;
+  }
+
+  function drawRow(cells, header) {
+    const height = cellsHeight(cells, header);
+    if (doc.y + height > doc.page.height - doc.page.margins.bottom) {
+      doc.addPage();
+    }
+    const rowTop = doc.y;
+    cells.forEach((cell, i) => {
+      const x = PAGE_MARGIN + i * columnWidth;
+      if (header) {
+        doc.rect(x, rowTop, columnWidth, height).fillAndStroke(HEADER_FILL, RULE);
+      } else {
+        doc.rect(x, rowTop, columnWidth, height).stroke(RULE);
+      }
+      doc
+        .font(header ? 'Body-Bold' : 'Body')
+        .fontSize(9)
+        .fillColor(header ? accentColor : INK)
+        .text(cell || '', x + cellPadding, rowTop + cellPadding, { width: columnWidth - cellPadding * 2 });
+    });
+    doc.y = rowTop + height;
+  }
+
+  drawRow(headers || [], true);
+  (rows || []).forEach((row) => drawRow((headers || []).map((_, i) => row[i] || ''), false));
+  doc.moveDown(0.5);
+}
+
+// Walker unique du modèle à blocs (voir services/procedureWord.js#blocksToDocxParagraphs pour
+// l'équivalent Word — même schéma de blocs des deux côtés, seul le rendu diffère). Remplace
+// l'ancien branchement drawGeneratedSection/drawSubSection sur section.subsections?.length :
+// une section n'a plus qu'UNE représentation possible (section.blocks), plus de risque qu'une
+// correction manuelle dans l'éditeur (qui n'écrivait que section.content) soit silencieusement
+// ignorée par cet export parce qu'il préférait section.subsections.
+function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoBoxStyle) {
   doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.font('Body');
-  doc.moveDown(0.5);
+  doc.moveDown(0.4);
 
-  subsections.forEach((subsection, index) => {
-    doc
-      .font('Body-Bold')
-      .fontSize(11)
-      .fillColor(accentColor)
-      .text(`${sectionNumber}.${index + 1} ${subsection.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-    doc.font('Body');
-    doc.moveDown(0.25);
+  if (!blocks?.length) {
+    doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    doc.moveDown(0.8);
+    return;
+  }
 
-    if (subsection.generation_status === 'failed') {
-      doc
-        .fontSize(10)
-        .fillColor(MUTED)
-        .text('À compléter manuellement — la génération automatique de cette sous-section a échoué.', PAGE_MARGIN, doc.y, {
-          width: CONTENT_WIDTH,
+  blocks.forEach((block) => {
+    switch (block.type) {
+      case 'sous_titre':
+        doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        doc.font('Body');
+        doc.moveDown(0.25);
+        break;
+      case 'liste_puces':
+        (block.items || []).forEach((item) => {
+          doc.fontSize(10).fillColor(INK).text(`•  ${item}`, PAGE_MARGIN + 4, doc.y, { width: CONTENT_WIDTH - 4, lineGap: 1.5 });
+          doc.moveDown(0.1);
         });
-      doc.moveDown(0.7);
-      return;
+        doc.moveDown(0.2);
+        break;
+      case 'tableau':
+        drawTableBlock(doc, block.headers, block.rows, accentColor);
+        break;
+      // Aucun champ severity : un seul traitement visuel (voir plan de refonte), le rouge/ambre
+      // ci-dessus reste réservé aux 2 bannières d'état réellement affichées à l'écran
+      // (obsolescence/retard), jamais à un encadré rédigé.
+      case 'encadre':
+        drawImportantBox(doc, { color: infoBoxStyle.border, background: infoBoxStyle.background, label: 'IMPORTANT', text: block.text });
+        break;
+      case 'photo_placeholder':
+        drawPhotoPlaceholder(doc, block.caption);
+        break;
+      case 'paragraphe':
+      default:
+        doc.fontSize(10).fillColor(INK).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+        doc.moveDown(0.35);
+        break;
     }
-
-    if (subsection.intro) {
-      doc.fontSize(10).fillColor(INK).text(subsection.intro, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
-      doc.moveDown(0.35);
-    }
-
-    (subsection.actions || []).forEach((action, actionIndex) => {
-      doc
-        .fontSize(10)
-        .fillColor(INK)
-        .text(`${actionIndex + 1}. ${stripLeadingNumbering(action.text)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
-      (action.sub_bullets || []).forEach((bullet) => {
-        doc.fontSize(9.5).fillColor(INK).text(`•  ${bullet}`, PAGE_MARGIN + 14, doc.y, { width: CONTENT_WIDTH - 14, lineGap: 1.5 });
-      });
-      doc.moveDown(0.15);
-    });
-    doc.moveDown(0.2);
-
-    if (subsection.callout) {
-      const style = styles[subsection.callout.severity] || styles.info;
-      drawImportantBox(doc, { ...style, text: subsection.callout.text });
-    }
-
-    (subsection.photo_placeholders || []).forEach((caption) => drawPhotoPlaceholder(doc, caption));
-
-    doc.moveDown(0.4);
   });
+
+  doc.moveDown(0.4);
 }
 
 // procedure : ligne procedures (avec obsoleted_by_user résolu). version : la version dont le
 // contenu est imprimé — l'appelant choisit laquelle (voir routes/procedures.js#pdf : la
 // courante si elle existe, sinon la plus récente, jamais un blocage tant qu'AU MOINS une
 // version existe). versions : historique complet (author/validator résolus), pour le tableau
-// en bas de document. renderStyle : procedure_templates.render_style du tenant ({accentColor,
-// boxBackground, boxBorder, fontFamily} — voir data/procedureTemplatePresets.js), ou null/
-// undefined si non configuré. Seuls accentColor/boxBackground/boxBorder sont appliqués ici :
-// fontFamily reste hors périmètre, tous les exports PDF de l'app partagent la même police
-// Unicode-safe (voir pdfFonts.js) et il n'existe aucun mécanisme de police par tenant.
+// en bas de document. renderStyle : { accentColor } — construit par l'appelant à partir de
+// procedure_templates.accent_color du tenant (voir routes/procedures.js#GET /:id/pdf), ou
+// undefined si non configuré. boxBackground/boxBorder ne sont plus des réglages distincts
+// depuis la refonte de la mise en page (accent_color/visual_options, voir services/
+// procedureWord.js) — ce module PDF reste une adaptation minimale de compatibilité (voir
+// drawBlocks) qui n'a PAS été réécrit pour suivre le nouveau système de style, contrairement au
+// renderer Word ; il retombe donc toujours sur le défaut neutre HEADER_FILL/RULE pour l'encadré.
 // Calculé en variables LOCALES (jamais en constante de module) : plusieurs requêtes de tenants
 // différents peuvent s'exécuter en concurrence dans le même process Node, une couleur globale
 // mutable ferait fuiter le thème d'un tenant vers le PDF d'un autre.
 export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions, renderStyle }) {
-  // Défaut neutre (INK/HEADER_FILL/RULE) quand le gabarit de la procédure n'a pas explicitement
-  // choisi de style — un gabarit qui EN a choisi un garde le sien tel quel : ce mécanisme reste
-  // une personnalisation du contenu de la procédure par son auteur, pas la couleur de marque de
-  // l'app (voir data/procedureTemplatePresets.js), donc hors périmètre du passage à l'en-tête
-  // neutre ci-dessous — seule la lettre à en-tête elle-même (logo/nom/titre) devient uniforme.
   const accentColor = renderStyle?.accentColor || INK;
-  const infoBoxStyle = { background: renderStyle?.boxBackground || HEADER_FILL, border: renderStyle?.boxBorder || RULE };
+  const infoBoxStyle = { background: HEADER_FILL, border: RULE };
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
@@ -246,21 +236,19 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       });
     }
 
+    // Objet/domaine d'application/responsabilités ne sont plus des champs séparés (voir le plan
+    // de refonte de la mise en page des procédures) : ce sont des sections ordinaires en tête de
+    // "sections", numérotées et sommairées exactement comme les autres.
     const sections = version.content?.sections || [];
     const documentsAssocies = version.content?.documents_associes || [];
 
-    // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) : Objet/Domaine/
-    // Responsabilités seulement s'ils sont renseignés, une entrée par section, Documents associés
-    // s'il y en a — plus Historique des versions, propre à l'imprimé. Le seuil de 3 reprend celui
-    // de l'écran : sous 3 entrées, naviguer n'apporte rien face à un document déjà court.
-    const tocLabels = [
-      version.content?.objet && 'Objet',
-      version.content?.domaine_application && "Domaine d'application",
-      version.content?.responsabilites && 'Responsabilités',
-      ...sections.map((s) => s.label),
-      documentsAssocies.length > 0 && 'Documents associés',
-      'Historique des versions',
-    ].filter(Boolean);
+    // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) : une entrée par
+    // section, Documents associés s'il y en a — plus Historique des versions, propre à l'imprimé.
+    // Le seuil de 3 reprend celui de l'écran : sous 3 entrées, naviguer n'apporte rien face à un
+    // document déjà court.
+    const tocLabels = [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(
+      Boolean
+    );
 
     let sommairePageIndex = null;
     let sommaireStartY = null;
@@ -273,31 +261,10 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     }
 
     doc.moveDown(0.5);
-    if (tocLabels.includes('Objet')) tocEntries.push({ label: 'Objet', page: currentPageNumber });
-    drawNumberedSection(doc, 1, 'Objet', version.content?.objet, accentColor);
-    if (tocLabels.includes("Domaine d'application")) tocEntries.push({ label: "Domaine d'application", page: currentPageNumber });
-    drawNumberedSection(doc, 2, "Domaine d'application", version.content?.domaine_application, accentColor);
-    if (tocLabels.includes('Responsabilités')) tocEntries.push({ label: 'Responsabilités', page: currentPageNumber });
-    drawNumberedSection(doc, 3, 'Responsabilités', version.content?.responsabilites, accentColor);
-
-    if (sections.length > 0) {
-      // Saut de page avant le corps de la procédure : c'est de loin la partie la plus longue du
-      // document (toutes les étapes détaillées), la faire démarrer sur une page fraîche évite
-      // qu'elle s'enchaîne directement à la suite d'Objet/Domaine/Responsabilités sans rupture
-      // visuelle nette.
-      doc.addPage();
-      doc.font('Body-Bold').fontSize(13).fillColor(accentColor).text('4. Contenu de la procédure', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.font('Body');
-      doc.moveDown(0.5);
-      sections.forEach((section, index) => {
-        tocEntries.push({ label: section.label, page: currentPageNumber });
-        if (section.subsections?.length) {
-          drawGeneratedSection(doc, `4.${index + 1}`, section.label, section.subsections, accentColor, infoBoxStyle);
-        } else {
-          drawSubSection(doc, `4.${index + 1}`, section.label, section.content, accentColor);
-        }
-      });
-    }
+    sections.forEach((section, index) => {
+      tocEntries.push({ label: section.label, page: currentPageNumber });
+      drawBlocks(doc, index + 1, section.label, section.blocks, accentColor, infoBoxStyle);
+    });
 
     if (documentsAssocies.length > 0) {
       tocEntries.push({ label: 'Documents associés', page: currentPageNumber });
@@ -305,7 +272,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
         .font('Body-Bold')
         .fontSize(12)
         .fillColor(accentColor)
-        .text(`${sections.length > 0 ? 5 : 4}. Documents associés`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+        .text(`${sections.length + 1}. Documents associés`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.font('Body');
       doc.moveDown(0.3);
       documentsAssocies.forEach((name) => {

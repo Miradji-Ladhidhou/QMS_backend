@@ -1,4 +1,5 @@
 import Groq from 'groq-sdk';
+import { blocksToPlainText } from '../lib/procedureBlocks.js';
 
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
 const MODEL = 'openai/gpt-oss-120b';
@@ -391,13 +392,10 @@ const PROCEDURE_DRAFT_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
-  "objet": "string",
-  "domaine_application": "string",
-  "responsabilites": "string",
   "sections": [{"key": "string", "label": "string", "content": "string"}],
   "documents_associes": ["string", "string"]
 }
-Le tableau "sections" doit contenir EXACTEMENT une entrée par section du gabarit fourni, dans le même ordre, avec le même "key"/"label" que dans le gabarit — seul "content" est à rédiger.`;
+Le tableau "sections" doit contenir EXACTEMENT une entrée par section du gabarit fourni (objet/domaine d'application/responsabilités inclus s'ils y figurent — ce sont des sections comme les autres, pas un cas particulier), dans le même ordre, avec le même "key"/"label" que dans le gabarit — seul "content" est à rédiger.`;
 
 const PROCEDURE_DRAFT_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui aide à rédiger le brouillon d'une procédure documentée à partir d'un titre, d'un processus concerné, et du gabarit de sections imposé par l'entreprise.
 
@@ -483,7 +481,10 @@ ${PROCEDURE_COMPLIANCE_RESPONSE_CONTRACT}`;
 function buildProcedureComplianceUserPrompt(procedureContent, template) {
   const expectedSections = (template?.section_structure || []).map((s) => `- ${s.label} (key: ${s.key})`).join('\n');
   const actualSections = (procedureContent?.sections || [])
-    .map((s) => `- ${s.label} (key: ${s.key}) : ${s.content ? s.content.slice(0, 300) : '(vide)'}`)
+    .map((s) => {
+      const text = blocksToPlainText(s.blocks);
+      return `- ${s.label} (key: ${s.key}) : ${text ? text.slice(0, 300) : '(vide)'}`;
+    })
     .join('\n');
   return `Sections attendues par le gabarit :
 ${expectedSections || 'Aucun gabarit configuré.'}
@@ -519,7 +520,10 @@ ${PROCEDURE_COMPLIANCE_FIX_RESPONSE_CONTRACT}`;
 function buildProcedureComplianceFixUserPrompt({ procedureTitle, procedureProcess, template, procedureContent, sectionKey, sectionLabel, currentSectionContent, issue, severity }) {
   const otherSections = (procedureContent?.sections || [])
     .filter((s) => s.key !== sectionKey)
-    .map((s) => `- ${s.label} : ${s.content ? s.content.slice(0, 200) : '(vide)'}`)
+    .map((s) => {
+      const text = blocksToPlainText(s.blocks);
+      return `- ${s.label} : ${text ? text.slice(0, 200) : '(vide)'}`;
+    })
     .join('\n');
 
   return `Procédure : ${procedureTitle || 'non renseignée'}${procedureProcess ? ` (processus : ${procedureProcess})` : ''}
@@ -563,12 +567,10 @@ function formatProcedureContentForPrompt(content) {
   if (!content) return '(aucun contenu)';
   // "key" toujours affiché à côté du libellé : c'est cette valeur, jamais le libellé, que les
   // réponses JSON doivent renvoyer dans section_key (voir les RESPONSE_CONTRACT ci-dessus).
-  const sections = (content.sections || []).map((s) => `## ${s.label} (key: ${s.key})\n${s.content || ''}`).join('\n\n');
-  return `Objet : ${content.objet || 'non renseigné'}
-Domaine d'application : ${content.domaine_application || 'non renseigné'}
-Responsabilités : ${content.responsabilites || 'non renseigné'}
-
-${sections}`;
+  // Objet/domaine d'application/responsabilités ne sont plus des champs à part (voir le modèle
+  // à blocs, services/procedureWord.js) : ce sont désormais des sections ordinaires parmi
+  // "sections", déjà couvertes par la boucle ci-dessous.
+  return (content.sections || []).map((s) => `## ${s.label} (key: ${s.key})\n${blocksToPlainText(s.blocks)}`).join('\n\n');
 }
 
 const DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT = 500;
@@ -583,9 +585,9 @@ const DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT = 500;
 // attendue (PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT) ne référence aucune section_key.
 function formatProcedureContentForDistributionSheetPrompt(content) {
   if (!content) return '(aucun contenu)';
-  const sections = (content.sections || [])
+  return (content.sections || [])
     .map((s) => {
-      const text = s.content || '';
+      const text = blocksToPlainText(s.blocks);
       const excerpt =
         text.length > DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT
           ? `${text.slice(0, DISTRIBUTION_SHEET_SECTION_CHAR_LIMIT)}…`
@@ -593,11 +595,6 @@ function formatProcedureContentForDistributionSheetPrompt(content) {
       return `## ${s.label}\n${excerpt || '(vide)'}`;
     })
     .join('\n\n');
-  return `Objet : ${content.objet || 'non renseigné'}
-Domaine d'application : ${content.domaine_application || 'non renseigné'}
-Responsabilités : ${content.responsabilites || 'non renseigné'}
-
-${sections}`;
 }
 
 function buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience) {
@@ -697,14 +694,11 @@ const PROCEDURE_FULL_PLAN_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textue
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
   "title": "string",
-  "objet": "string",
-  "domaine_application": "string",
-  "responsabilites": "string",
   "documents_associes": ["string", "string"],
   "plan": [{"key": "string", "label": "string", "subsections": ["string", "string"]}]
 }
 "title" est TOUJOURS un intitulé court (une dizaine de mots maximum, comme le titre d'un document officiel — ex. "Préparation et contrôle des commandes"), quelle que soit la longueur ou la forme du sujet fourni en entrée (un sujet en une phrase ou un long texte collé donnent le même genre de titre court) — jamais une phrase complète, jamais le sujet recopié tel quel.
-Le tableau "plan" doit contenir EXACTEMENT une entrée par section du gabarit fourni, dans le même ordre, avec le même "key"/"label" que dans le gabarit. Pour chaque section, "subsections" liste des sous-sections concrètes et opérationnelles, adaptées au sujet précis — jamais des généralités. Ne subdivise que si le sujet le justifie réellement : une section qui n'a besoin que d'un seul point peut n'avoir qu'une seule sous-section, inutile de forcer une découpe artificielle.`;
+Le tableau "plan" doit contenir EXACTEMENT une entrée par section du gabarit fourni (objet/domaine d'application/responsabilités inclus s'ils y figurent — ce sont des sections comme les autres, pas un cas particulier), dans le même ordre, avec le même "key"/"label" que dans le gabarit. Pour chaque section, "subsections" liste des sous-sections concrètes et opérationnelles, adaptées au sujet précis — jamais des généralités. Ne subdivise que si le sujet le justifie réellement : une section qui n'a besoin que d'un seul point peut n'avoir qu'une seule sous-section, inutile de forcer une découpe artificielle.`;
 
 const PROCEDURE_FULL_PLAN_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui prépare le plan détaillé d'une procédure documentée complète, à partir d'un sujet (parfois un texte long et informel, parfois une phrase courte) et du gabarit de sections imposé par l'entreprise.
 

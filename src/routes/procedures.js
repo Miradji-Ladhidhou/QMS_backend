@@ -12,6 +12,7 @@ import { resolveTenantStorageProvider, safeStorageContentType } from '../service
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
 import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
+import { draftToBlockContent, blocksToPlainText } from '../lib/procedureBlocks.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import {
   generateProcedureDraft,
@@ -23,6 +24,7 @@ import {
   suggestProcedureRevisionFromCapa,
 } from '../services/groq.js';
 import { createProcedureFullDraftJob, runProcedureFullDraftJob } from '../services/procedureFullDraftJob.js';
+import { DEFAULT_PROCEDURE_SECTIONS } from '../data/defaultProcedureSections.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -59,15 +61,13 @@ function canActOnVersion(req, version) {
 }
 
 // Même point de départ minimal que GET /api/procedure-templates (voir
-// routes/procedureTemplates.js#DEFAULT_SECTION_STRUCTURE) tant qu'aucun gabarit n'est
-// réellement enregistré — sans quoi generate-draft/check-compliance/generate-draft-from-
-// qqoqccp verraient un gabarit "vide" différent de celui affiché à l'écran par
+// data/defaultProcedureSections.js, désormais partagé entre les deux routes) tant qu'aucun
+// gabarit n'est réellement enregistré — sans quoi generate-draft/check-compliance/generate-
+// draft-from-qqoqccp verraient un gabarit "vide" différent de celui affiché à l'écran par
 // ProcedureSectionsEditor, et rédigeraient une procédure sans aucune section de contenu réel.
-const DEFAULT_SECTION_STRUCTURE = [{ key: 'etapes', label: 'Étapes du processus' }];
-
 async function fetchTenantTemplate(tenantId) {
   const { data } = await supabase.from('procedure_templates').select('*').eq('tenant_id', tenantId).maybeSingle();
-  return data || { tenant_id: tenantId, section_structure: DEFAULT_SECTION_STRUCTURE };
+  return data || { tenant_id: tenantId, section_structure: DEFAULT_PROCEDURE_SECTIONS };
 }
 
 // POST /api/procedures/generate-draft — appelé depuis le formulaire de création, AVANT que la
@@ -89,7 +89,10 @@ router.post(
 
     try {
       const draft = await generateProcedureDraft({ title: req.body.title, process: req.body.process }, template);
-      res.json(draft);
+      // draftToBlockContent : convertit sections[].content (texte à plat, voir
+      // PROCEDURE_DRAFT_RESPONSE_CONTRACT dans groq.js) en sections[].blocks — la forme
+      // canonique attendue par l'éditeur manuel (voir lib/procedureBlocks.js).
+      res.json(draftToBlockContent(draft));
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer un brouillon IA : ${err.message}` });
     }
@@ -219,7 +222,7 @@ router.post(
 
     try {
       const draft = await generateProcedureDraftFromQqoqccp(analysis, template);
-      res.json({ ...draft, title: analysis.title });
+      res.json({ ...draftToBlockContent(draft), title: analysis.title });
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer un brouillon IA : ${err.message}` });
     }
@@ -472,7 +475,12 @@ router.get('/:id/pdf', async (req, res) => {
     procedure,
     version,
     versions,
-    renderStyle: template.render_style,
+    // template.accent_color est désormais la seule source de personnalisation par tenant (voir
+    // procedure_templates.accent_color) — l'ancien objet render_style (thème de preset complet)
+    // devenait périmé dès qu'un tenant changeait sa couleur sans réappliquer un preset ; boxBackground/
+    // boxBorder ne sont plus des réglages distincts (voir services/procedurePdf.js#buildProcedurePdf),
+    // le défaut neutre HEADER_FILL/RULE s'applique donc à tous les tenants personnalisés.
+    renderStyle: { accentColor: template.accent_color },
   });
 
   res.setHeader('Content-Type', 'application/pdf');
@@ -976,7 +984,7 @@ router.post(
         procedureContent: version.content,
         sectionKey: req.body.section_key,
         sectionLabel: section?.label,
-        currentSectionContent: section?.content,
+        currentSectionContent: section ? blocksToPlainText(section.blocks) : null,
         issue: req.body.issue,
         severity: req.body.severity,
       });
@@ -1087,13 +1095,16 @@ router.post('/:id/versions/:versionId/export-word', async (req, res) => {
   // de `versions` (déjà résolue ci-dessus) plutôt que refaire une requête pour la même version.
   const versionWithNames = versions?.find((v) => v.id === version.id) || version;
 
-  const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const template = await fetchTenantTemplate(req.tenantId);
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
 
   let docxBuffer;
   try {
     docxBuffer = await buildProcedureWordDocument({
-      presetId: template.active_preset_id,
+      accentColor: template.accent_color,
+      visualOptions: template.visual_options,
+      tenantLogo,
       tenantName: tenant?.name,
       procedure,
       version: versionWithNames,

@@ -8,6 +8,7 @@ import {
   Table,
   TableRow,
   TableCell,
+  ImageRun,
   BorderStyle,
   AlignmentType,
   PageNumber,
@@ -15,146 +16,148 @@ import {
   ShadingType,
   VerticalAlign,
   TableLayoutType,
+  TabStopType,
 } from 'docx';
+import imageSize from 'image-size';
 
-// Sans columnWidths + layout FIXED explicites, Word recalcule les colonnes selon le contenu de
-// CHAQUE ligne indépendamment (layout "autofit" par défaut) — une valeur longue (ex. le titre
-// complet d'une procédure dans identityTable) pouvait alors écraser la largeur du reste du
-// tableau, provoquant des colonnes décalées d'une ligne à l'autre et des cellules qui
-// s'étirent sur plusieurs lignes de texte, gonflant le tableau sur 2-3 pages. Largeur calquée
-// sur la page A4 par défaut de docx.js avec ses marges par défaut (1 pouce) — ce fichier ne
-// redéfinit ni l'une ni l'autre.
+// Refonte de la mise en page des procédures — remplace l'ancien système à 4 presets figés
+// (mtl-logistique/iso-generique/moderne-tertiaire/industriel-securite, chacun un objet
+// STYLE_THEMES complet) par une personnalisation directe par tenant (accent_color/
+// visual_options, voir procedure_templates dans schema.sql) : un seul rendu de référence
+// (Calibri, tableau d'identité, sommaire auto-généré, titres soulignés, tableaux cantSplit,
+// encadré unique) piloté par 3 réglages (couleur, bandeau, style de puce/encadré), au lieu de 4
+// mises en page distinctes. Reste UN SEUL chemin de rendu (voir buildProcedureWordDocument),
+// aucune duplication par style/couleur.
 const TABLE_WIDTH_DXA = 9026;
 
-// Un moteur de rendu commun paramétré par un "thème" par preset, plutôt que 4 fichiers
-// dupliqués : les 4 styles diffèrent par des CHOIX (police, bandeau vs texte plat, puce "o" vs
-// "-", libellé d'encadré, couleurs de tableau...), jamais par la STRUCTURE du document
-// (en-tête/pied de page, tableau d'identité, sections numérotées, tableau d'historique) — voir
-// data/procedureTemplatePresets.js pour la description d'origine de chaque style. Le style
-// réellement actif d'un tenant est procedure_templates.active_preset_id (voir
-// routes/procedureTemplates.js#apply-preset) ; DEFAULT_STYLE_ID sert de repli pour un tenant
-// qui n'a jamais appliqué de preset (gabarit configuré à la main).
-const DEFAULT_STYLE_ID = 'iso-generique';
+const DEFAULT_ACCENT_COLOR = '#44546A';
+const DEFAULT_VISUAL_OPTIONS = { band: false, bulletStyle: 'dash', calloutStyle: 'left-border' };
+
+const FONT_FAMILY = 'Calibri';
+const BASE_FONT_SIZE = 22; // demi-points OOXML : 22 = 11pt, taille de corps de texte standard.
+
+// Logo agrandi mais borné : une hauteur fixe, jamais de déformation (largeur calculée depuis
+// les dimensions réelles de l'image, voir logoImageRun ci-dessous).
+const LOGO_MAX_HEIGHT_PT = 40;
 
 const PROCEDURE_STATUS_LABELS = { draft: 'Brouillon', in_review: 'En revue', approved: 'Approuvé', obsolete: 'Obsolète' };
 const VERSION_STATUS_LABELS = { draft: 'Brouillon', pending: 'En attente', approved: 'Approuvé', rejected: 'Rejeté' };
-
-// Chaque entrée de calloutBySeverity dit à quoi ressemble l'encadré ("label"/"background"/
-// "border") pour une sévérité donnée ('danger'/'warning'/'info' — voir la sévérité déjà
-// choisie par l'IA dans services/groq.js). "background: null" = pas de remplissage (bordure
-// seule), utilisé par iso-generique dont la consigne exige un rendu strictement noir et blanc.
-const STYLE_THEMES = {
-  'mtl-logistique': {
-    fontFamily: 'Times New Roman',
-    baseFontSize: 22,
-    titleBlock: { type: 'centered-bold', text: 'PROCEDURE DU SYSTEME DE GESTION DE LA QUALITE' },
-    sectionTitle: { type: 'bold-plain' },
-    subBulletMarker: 'o',
-    calloutBySeverity: {
-      danger: { label: 'Important', background: 'EDEDED', border: '000000' },
-      warning: { label: 'Important', background: 'EDEDED', border: '000000' },
-      info: { label: 'Important', background: 'EDEDED', border: '000000' },
-    },
-    tableHeader: { background: 'EDEDED', textColor: '000000' },
-    accentColor: '000000',
-    topDangerBanner: false,
-  },
-  'iso-generique': {
-    fontFamily: 'Times New Roman',
-    baseFontSize: 22,
-    titleBlock: { type: 'plain', text: 'PROCÉDURE QUALITÉ' },
-    sectionTitle: { type: 'bold-plain' },
-    subBulletMarker: '-',
-    calloutBySeverity: {
-      danger: { label: 'Attention', background: null, border: '000000' },
-      warning: { label: 'Attention', background: null, border: '000000' },
-      info: { label: 'Note', background: null, border: '000000' },
-    },
-    tableHeader: { background: 'F2F2F2', textColor: '000000' },
-    accentColor: '000000',
-    topDangerBanner: false,
-  },
-  'moderne-tertiaire': {
-    fontFamily: 'Calibri',
-    baseFontSize: 22,
-    titleBlock: { type: 'banner', background: '2C5F8A', textColor: 'FFFFFF' },
-    sectionTitle: { type: 'left-border', color: '2C5F8A' },
-    subBulletMarker: 'none',
-    calloutBySeverity: {
-      danger: { label: 'À retenir', background: 'EAF2FA', border: '2C5F8A' },
-      warning: { label: 'À retenir', background: 'EAF2FA', border: '2C5F8A' },
-      info: { label: 'À retenir', background: 'EAF2FA', border: '2C5F8A' },
-    },
-    tableHeader: { background: '2C5F8A', textColor: 'FFFFFF' },
-    tableAltRow: 'EAF2FA',
-    accentColor: '2C5F8A',
-    topDangerBanner: false,
-  },
-  'industriel-securite': {
-    fontFamily: 'Arial',
-    baseFontSize: 24,
-    titleBlock: { type: 'banner', background: '000000', textColor: 'F2A900' },
-    sectionTitle: { type: 'band', background: 'D9D9D9', textColor: '000000' },
-    subBulletMarker: '-',
-    calloutBySeverity: {
-      danger: { label: 'DANGER', background: 'FDEBEA', border: 'B00000' },
-      warning: { label: 'ATTENTION', background: 'FFF3E3', border: 'C1610B' },
-      info: { label: 'ATTENTION', background: 'FFF3E3', border: 'C1610B' },
-    },
-    tableHeader: { background: 'D9D9D9', textColor: '000000' },
-    accentColor: 'F2A900',
-    topDangerBanner: true,
-  },
-};
 
 function formatDate(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '—';
 }
 
-function resolveCallout(theme, severity) {
-  return theme.calloutBySeverity[severity] || theme.calloutBySeverity.info;
+// Fusionne les réglages du tenant avec les défauts — un tenant qui n'a jamais rien enregistré
+// (procedure_templates absent, voir fetchTenantTemplate côté routes) doit produire exactement
+// le même rendu qu'un tenant qui a explicitement choisi les valeurs par défaut.
+function resolveStyle({ accentColor, visualOptions } = {}) {
+  return {
+    accentColor: accentColor || DEFAULT_ACCENT_COLOR,
+    band: visualOptions?.band ?? DEFAULT_VISUAL_OPTIONS.band,
+    bulletStyle: visualOptions?.bulletStyle || DEFAULT_VISUAL_OPTIONS.bulletStyle,
+    calloutStyle: visualOptions?.calloutStyle || DEFAULT_VISUAL_OPTIONS.calloutStyle,
+  };
 }
 
-// Retire une numérotation que le modèle ajoute parfois lui-même malgré la consigne du prompt
-// (voir services/procedureFullDraftJob.js#stripLeadingNumbering, même correctif appliqué ici
-// indépendamment car ce renderer lit subsection.actions directement).
-function stripLeadingNumbering(text) {
-  return (text || '').replace(/^\s*\d+[.)]\s*/, '');
+// Retire le '#' éventuel : docx attend des couleurs hex SANS dièse (contrairement au CSS).
+function hexColor(color) {
+  return (color || '').replace(/^#/, '').toUpperCase() || '44546A';
+}
+
+// Teinte très claire de la couleur d'accent, pour le fond d'un encadré "full-tint" (voir
+// resolveCalloutLook) — mélange à ~90% de blanc, jamais la couleur d'accent pleine en fond
+// (illisible en texte noir dessus).
+function lightTint(hex) {
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  const mix = (channel) => Math.round(channel + (255 - channel) * 0.88);
+  return [mix(r), mix(g), mix(b)].map((c) => c.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
 function borderLine(color, style = BorderStyle.SINGLE, size = 6) {
   return { style, size, color, space: 6 };
 }
 
-function boxParagraphs({ label, background, border, text }) {
-  const borderSides = {
-    top: borderLine(border),
-    bottom: borderLine(border),
-    left: borderLine(border),
-    right: borderLine(border),
-  };
+// Retire une numérotation que le modèle ajoute parfois lui-même malgré la consigne du prompt
+// (voir services/procedureFullDraftJob.js#stripLeadingNumbering, même correctif appliqué ici
+// indépendamment car ce renderer construit lui-même le texte final du bloc).
+function stripLeadingNumbering(text) {
+  return (text || '').replace(/^\s*\d+[.)]\s*/, '');
+}
+
+// spacing.line en 1/240e de ligne (docx/OOXML) : 276 = 1.15 interligne, une valeur volontairement
+// modeste (pas 1.5) pour ne pas gonfler artificiellement la longueur d'un document déjà détaillé
+// — juste assez pour que le texte respire au lieu de former un bloc compact.
+const BODY_PARAGRAPH_SPACING = { after: 120, line: 276 };
+
+// Titre de section : un seul traitement (filet gris fin en dessous), plus de bandeau plein par
+// section — le bandeau devient une option page 1 uniquement (voir visualOptions.band côté
+// buildProcedureWordDocument). pageBreakBefore réservé aux ruptures de chapitre réelles (début
+// du corps de la procédure, historique des versions).
+function sectionTitleParagraph(text, { pageBreakBefore = false } = {}) {
+  return new Paragraph({
+    pageBreakBefore,
+    spacing: { before: 200, after: 100 },
+    border: { bottom: borderLine('999999', BorderStyle.SINGLE, 4) },
+    children: [new TextRun({ text, bold: true, size: BASE_FONT_SIZE + 6 })],
+  });
+}
+
+// Encadré "Point d'attention :" — un seul traitement visuel selon style.calloutStyle, jamais de
+// code couleur de gravité (rouge/orange/vert supprimés avec l'ancien calloutBySeverity).
+function resolveCalloutLook(style) {
+  const accent = hexColor(style.accentColor);
+  if (style.calloutStyle === 'full-tint') {
+    return { background: lightTint(accent), border: accent };
+  }
+  return { background: 'F5F5F5', border: accent };
+}
+
+function boxParagraphs({ label, background, border, text, borderWidth = 6 }) {
   return [
     new Paragraph({
-      border: borderSides,
+      border: {
+        top: borderLine(border, BorderStyle.SINGLE, borderWidth),
+        bottom: borderLine(border, BorderStyle.SINGLE, borderWidth),
+        left: borderLine(border, BorderStyle.SINGLE, borderWidth),
+        right: borderLine(border, BorderStyle.SINGLE, borderWidth),
+      },
       shading: background ? { type: ShadingType.CLEAR, fill: background } : undefined,
       spacing: { before: 120, after: 120 },
       children: [
-        new TextRun({ text: `${label} : `, bold: true }),
+        new TextRun({ text: "Point d'attention : ", bold: true }),
         ...text.split('\n').flatMap((line, index) => (index === 0 ? [new TextRun(line)] : [new TextRun({ text: line, break: 1 })])),
       ],
     }),
   ];
 }
 
-function calloutParagraphs(theme, callout) {
-  if (!callout) return [];
-  const style = resolveCallout(theme, callout.severity);
-  return boxParagraphs({ ...style, text: callout.text });
+function calloutParagraphs(style, text) {
+  if (!text) return [];
+  const look = resolveCalloutLook(style);
+  // "left-border" : bordure gauche épaisse seule (les 3 autres côtés restent fins/invisibles),
+  // fond gris très clair. "full-tint" : encadré complet teinté de la couleur d'accent.
+  if (style.calloutStyle === 'full-tint') {
+    return boxParagraphs({ background: look.background, border: look.border, text });
+  }
+  return [
+    new Paragraph({
+      border: { left: borderLine(look.border, BorderStyle.SINGLE, 36) },
+      shading: { type: ShadingType.CLEAR, fill: look.background },
+      indent: { left: 60 },
+      spacing: { before: 120, after: 120 },
+      children: [
+        new TextRun({ text: "Point d'attention : ", bold: true }),
+        ...text.split('\n').flatMap((line, index) => (index === 0 ? [new TextRun(line)] : [new TextRun({ text: line, break: 1 })])),
+      ],
+    }),
+  ];
 }
 
-// Élément commun à tous les styles (voir spec) : chaque légende identifiée par l'IA
-// (subsection.photo_placeholders, voir services/groq.js) devient un encadré en pointillés,
-// pour que le rédacteur n'ait plus qu'à remplacer la zone par sa propre image dans Word.
+// Élément commun (voir spec) : chaque légende identifiée par l'IA (bloc photo_placeholder,
+// voir services/procedureFullDraftJob.js) devient un encadré en pointillés, pour que le
+// rédacteur n'ait plus qu'à remplacer la zone par sa propre image dans Word.
 function photoPlaceholderParagraphs(caption) {
   return [
     new Paragraph({
@@ -170,136 +173,94 @@ function photoPlaceholderParagraphs(caption) {
   ];
 }
 
-// pageBreakBefore : réservé aux ruptures de chapitre réelles (début du corps de la procédure,
-// historique des versions) — voir buildProcedureWordDocument. Delta de taille porté de +2 à +6
-// par rapport au corps de texte : à +2, un titre en gras ne se distinguait presque pas d'un mot
-// en gras au milieu d'une phrase, d'où l'effet de bloc de texte continu signalé sur le document
-// généré.
-function sectionTitleParagraph(theme, text, { pageBreakBefore = false } = {}) {
-  const base = { text, bold: true, size: theme.baseFontSize + 6 };
-  switch (theme.sectionTitle.type) {
-    case 'left-border':
-      return new Paragraph({
-        pageBreakBefore,
-        spacing: { before: 200, after: 100 },
-        border: { left: borderLine(theme.sectionTitle.color, BorderStyle.SINGLE, 24) },
-        indent: { left: 120 },
-        children: [new TextRun({ ...base, color: theme.sectionTitle.color })],
-      });
-    case 'band':
-      return new Paragraph({
-        pageBreakBefore,
-        spacing: { before: 200, after: 100 },
-        shading: { type: ShadingType.CLEAR, fill: theme.sectionTitle.background },
-        children: [new TextRun({ ...base, color: theme.sectionTitle.textColor })],
-      });
-    case 'bold-plain':
-    default:
-      return new Paragraph({ pageBreakBefore, spacing: { before: 200, after: 100 }, children: [new TextRun(base)] });
-  }
+function bulletParagraphs(style, items) {
+  const prefix = style.bulletStyle === 'round' ? '•  ' : '-  ';
+  return (items || []).map(
+    (item) => new Paragraph({ indent: { left: 240 }, spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${prefix}${item}`)] })
+  );
 }
 
-// spacing.line en 1/240e de ligne (docx/OOXML) : 276 = 1.15 interligne, une valeur volontairement
-// modeste (pas 1.5) pour ne pas gonfler artificiellement la longueur d'un document déjà détaillé
-// — juste assez pour que le texte respire au lieu de former un bloc compact.
-const BODY_PARAGRAPH_SPACING = { after: 120, line: 276 };
-
-function subBulletParagraphs(theme, bullets) {
-  return (bullets || []).map((bullet) => {
-    const prefix = theme.subBulletMarker === 'o' ? 'o  ' : theme.subBulletMarker === '-' ? '-  ' : '';
-    return new Paragraph({ indent: { left: 480 }, spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${prefix}${bullet}`)] });
-  });
+function paragrapheParagraphs(text) {
+  // Une ligne vide dans le texte source (saut de paragraphe volontaire) devient un paragraphe
+  // vide plutôt que d'être avalée, pour préserver la mise en forme telle que saisie/générée.
+  return (text || '').split('\n').map((line) => new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(stripLeadingNumbering(line))] }));
 }
 
-function actionParagraphs(theme, actions) {
-  return (actions || []).flatMap((action, index) => [
-    new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${index + 1}. ${stripLeadingNumbering(action.text)}`)] }),
-    ...subBulletParagraphs(theme, action.sub_bullets),
-  ]);
+function sousTitreParagraph(text) {
+  return new Paragraph({ spacing: { before: 160, after: 60 }, children: [new TextRun({ text, bold: true })] });
 }
 
-// Sous-section issue de generateProcedureComplete (voir services/procedureFullDraftJob.js) :
-// titre, intro, actions numérotées, encadré éventuel, emplacements photo éventuels.
-function subsectionParagraphs(theme, sectionNumber, index, subsection) {
-  const heading = new Paragraph({
-    spacing: { before: 160, after: 60 },
-    children: [new TextRun({ text: `${sectionNumber}.${index + 1} ${subsection.title}`, bold: true })],
-  });
-
-  if (subsection.generation_status === 'failed') {
-    return [
-      heading,
-      new Paragraph({
-        children: [
-          new TextRun({ text: 'À compléter manuellement — la génération automatique de cette sous-section a échoué.', italics: true, color: '888888' }),
-        ],
-      }),
-    ];
-  }
-
-  return [
-    heading,
-    ...(subsection.intro ? [new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(subsection.intro)] })] : []),
-    ...actionParagraphs(theme, subsection.actions),
-    ...calloutParagraphs(theme, subsection.callout),
-    ...(subsection.photo_placeholders || []).flatMap((caption) => photoPlaceholderParagraphs(caption)),
-  ];
-}
-
-// Section sans sous-sections structurées (brouillon rapide généré par generateProcedureDraft,
-// ou rédigé/édité à la main) : un seul bloc de texte à plat, même repli que
-// services/procedurePdf.js#drawSubSection. Le titre de section est déjà posé par
-// sectionTitleParagraph() côté appelant — cette fonction ne rend que le corps. Une ligne vide
-// dans le texte source (saut de paragraphe volontaire) devient un paragraphe vide plutôt que
-// d'être avalée par split('\n') + spacing, pour préserver la mise en forme telle que saisie.
-function flatSectionBodyParagraphs(section) {
-  const bodyLines = (section.content || 'Non renseigné').split('\n');
-  return bodyLines.map((line) => new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(line)] }));
-}
-
-// Delta porté à +12/+14 (contre +4/+6 avant) : un titre de document doit se voir dès le survol
-// de la page, pas seulement se déduire du gras — même raison que le delta des titres de section
-// ci-dessus, appliquée au niveau le plus visible du document.
-function titleBlockParagraphs(theme, { procedureNumber, procedureTitle, tenantName }) {
-  if (theme.titleBlock.type === 'banner') {
-    return [
-      new Paragraph({
-        shading: { type: ShadingType.CLEAR, fill: theme.titleBlock.background },
-        alignment: AlignmentType.CENTER,
-        spacing: { before: 200, after: 200 },
-        children: [
-          new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true, size: theme.baseFontSize + 14, color: theme.titleBlock.textColor }),
-        ],
-      }),
-      new Paragraph({ alignment: AlignmentType.CENTER, children: [new TextRun({ text: tenantName || 'Entreprise', color: '666666' })] }),
-    ];
-  }
-
-  return [
-    new Paragraph({
-      alignment: theme.titleBlock.type === 'centered-bold' ? AlignmentType.CENTER : AlignmentType.START,
-      spacing: { after: 100 },
-      children: [new TextRun({ text: theme.titleBlock.text, bold: true, size: theme.baseFontSize + 8 })],
-    }),
-    new Paragraph({
-      alignment: theme.titleBlock.type === 'centered-bold' ? AlignmentType.CENTER : AlignmentType.START,
-      spacing: { after: 200 },
-      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, bold: true, size: theme.baseFontSize + 12 })],
-    }),
-  ];
-}
-
-function tableCellText(text, { header, theme, width } = {}) {
+function tableCellText(text, { header, style, width } = {}) {
   return new TableCell({
     width: width ? { size: width, type: WidthType.DXA } : undefined,
-    shading: header ? { type: ShadingType.CLEAR, fill: theme.tableHeader.background } : undefined,
+    shading: header ? { type: ShadingType.CLEAR, fill: 'F2F2F2' } : undefined,
     verticalAlign: VerticalAlign.CENTER,
     margins: { top: 60, bottom: 60, left: 100, right: 100 },
-    children: [new Paragraph({ children: [new TextRun({ text, bold: !!header, color: header ? theme.tableHeader.textColor : undefined })] })],
+    children: [new Paragraph({ children: [new TextRun({ text, bold: !!header, color: header ? hexColor(style.accentColor) : undefined })] })],
   });
 }
 
-function identityTable(theme, { procedure, version }) {
+// Bloc tableau à colonnes/lignes libres (constructeur manuel, voir
+// frontend/src/components/TableBlockEditor.jsx) — répartition égale de la largeur sur le
+// nombre réel de colonnes, en-tête gris clair/texte couleur d'accent, bordures fines noires,
+// cantSplit sur CHAQUE ligne pour ne jamais la couper entre deux pages (bug déjà rencontré et
+// corrigé sur le document de référence — propriété qui n'était utilisée nulle part avant cette
+// refonte).
+function tableBlockToDocxTable(block, style) {
+  const columnCount = Math.max(1, block.headers?.length || 0);
+  const columnWidth = Math.round(TABLE_WIDTH_DXA / columnCount);
+  const columnWidths = new Array(columnCount).fill(columnWidth);
+  const thinBlackBorder = borderLine('000000', BorderStyle.SINGLE, 2);
+  const cellBorders = { top: thinBlackBorder, bottom: thinBlackBorder, left: thinBlackBorder, right: thinBlackBorder };
+
+  function cell(text, header) {
+    return new TableCell({
+      width: { size: columnWidth, type: WidthType.DXA },
+      shading: header ? { type: ShadingType.CLEAR, fill: 'F2F2F2' } : undefined,
+      borders: cellBorders,
+      verticalAlign: VerticalAlign.CENTER,
+      margins: { top: 60, bottom: 60, left: 100, right: 100 },
+      children: [
+        new Paragraph({ children: [new TextRun({ text: text || '', bold: !!header, color: header ? hexColor(style.accentColor) : undefined })] }),
+      ],
+    });
+  }
+
+  const headerRow = new TableRow({
+    cantSplit: true,
+    children: (block.headers || []).map((h) => cell(h, true)),
+  });
+  const dataRows = (block.rows || []).map(
+    (row) => new TableRow({ cantSplit: true, children: columnWidths.map((_, i) => cell(row[i], false)) })
+  );
+
+  return new Table({ width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA }, columnWidths, layout: TableLayoutType.FIXED, rows: [headerRow, ...dataRows] });
+}
+
+// Le walker unique du modèle à blocs (voir schéma dans le plan de refonte) : un switch sur
+// block.type, appelé une fois par section — remplace entièrement l'ancien branchement
+// "section.subsections?.length ? ... : flatSectionBodyParagraphs(section)".
+function blocksToDocxParagraphs(blocks, style) {
+  return (blocks || []).flatMap((block) => {
+    switch (block.type) {
+      case 'sous_titre':
+        return [sousTitreParagraph(block.text)];
+      case 'liste_puces':
+        return bulletParagraphs(style, block.items);
+      case 'tableau':
+        return [tableBlockToDocxTable(block, style)];
+      case 'encadre':
+        return calloutParagraphs(style, block.text);
+      case 'photo_placeholder':
+        return photoPlaceholderParagraphs(block.caption);
+      case 'paragraphe':
+      default:
+        return paragrapheParagraphs(block.text);
+    }
+  });
+}
+
+function identityTable(style, { procedure, version }) {
   const rows = [
     ['Numéro', procedure.number],
     ['Titre', procedure.title],
@@ -318,40 +279,38 @@ function identityTable(theme, { procedure, version }) {
     rows: rows.map(
       ([label, value]) =>
         new TableRow({
+          cantSplit: true,
           children: [
-            tableCellText(label, { header: true, theme, width: columnWidths[0] }),
-            tableCellText(String(value), { theme, width: columnWidths[1] }),
+            tableCellText(label, { header: true, style, width: columnWidths[0] }),
+            tableCellText(String(value), { style, width: columnWidths[1] }),
           ],
         })
     ),
   });
 }
 
-function historyTable(theme, versions) {
+function historyTable(style, versions) {
   const columnWidths = [0.1, 0.16, 0.28, 0.16, 0.3].map((fraction) => Math.round(TABLE_WIDTH_DXA * fraction));
   const headerRow = new TableRow({
+    cantSplit: true,
     children: ['Version', 'Statut', 'Rédigée par', 'Date', 'Validée par'].map((text, i) =>
-      tableCellText(text, { header: true, theme, width: columnWidths[i] })
+      tableCellText(text, { header: true, style, width: columnWidths[i] })
     ),
   });
   const rows = (versions || []).map(
     (v) =>
       new TableRow({
+        cantSplit: true,
         children: [
-          tableCellText(`v${v.version}`, { theme, width: columnWidths[0] }),
-          tableCellText(VERSION_STATUS_LABELS[v.status] || v.status, { theme, width: columnWidths[1] }),
-          tableCellText(v.author?.full_name || 'auteur inconnu', { theme, width: columnWidths[2] }),
-          tableCellText(formatDate(v.created_at), { theme, width: columnWidths[3] }),
-          tableCellText(v.validator?.full_name || '—', { theme, width: columnWidths[4] }),
+          tableCellText(`v${v.version}`, { style, width: columnWidths[0] }),
+          tableCellText(VERSION_STATUS_LABELS[v.status] || v.status, { style, width: columnWidths[1] }),
+          tableCellText(v.author?.full_name || 'auteur inconnu', { style, width: columnWidths[2] }),
+          tableCellText(formatDate(v.created_at), { style, width: columnWidths[3] }),
+          tableCellText(v.validator?.full_name || '—', { style, width: columnWidths[4] }),
         ],
       })
   );
-  return new Table({
-    width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA },
-    columnWidths,
-    layout: TableLayoutType.FIXED,
-    rows: [headerRow, ...rows],
-  });
+  return new Table({ width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA }, columnWidths, layout: TableLayoutType.FIXED, rows: [headerRow, ...rows] });
 }
 
 function documentsAssociesParagraphs(documentsAssocies) {
@@ -359,114 +318,133 @@ function documentsAssociesParagraphs(documentsAssocies) {
   return documentsAssocies.map((name) => new Paragraph({ children: [new TextRun(`•  ${name}`)] }));
 }
 
-// Detecte un risque grave n'importe où dans le document généré (voir
-// services/procedureFullDraftJob.js) — uniquement consommé par le style industriel-sécurité,
-// dont la consigne exige un encadré DANGER visible dès l'ouverture du document plutôt que
-// noyé au milieu de 15 pages.
-function hasTopLevelDangerCallout(sections) {
-  return (sections || []).some((section) =>
-    (section.subsections || []).some((subsection) => subsection.callout?.severity === 'danger')
-  );
+// Bandeau de couleur pleine largeur en tête de page 1 (option, désactivée par défaut) — un seul
+// paragraphe teinté avant même le titre, hauteur pilotée par spacing avant/après (jamais une
+// hauteur fixe en points) pour ne jamais décaler le contenu qui suit de façon imprévisible.
+function bandParagraph(style) {
+  return new Paragraph({ shading: { type: ShadingType.CLEAR, fill: hexColor(style.accentColor) }, spacing: { before: 40, after: 40 }, children: [new TextRun({ text: ' ' })] });
 }
 
-export function findStyleTheme(presetId) {
-  return STYLE_THEMES[presetId] || STYLE_THEMES[DEFAULT_STYLE_ID];
+// Bloc titre de référence : "PROCÉDURE" centré, sous-titre en italique (numéro + titre réel) —
+// un seul traitement, remplace l'ancien titleBlockParagraphs paramétré par thème (banner/
+// centered-bold/plain).
+function titleBlockParagraphs({ procedureNumber, procedureTitle }) {
+  return [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 80 },
+      children: [new TextRun({ text: 'PROCÉDURE', bold: true, size: BASE_FONT_SIZE + 12 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 200 },
+      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, italics: true, size: BASE_FONT_SIZE + 4 })],
+    }),
+  ];
 }
 
-// content : procedure_versions.content (voir services/procedureFullDraftJob.js pour le format
-// riche avec subsections, ou le format court de generateProcedureDraft — les deux sont
-// supportés, section.subsections absent => repli sur flatSectionParagraphs). presetId :
-// procedure_templates.active_preset_id du tenant (ou null => DEFAULT_STYLE_ID, voir
-// findStyleTheme). procedure/version/versions : mêmes lignes que services/procedurePdf.js.
-export async function buildProcedureWordDocument({ presetId, tenantName, procedure, version, versions }) {
-  const theme = findStyleTheme(presetId);
+// Lit les dimensions réelles du logo (PNG/JPEG/WEBP/GIF — seuls formats acceptés à l'upload,
+// voir routes/tenant.js#ALLOWED_LOGO_TYPES) pour calculer une largeur proportionnelle à une
+// hauteur fixe, sans jamais déformer l'image (docx#ImageRun exige des dimensions explicites,
+// il ne les déduit pas seul du buffer).
+function logoImageRun(tenantLogo) {
+  if (!tenantLogo) return null;
+  try {
+    const { width, height, type } = imageSize(tenantLogo);
+    if (!width || !height) return null;
+    const heightPt = LOGO_MAX_HEIGHT_PT;
+    const widthPt = Math.round((width / height) * heightPt);
+    const docxType = type === 'jpg' ? 'jpeg' : type; // ImageRun attend 'jpeg', image-size renvoie 'jpg'.
+    return new ImageRun({ type: docxType, data: tenantLogo, transformation: { width: widthPt, height: heightPt } });
+  } catch {
+    // Format non décodable : en-tête sans logo, pas d'erreur (même principe que
+    // services/procedurePdf.js pour le PDF).
+    return null;
+  }
+}
+
+// content : procedure_versions.content — { sections: [{key,label,blocks:[...]}],
+// documents_associes: [...] } (modèle à blocs, voir le plan de refonte ; plus de champs
+// objet/domaine_application/responsabilites séparés, repliés en sections ordinaires).
+// accentColor/visualOptions : procedure_templates.accent_color/visual_options du tenant (ou
+// les défauts, voir resolveStyle). tenantLogo : Buffer (PNG/JPEG/WEBP/GIF) ou null/undefined —
+// absent, l'emplacement logo est simplement omis, jamais un cadre vide.
+// tenantName n'est PAS un paramètre : le nom de l'entreprise n'a pas d'emplacement dédié dans la
+// mise en page de référence (titre/sous-titre/tableau d'identité/en-tête ne le mentionnent pas,
+// voir le plan de refonte) — seul le logo l'identifie visuellement. Un appelant qui le passe
+// quand même (par symétrie avec buildProcedurePdf, qui l'affiche lui dans son bandeau neutre) ne
+// casse rien : une clé en trop dans l'objet est simplement ignorée.
+export async function buildProcedureWordDocument({ accentColor, visualOptions, tenantLogo, procedure, version, versions }) {
+  const style = resolveStyle({ accentColor, visualOptions });
   const content = version.content || {};
   const sections = content.sections || [];
 
   const body = [];
-  body.push(...titleBlockParagraphs(theme, { procedureNumber: procedure.number, procedureTitle: procedure.title, tenantName }));
 
-  if (theme.topDangerBanner && hasTopLevelDangerCallout(sections)) {
-    body.push(
-      ...boxParagraphs({
-        ...resolveCallout(theme, 'danger'),
-        text: "Cette procédure comporte au moins une étape à risque grave — voir les encadrés DANGER dans le déroulé ci-dessous.",
-      })
-    );
+  if (style.band) {
+    body.push(bandParagraph(style));
   }
 
-  body.push(identityTable(theme, { procedure, version }));
+  body.push(...titleBlockParagraphs({ procedureNumber: procedure.number, procedureTitle: procedure.title }));
+  body.push(identityTable(style, { procedure, version }));
   body.push(new Paragraph({ text: '' }));
 
-  // Mêmes entrées que le sommaire compact de ProcedureContentView.jsx (écran) et que celui du
-  // PDF (services/procedurePdf.js) : avant, seul le style mtl-logistique en avait un — désormais
-  // les 4 styles en ont un, pour la même raison que l'écran (naviguer un document de plusieurs
-  // pages sans en faire une simple compilation de texte). Contrairement au PDF, Word ne connaît
-  // pas les numéros de page au moment de la génération (la pagination réelle dépend du rendu de
-  // Word chez le lecteur) : la liste reste donc sans numéro, comme le sommaire de l'écran
-  // lui-même (une simple liste de libellés, pas un renvoi de page).
-  const tocLabels = [
-    content.objet && 'Objet',
-    content.domaine_application && "Domaine d'application",
-    content.responsabilites && 'Responsabilités',
-    ...sections.map((s) => s.label),
-    content.documents_associes?.length > 0 && 'Documents associés',
-    'Historique des versions',
-  ].filter(Boolean);
+  // Sommaire généré automatiquement à partir de la structure RÉELLE au moment du rendu — jamais
+  // saisi séparément (voir le plan : un sommaire à part créerait un risque de décalage avec le
+  // contenu si l'un change sans l'autre). Contrairement au PDF, Word ne connaît pas les numéros
+  // de page au moment de la génération (la pagination réelle dépend du rendu chez le lecteur) :
+  // la liste reste donc sans numéro, comme le sommaire de l'écran lui-même.
+  const tocLabels = [...sections.map((s) => s.label), content.documents_associes?.length > 0 && 'Documents associés', 'Historique des versions'].filter(
+    Boolean
+  );
 
   if (tocLabels.length >= 3) {
-    body.push(sectionTitleParagraph(theme, 'Sommaire'));
+    body.push(sectionTitleParagraph('Sommaire'));
     tocLabels.forEach((label) => body.push(new Paragraph({ children: [new TextRun(`•  ${label}`)] })));
     body.push(new Paragraph({ text: '' }));
   }
 
-  body.push(sectionTitleParagraph(theme, '1. Objet'));
-  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.objet || 'Non renseigné')] }));
-  body.push(sectionTitleParagraph(theme, "2. Domaine d'application"));
-  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.domaine_application || 'Non renseigné')] }));
-  body.push(sectionTitleParagraph(theme, '3. Responsabilités'));
-  body.push(new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(content.responsabilites || 'Non renseigné')] }));
-
-  // Saut de page avant le corps de la procédure (comme services/procedurePdf.js) : c'est la
-  // partie la plus longue du document, la faire démarrer sur une page fraîche évite qu'elle
-  // s'enchaîne directement à la suite d'Objet/Domaine/Responsabilités sans rupture visuelle.
+  // Saut de page avant le corps de la procédure : c'est la partie la plus longue du document,
+  // la faire démarrer sur une page fraîche évite qu'elle s'enchaîne directement à la suite du
+  // sommaire/tableau d'identité sans rupture visuelle.
   sections.forEach((section, index) => {
-    const sectionNumber = `${index + 4}`;
-    body.push(sectionTitleParagraph(theme, `${sectionNumber}. ${section.label}`, { pageBreakBefore: index === 0 }));
-    if (section.subsections?.length) {
-      section.subsections.forEach((subsection, subIndex) => {
-        body.push(...subsectionParagraphs(theme, sectionNumber, subIndex, subsection));
-      });
-    } else {
-      body.push(...flatSectionBodyParagraphs(section));
-    }
+    body.push(sectionTitleParagraph(section.label, { pageBreakBefore: index === 0 }));
+    body.push(...blocksToDocxParagraphs(section.blocks, style));
   });
 
-  const documentsIndex = sections.length + 4;
   if (content.documents_associes?.length) {
-    body.push(sectionTitleParagraph(theme, `${documentsIndex}. Documents associés`));
+    body.push(sectionTitleParagraph('Documents associés'));
     body.push(...documentsAssociesParagraphs(content.documents_associes));
   }
 
   // Sur sa propre page, même logique que le corps ci-dessus : une annexe de traçabilité mélangée
   // au texte qui précède se perdait visuellement plutôt que de se lire comme une section à part.
-  body.push(sectionTitleParagraph(theme, 'Historique des versions', { pageBreakBefore: true }));
-  body.push(historyTable(theme, versions));
+  body.push(sectionTitleParagraph('Historique des versions', { pageBreakBefore: true }));
+  body.push(historyTable(style, versions));
+
+  // Logo à gauche, référence document à droite — un seul paragraphe avec une tabulation
+  // droite plutôt que deux cellules de tableau, pour rester au plus près du pied de page déjà
+  // existant (simple Paragraph, pas de Table dans l'en-tête).
+  const logo = logoImageRun(tenantLogo);
+  const headerChildren = logo
+    ? [
+        new Paragraph({
+          tabStops: [{ type: TabStopType.RIGHT, position: TABLE_WIDTH_DXA }],
+          children: [logo, new TextRun({ text: `\t${procedure.number} — ${procedure.title}`, size: 16, color: '888888' })],
+        }),
+      ]
+    : [
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          children: [new TextRun({ text: `${procedure.number} — ${procedure.title}`, size: 16, color: '888888' })],
+        }),
+      ];
 
   const doc = new Document({
-    styles: { default: { document: { run: { font: theme.fontFamily, size: theme.baseFontSize } } } },
+    styles: { default: { document: { run: { font: FONT_FAMILY, size: BASE_FONT_SIZE } } } },
     sections: [
       {
-        headers: {
-          default: new Header({
-            children: [
-              new Paragraph({
-                alignment: AlignmentType.RIGHT,
-                children: [new TextRun({ text: `${procedure.number} — ${procedure.title}`, size: 16, color: '888888' })],
-              }),
-            ],
-          }),
-        },
+        headers: { default: new Header({ children: headerChildren }) },
         footers: {
           default: new Footer({
             children: [

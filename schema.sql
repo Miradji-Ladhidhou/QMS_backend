@@ -1005,20 +1005,25 @@ create table procedure_templates (
   tenant_id            uuid not null references tenants (id) on delete cascade unique,
   section_structure    jsonb not null default '[]',
   -- Consigne de style libre, ajoutée au prompt IA de génération/vérification de conformité
-  -- (voir services/groq.js) — copiée depuis un preset (POST /apply-preset) ou saisie
-  -- librement, jamais interprétée structurellement, juste passée telle quelle au modèle.
+  -- (voir services/groq.js) — saisie librement, jamais interprétée structurellement, juste
+  -- passée telle quelle au modèle.
   fixed_instructions   text,
-  -- Police/couleurs — copié depuis un preset. Utilisé par l'export PDF (accentColor/
-  -- boxBackground/boxBorder uniquement, voir services/procedurePdf.js) et par l'export Word
-  -- (voir active_preset_id ci-dessous et services/procedureWord.js).
+  -- accent_color/visual_options : personnalisation directe du rendu Word (voir
+  -- services/procedureWord.js), choisie par le tenant dans Paramètres > Procédures — remplace
+  -- les 4 presets figés d'origine (mtl-logistique/iso-generique/moderne-tertiaire/
+  -- industriel-securite), migrés une fois vers ces deux colonnes (voir
+  -- scripts/migrate-procedure-template-presets-to-custom.mjs). accent_color : hex libre.
+  -- visual_options : { band: bool (bandeau pleine largeur en tête de page 1), bulletStyle:
+  -- 'dash'|'round', calloutStyle: 'left-border'|'full-tint' } — jamais de code couleur de
+  -- gravité (rouge/orange/vert), un seul traitement visuel d'encadré par tenant.
+  accent_color         text not null default '#44546A',
+  visual_options       jsonb not null default '{"band": false, "bulletStyle": "dash", "calloutStyle": "left-border"}',
+  -- render_style/active_preset_id : ANCIEN mécanisme de presets figés, conservé après la
+  -- migration vers accent_color/visual_options uniquement pour ne pas perdre l'historique (les
+  -- colonnes ne sont plus lues par aucun renderer) — active_preset_id vaut désormais toujours
+  -- null pour tout tenant migré ; ne réapparaît que si un vieux client appelle encore l'ancien
+  -- POST /apply-preset (route conservée pour compatibilité, plus liée depuis l'UI actuelle).
   render_style         jsonb,
-  -- Identifiant du dernier preset appliqué (voir data/procedureTemplatePresets.js), JAMAIS
-  -- effacé par une modification manuelle ultérieure de section_structure/fixed_instructions
-  -- (le PUT normal ne touche pas render_style, donc le style visuel du dernier preset reste
-  -- valide) — remis à null seulement si un autre preset est appliqué à sa place. Sert
-  -- uniquement à choisir le renderer Word approprié (services/procedureWord.js) : PAS une
-  -- référence figée vers le preset, qui reste une simple copie librement modifiable ensuite
-  -- (voir POST /apply-preset).
   active_preset_id     text,
   created_at           timestamptz not null default now(),
   updated_at           timestamptz not null default now()

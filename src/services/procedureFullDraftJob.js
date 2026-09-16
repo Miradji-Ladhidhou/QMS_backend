@@ -1,12 +1,13 @@
 import { supabase } from './supabase.js';
 import { generateProcedureFullPlan, generateProcedureSubsectionContent } from './groq.js';
+import { makeBlockId } from '../lib/procedureBlocks.js';
 
-// Mots-clés déclenchant un encadré Important/Attention/Danger — recherchés sur le TITRE de la
+// Mots-clés déclenchant un encadré "Point d'attention" — recherchés sur le TITRE de la
 // sous-section (connu avant l'appel IA, donc décision déterministe et testable), jamais sur le
-// contenu généré (qui n'existe pas encore au moment de construire le prompt).
+// contenu généré (qui n'existe pas encore au moment de construire le prompt). Décide UNIQUEMENT
+// s'il faut émettre un bloc "encadre" — plus de sévérité pilotant son style (voir le modèle à
+// blocs, un seul traitement visuel pour tout encadré, services/procedureWord.js).
 const CALLOUT_KEYWORDS = ['sécurité', 'securite', 'traçabilité', 'tracabilite', 'contrôle', 'controle', 'anomalie'];
-
-const CALLOUT_LABELS = { info: 'Important', warning: 'Attention', danger: 'Danger' };
 
 function wantsCallout(subsectionTitle) {
   const normalized = subsectionTitle.toLowerCase();
@@ -30,16 +31,26 @@ function formatActions(actions) {
     .join('\n');
 }
 
-function formatSubsectionText(subsectionTitle, { intro, actions, callout, photo_placeholders: photoPlaceholders }) {
-  const parts = [subsectionTitle, '', intro || '', '', formatActions(actions)];
-  if (callout) {
-    const label = CALLOUT_LABELS[callout.severity] || CALLOUT_LABELS.info;
-    parts.push('', `${label} : ${callout.text}`);
-  }
+// Convertit une sous-section générée (intro/actions/callout/photo_placeholders, voir
+// PROCEDURE_SUBSECTION_RESPONSE_CONTRACT dans groq.js) en blocs du modèle canonique — LA seule
+// représentation persistée désormais (voir le plan de refonte : avant ce chantier, cette même
+// sous-section produisait EN PLUS un texte à plat concurrent, ignoré par l'éditeur manuel mais
+// préféré par tous les exports, la vraie cause du bug "correction manuelle ignorée"). Pas de
+// 5e type "liste numérotée" : les actions numérotées + sub_bullets restent un texte "1. ...\n2.
+// ..." dans un bloc paragraphe, hors périmètre du prompt.
+function subsectionToBlocks(subsectionTitle, { intro, actions, callout, photo_placeholders: photoPlaceholders }) {
+  const blocks = [{ type: 'sous_titre', id: makeBlockId(), text: subsectionTitle }];
+  if (intro) blocks.push({ type: 'paragraphe', id: makeBlockId(), text: intro });
+  const actionsText = formatActions(actions);
+  if (actionsText) blocks.push({ type: 'paragraphe', id: makeBlockId(), text: actionsText });
+  // callout.severity (info/warning/danger) n'est conservé nulle part : un seul traitement
+  // visuel pour tout encadré, quelle que soit la gravité perçue par l'IA — voir
+  // services/procedureWord.js#calloutParagraphs / services/procedurePdf.js#drawBlocks.
+  if (callout?.text) blocks.push({ type: 'encadre', id: makeBlockId(), text: callout.text });
   (photoPlaceholders || []).forEach((caption) => {
-    parts.push('', `[ Emplacement réservé à une photo : ${caption} ]`);
+    blocks.push({ type: 'photo_placeholder', id: makeBlockId(), caption });
   });
-  return parts.filter((part) => part !== undefined).join('\n').trim();
+  return blocks;
 }
 
 // tenantId/userId/subject : voir POST /api/procedures/generate-full-draft. template : la ligne
@@ -161,19 +172,26 @@ export async function runProcedureFullDraftJob(jobId) {
         });
       }
 
-      const content = generatedSubsections
-        .map((subsection) =>
-          subsection.generation_status === 'failed'
-            ? `${subsection.title}\n\nÀ compléter manuellement — la génération automatique de cette sous-section a échoué.`
-            : formatSubsectionText(subsection.title, subsection)
-        )
-        .join('\n\n');
+      // Un bloc paragraphe unique "À compléter manuellement" en cas d'échec — plus une
+      // sous-structure séparée (generation_status) hors du modèle à blocs : le bloc EST le
+      // contenu, l'éditeur manuel peut le corriger comme n'importe quel autre bloc.
+      const blocks = generatedSubsections.flatMap((subsection) =>
+        subsection.generation_status === 'failed'
+          ? [
+              { type: 'sous_titre', id: makeBlockId(), text: subsection.title },
+              {
+                type: 'paragraphe',
+                id: makeBlockId(),
+                text: 'À compléter manuellement — la génération automatique de cette sous-section a échoué.',
+              },
+            ]
+          : subsectionToBlocks(subsection.title, subsection)
+      );
 
       resultSections.push({
         key: planSection.key,
         label: planSection.label,
-        content,
-        subsections: generatedSubsections,
+        blocks,
       });
     }
 
@@ -185,9 +203,9 @@ export async function runProcedureFullDraftJob(jobId) {
       // sujet tronqué si jamais l'IA ne renvoyait rien, pour ne jamais laisser le titre vide —
       // mais ce repli ne doit normalement jamais s'activer.
       title: plan.title || job.subject.slice(0, 120),
-      objet: plan.objet,
-      domaine_application: plan.domaine_application,
-      responsabilites: plan.responsabilites,
+      // Objet/domaine d'application/responsabilités ne sont plus des champs séparés : ce sont
+      // des sections ordinaires du gabarit (voir data/defaultProcedureSections.js), déjà
+      // couvertes par resultSections comme n'importe quelle autre section du plan.
       sections: resultSections,
       documents_associes: plan.documents_associes || [],
       ai_generation: {

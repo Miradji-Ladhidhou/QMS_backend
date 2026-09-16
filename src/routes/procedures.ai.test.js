@@ -64,9 +64,6 @@ describe('POST /api/procedures/generate-draft (IA mockée)', () => {
       .expect(200);
 
     const mockDraft = {
-      objet: 'Objet généré par l’IA',
-      domaine_application: 'Domaine généré',
-      responsabilites: 'Responsabilités générées',
       sections: [{ key: 'etapes', label: 'Étapes du processus', content: 'Contenu généré' }],
       documents_associes: [],
     };
@@ -78,7 +75,17 @@ describe('POST /api/procedures/generate-draft (IA mockée)', () => {
       .send({ title: 'Gestion des non-conformités', process: 'Qualité' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual(mockDraft);
+    // draftToBlockContent (voir lib/procedureBlocks.js) convertit sections[].content en
+    // sections[].blocks — un bloc paragraphe par ligne non vide, avec un id généré côté serveur
+    // (donc non comparable par toEqual sur l'objet complet).
+    expect(res.body.documents_associes).toEqual([]);
+    expect(res.body.sections).toEqual([
+      {
+        key: 'etapes',
+        label: 'Étapes du processus',
+        blocks: [expect.objectContaining({ type: 'paragraphe', text: 'Contenu généré' })],
+      },
+    ]);
 
     expect(groq.generateProcedureDraft).toHaveBeenCalledTimes(1);
     const [formData, template] = groq.generateProcedureDraft.mock.calls[0];
@@ -125,9 +132,6 @@ describe('POST /api/procedures/generate-draft-from-qqoqccp (IA mockée)', () => 
       const analysis = analysisRes.body;
 
       const mockDraft = {
-        objet: 'Objet généré depuis le diagnostic',
-        domaine_application: 'Domaine généré',
-        responsabilites: 'Responsabilités générées',
         sections: [{ key: 'etapes', label: 'Étapes', content: 'Contenu généré' }],
         documents_associes: [],
       };
@@ -140,7 +144,13 @@ describe('POST /api/procedures/generate-draft-from-qqoqccp (IA mockée)', () => 
 
       expect(res.status).toBe(200);
       expect(res.body.title).toBe('Erreurs répétées de saisie');
-      expect(res.body.sections).toEqual(mockDraft.sections);
+      expect(res.body.sections).toEqual([
+        {
+          key: 'etapes',
+          label: 'Étapes',
+          blocks: [expect.objectContaining({ type: 'paragraphe', text: 'Contenu généré' })],
+        },
+      ]);
 
       expect(groq.generateProcedureDraftFromQqoqccp).toHaveBeenCalledTimes(1);
       const [analysisArg, template] = groq.generateProcedureDraftFromQqoqccp.mock.calls[0];
@@ -336,9 +346,7 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     tenant = await createTenant();
 
     groq.generateProcedureFullPlan.mockResolvedValueOnce({
-      objet: 'Objet complet',
-      domaine_application: 'Domaine complet',
-      responsabilites: 'Responsabilités complètes',
+      title: 'Préparation de commande',
       documents_associes: ['Fiche de suivi'],
       plan: [{ key: 'processus', label: 'Processus', subsections: ['Réception', 'Contrôle final'] }],
     });
@@ -372,13 +380,14 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     expect(jobRes.body.total_steps).toBe(2);
 
     const { result } = jobRes.body;
-    expect(result.objet).toBe('Objet complet');
+    expect(result.title).toBe('Préparation de commande');
     expect(result.sections).toHaveLength(1);
     expect(result.sections[0].key).toBe('processus');
-    expect(result.sections[0].subsections).toHaveLength(2);
-    expect(result.sections[0].content).toContain('Réception');
-    expect(result.sections[0].content).toContain('Contrôle final');
-    expect(result.sections[0].content).toContain('Danger : Ne jamais expédier un colis non contrôlé.');
+    const blocks = result.sections[0].blocks;
+    // Un sous_titre par sous-section générée (voir subsectionToBlocks dans
+    // procedureFullDraftJob.js), plus un encadré (sans severity) pour le callout "danger" reçu.
+    expect(blocks.filter((b) => b.type === 'sous_titre').map((b) => b.text)).toEqual(['Réception', 'Contrôle final']);
+    expect(blocks.some((b) => b.type === 'encadre' && b.text === 'Ne jamais expédier un colis non contrôlé.')).toBe(true);
 
     // Continuité : le 2e appel de sous-section reçoit le résumé du 1er.
     const secondCallArgs = groq.generateProcedureSubsectionContent.mock.calls[1][0];
@@ -390,9 +399,7 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     tenant = await createTenant();
 
     groq.generateProcedureFullPlan.mockResolvedValueOnce({
-      objet: 'Objet',
-      domaine_application: 'Domaine',
-      responsabilites: 'Responsabilités',
+      title: 'Procédure de test',
       documents_associes: [],
       plan: [{ key: 'processus', label: 'Processus', subsections: ['Étape 1', 'Étape 2'] }],
     });
@@ -415,8 +422,13 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     expect(jobRes.body.status).toBe('completed');
     expect(groq.generateProcedureSubsectionContent).toHaveBeenCalledTimes(2);
     expect(jobRes.body.failed_subsections).toEqual([{ section_key: 'processus', subsection_title: 'Étape 1' }]);
-    expect(jobRes.body.result.sections[0].content).toContain('À compléter manuellement');
-    expect(jobRes.body.result.sections[0].content).toContain('Étape 2 décrite'.split(' ')[0]);
+    const blocks = jobRes.body.result.sections[0].blocks;
+    // Étape 1 (échouée) : sous_titre + paragraphe "À compléter manuellement" (voir
+    // runProcedureFullDraftJob dans procedureFullDraftJob.js). Étape 2 (réussie) : sous_titre
+    // normal, aucun bloc "à compléter".
+    expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 1')).toBe(true);
+    expect(blocks.some((b) => b.type === 'paragraphe' && b.text.includes('À compléter manuellement'))).toBe(true);
+    expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 2')).toBe(true);
   });
 
   it('échec total si l’étape de plan échoue — status failed, aucun appel de sous-section', async () => {

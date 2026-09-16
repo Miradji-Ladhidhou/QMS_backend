@@ -72,66 +72,139 @@ describe('PUT /api/procedure-templates', () => {
   });
 });
 
-describe('GET /api/procedure-templates/presets', () => {
-  it('liste les 4 presets prêts à l’emploi', async () => {
+// Personnalisation directe par tenant (voir le plan de refonte de la mise en page des
+// procédures) — remplace l'ancien système de 4 presets figés (apply-preset/GET presets,
+// retirés avec ce chantier une fois backend/scripts/migrate-procedure-template-presets-to-
+// custom.mjs disponible, voir son propre fichier de test).
+describe('PUT /api/procedure-templates — accent_color/visual_options', () => {
+  it('accepte et renvoie accent_color/visual_options, avec les défauts si omis', async () => {
     tenant = await createTenant();
 
     const res = await request(app)
-      .get('/api/procedure-templates/presets')
-      .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(res.status).toBe(200);
-    expect(res.body).toHaveLength(4);
-    expect(res.body.map((p) => p.id)).toEqual(
-      expect.arrayContaining(['mtl-logistique', 'iso-generique', 'moderne-tertiaire', 'industriel-securite'])
-    );
-    expect(res.body[0]).toHaveProperty('name');
-    expect(res.body[0]).toHaveProperty('description');
-    expect(res.body[0]).toHaveProperty('sections');
-    expect(res.body[0]).toHaveProperty('renderStyle');
-  });
-});
-
-describe('POST /api/procedure-templates/apply-preset', () => {
-  it('réservé admin, 404 sur un preset inconnu', async () => {
-    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
-    const manager = tenant.users[0];
-
-    const forbidden = await request(app)
-      .post('/api/procedure-templates/apply-preset')
-      .set('Authorization', `Bearer ${manager.token}`)
-      .send({ preset_id: 'iso-generique' });
-    expect(forbidden.status).toBe(403);
-
-    const unknown = await request(app)
-      .post('/api/procedure-templates/apply-preset')
+      .put('/api/procedure-templates')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ preset_id: 'inexistant' });
-    expect(unknown.status).toBe(404);
-  });
-
-  it('copie le preset dans le gabarit du tenant (sections, consignes, style), librement modifiable ensuite', async () => {
-    tenant = await createTenant();
-
-    const res = await request(app)
-      .post('/api/procedure-templates/apply-preset')
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ preset_id: 'iso-generique' });
+      .send({
+        section_structure: [{ key: 'objet', label: 'Objet' }],
+        accent_color: '#123ABC',
+        visual_options: { band: true, bulletStyle: 'round', calloutStyle: 'full-tint' },
+      });
     expect(res.status).toBe(200);
-    expect(res.body.section_structure.length).toBeGreaterThan(0);
-    expect(res.body.fixed_instructions).toContain('PROCÉDURE QUALITÉ');
-    expect(res.body.render_style.fontFamily).toBe('Times New Roman');
+    expect(res.body.accent_color).toBe('#123abc');
+    expect(res.body.visual_options).toEqual({ band: true, bulletStyle: 'round', calloutStyle: 'full-tint' });
 
     const reloaded = await request(app)
       .get('/api/procedure-templates')
       .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(reloaded.body.section_structure).toEqual(res.body.section_structure);
+    expect(reloaded.body.accent_color).toBe('#123abc');
+    expect(reloaded.body.visual_options).toEqual({ band: true, bulletStyle: 'round', calloutStyle: 'full-tint' });
+  });
 
-    // Reste une copie normale, librement modifiable ensuite via PUT — pas une référence figée.
-    const edited = await request(app)
+  it('un enregistrement qui omet accent_color/visual_options ne réinitialise pas ce qui était déjà enregistré', async () => {
+    tenant = await createTenant();
+
+    await request(app)
       .put('/api/procedure-templates')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ section_structure: [{ key: 'custom', label: 'Section personnalisée' }] });
-    expect(edited.status).toBe(200);
-    expect(edited.body.section_structure).toEqual([{ key: 'custom', label: 'Section personnalisée' }]);
+      .send({ section_structure: [], accent_color: '#7A2E3B' })
+      .expect(200);
+
+    const res = await request(app)
+      .put('/api/procedure-templates')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_structure: [{ key: 'objet', label: 'Objet' }] }); // ni accent_color ni visual_options cette fois
+    expect(res.status).toBe(200);
+    expect(res.body.accent_color).toBe('#7a2e3b');
+  });
+
+  it('400 sur une couleur mal formée ou une clé visual_options inconnue', async () => {
+    tenant = await createTenant();
+
+    const badColor = await request(app)
+      .put('/api/procedure-templates')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_structure: [], accent_color: 'rouge' });
+    expect(badColor.status).toBe(400);
+
+    const badOption = await request(app)
+      .put('/api/procedure-templates')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_structure: [], visual_options: { bulletStyle: 'etoile' } });
+    expect(badOption.status).toBe(400);
+
+    const unknownKey = await request(app)
+      .put('/api/procedure-templates')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_structure: [], visual_options: { fontSize: 12 } });
+    expect(unknownKey.status).toBe(400);
+  });
+
+  it('isole par tenant : la couleur d’un tenant n’apparaît jamais dans le gabarit d’un autre', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      await request(app)
+        .put('/api/procedure-templates')
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ section_structure: [], accent_color: '#111111' })
+        .expect(200);
+      await request(app)
+        .put('/api/procedure-templates')
+        .set('Authorization', `Bearer ${otherTenant.admin.token}`)
+        .send({ section_structure: [], accent_color: '#222222' })
+        .expect(200);
+
+      const mine = await request(app).get('/api/procedure-templates').set('Authorization', `Bearer ${tenant.admin.token}`);
+      const theirs = await request(app).get('/api/procedure-templates').set('Authorization', `Bearer ${otherTenant.admin.token}`);
+      expect(mine.body.accent_color).toBe('#111111');
+      expect(theirs.body.accent_color).toBe('#222222');
+    } finally {
+      await otherTenant.cleanup();
+    }
+  });
+});
+
+describe('POST /api/procedure-templates/preview-word', () => {
+  it('réservé admin', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const res = await request(app)
+      .post('/api/procedure-templates/preview-word')
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({});
+    expect(res.status).toBe(403);
+  });
+
+  it('génère un .docx à partir des réglages du BODY, jamais ceux déjà enregistrés en base', async () => {
+    tenant = await createTenant();
+    await request(app)
+      .put('/api/procedure-templates')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_structure: [], accent_color: '#000000' })
+      .expect(200);
+
+    const res = await request(app)
+      .post('/api/procedure-templates/preview-word')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ accent_color: '#7A2E3B', visual_options: { band: true, bulletStyle: 'round', calloutStyle: 'full-tint' } })
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 2).toString()).toBe('PK'); // signature ZIP (.docx est un conteneur ZIP)
+
+    // Le gabarit enregistré en base n'a pas bougé — un aperçu ne modifie jamais rien.
+    const reloaded = await request(app).get('/api/procedure-templates').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(reloaded.body.accent_color).toBe('#000000');
+  });
+
+  it('400 sur une couleur mal formée', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .post('/api/procedure-templates/preview-word')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ accent_color: 'pas-une-couleur' });
+    expect(res.status).toBe(400);
   });
 });

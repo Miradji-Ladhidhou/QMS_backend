@@ -1126,21 +1126,18 @@ describe('POST /api/procedures/:id/versions/:versionId/export-word', () => {
     expect(res.status).toBe(404);
   });
 
-  it('génère un .docx pour un brouillon (aucune restriction de statut, contrairement à distribution-sheet), avec le style du preset appliqué', async () => {
+  it('génère un .docx pour un brouillon (aucune restriction de statut, contrairement à distribution-sheet), avec le style personnalisé du tenant', async () => {
     tenant = await createTenant();
     await request(app)
-      .post('/api/procedure-templates/apply-preset')
+      .put('/api/procedure-templates')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ preset_id: 'moderne-tertiaire' })
+      .send({ section_structure: [{ key: 'deroule_processus', label: 'Déroulé du processus' }], accent_color: '#1f5c5c' })
       .expect(200);
 
     const procedure = await createProcedure(tenant.admin.token, 'PROC-111');
     const version = await createVersion(tenant.admin.token, procedure.id, {
       content: {
-        objet: 'Objet de test',
-        domaine_application: 'Domaine de test',
-        responsabilites: 'Responsabilités de test',
-        sections: [{ key: 'deroule_processus', label: 'Déroulé du processus', content: 'Détail du déroulé.' }],
+        sections: [{ key: 'deroule_processus', label: 'Déroulé du processus', blocks: [{ type: 'paragraphe', id: 'b1', text: 'Détail du déroulé.' }] }],
         documents_associes: ['Formulaire F-01'],
       },
     });
