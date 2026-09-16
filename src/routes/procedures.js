@@ -17,6 +17,7 @@ import {
   generateProcedureDraft,
   generateProcedureDraftFromQqoqccp,
   checkProcedureTemplateCompliance,
+  generateProcedureComplianceFix,
   compareProcedureVersions,
   generateProcedureDistributionSheet,
   suggestProcedureRevisionFromCapa,
@@ -924,6 +925,58 @@ router.post('/:id/versions/:versionId/check-compliance', async (req, res) => {
     res.status(503).json({ error: `Impossible de vérifier la conformité : ${err.message}` });
   }
 });
+
+// POST /api/procedures/:id/versions/:versionId/compliance-fix — suite de check-compliance :
+// à partir d'une anomalie déjà détectée (section_key/issue/severity, tels que renvoyés par
+// check-compliance), propose un contenu corrigé pour cette seule section. Même garde que
+// check-compliance (aucune, lecture seule pour tout membre du tenant) : rien n'est persisté
+// ici non plus, l'auteur applique la correction proposée lui-même dans l'éditeur avant
+// d'enregistrer via PUT /:id/versions/:versionId, qui reste seul à vérifier canActOnVersion/
+// le statut "draft".
+router.post(
+  '/:id/versions/:versionId/compliance-fix',
+  [
+    body('section_key').trim().notEmpty().withMessage('Section requise.'),
+    body('issue').trim().notEmpty().withMessage('Anomalie requise.'),
+    body('severity').optional({ values: 'falsy' }).isIn(['minor', 'major', 'blocking']).withMessage('Sévérité invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const version = await fetchVersionForAction(req, res);
+    if (!version) return;
+
+    const { data: procedure } = await supabase
+      .from('procedures')
+      .select('title, process')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    const template = await fetchTenantTemplate(req.tenantId);
+    const section = (version.content?.sections || []).find((s) => s.key === req.body.section_key);
+
+    try {
+      const result = await generateProcedureComplianceFix({
+        procedureTitle: procedure?.title,
+        procedureProcess: procedure?.process,
+        template,
+        procedureContent: version.content,
+        sectionKey: req.body.section_key,
+        sectionLabel: section?.label,
+        currentSectionContent: section?.content,
+        issue: req.body.issue,
+        severity: req.body.severity,
+      });
+      res.json({ section_key: req.body.section_key, ...result });
+    } catch (err) {
+      res.status(503).json({ error: `Impossible de générer une correction : ${err.message}` });
+    }
+  }
+);
 
 // POST /api/procedures/:id/versions/:versionId/compare — compare cette version à celle qui la
 // précède immédiatement pour la même procédure (previous = null pour une toute première

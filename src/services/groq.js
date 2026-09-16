@@ -498,6 +498,51 @@ export async function checkProcedureTemplateCompliance(procedureContent, templat
   return callGroq(PROCEDURE_COMPLIANCE_SYSTEM_PROMPT, buildProcedureComplianceUserPrompt(procedureContent, template));
 }
 
+const PROCEDURE_COMPLIANCE_FIX_RESPONSE_CONTRACT = `Rédige la valeur en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "corrected_content": "string"
+}
+"corrected_content" est le texte complet et directement utilisable de la section corrigée — jamais un commentaire sur ce qui a été changé, jamais un texte générique déconnecté du contexte réel de cette procédure.`;
+
+// Suite logique de checkProcedureTemplateCompliance : une fois une anomalie détectée sur une
+// section précise, propose un contenu corrigé pour CETTE section uniquement — jamais une
+// réécriture de toute la procédure, pour rester une correction ciblée que l'auteur peut relire
+// et accepter en un geste (voir ProcedureComplianceCheck.jsx côté frontend).
+const PROCEDURE_COMPLIANCE_FIX_SYSTEM_PROMPT = `Tu es un rédacteur qualité (ISO 9001) qui corrige une section d'une procédure pour qu'elle réponde à une anomalie de conformité déjà détectée par un audit.
+
+Réécris UNIQUEMENT le contenu de la section concernée, en réglant précisément le problème signalé (section manquante, vide, ou dont le contenu ne correspond pas à son intitulé) — jamais un texte générique, toujours ancré dans le contexte réel de cette procédure (son titre, son processus, le contenu déjà rédigé des autres sections). Respecte les consignes de style de l'entreprise si elles sont fournies.
+
+${PROCEDURE_COMPLIANCE_FIX_RESPONSE_CONTRACT}`;
+
+function buildProcedureComplianceFixUserPrompt({ procedureTitle, procedureProcess, template, procedureContent, sectionKey, sectionLabel, currentSectionContent, issue, severity }) {
+  const otherSections = (procedureContent?.sections || [])
+    .filter((s) => s.key !== sectionKey)
+    .map((s) => `- ${s.label} : ${s.content ? s.content.slice(0, 200) : '(vide)'}`)
+    .join('\n');
+
+  return `Procédure : ${procedureTitle || 'non renseignée'}${procedureProcess ? ` (processus : ${procedureProcess})` : ''}
+
+Section à corriger : ${sectionLabel || sectionKey} (key: ${sectionKey})
+Contenu actuel de cette section : ${currentSectionContent ? currentSectionContent : '(vide)'}
+
+Anomalie détectée par l'audit de conformité (sévérité ${severity || 'non précisée'}) : ${issue}
+
+Autres sections déjà rédigées, pour rester cohérent avec le reste du document :
+${otherSections || 'Aucune autre section rédigée.'}
+${template?.fixed_instructions ? `\nConsignes de style propres à cette entreprise, à respecter : ${template.fixed_instructions}` : ''}`;
+}
+
+// { procedureTitle, procedureProcess, template, procedureContent, sectionKey, sectionLabel,
+// currentSectionContent, issue, severity } — voir POST
+// /procedures/:id/versions/:versionId/compliance-fix. Rien n'est persisté par cet appel : le
+// frontend (ProcedureComplianceCheck.jsx) affiche la correction proposée et ne l'applique au
+// brouillon que si l'auteur clique explicitement pour l'accepter.
+export async function generateProcedureComplianceFix(data) {
+  return callGroq(PROCEDURE_COMPLIANCE_FIX_SYSTEM_PROMPT, buildProcedureComplianceFixUserPrompt(data));
+}
+
 const PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :

@@ -239,6 +239,41 @@ describe('POST /api/procedures/:id/versions/:versionId/check-compliance et /comp
   });
 });
 
+// Même principe que check-compliance ci-dessus : appelle Groq en direct, non couvert par un
+// test automatisé au-delà de la résolution de version et de la validation d'entrée.
+describe('POST /api/procedures/:id/versions/:versionId/compliance-fix', () => {
+  it('404 sur une version qui ne correspond pas à la procédure', async () => {
+    tenant = await createTenant();
+    const procedureA = await createProcedure(tenant.admin.token, 'PROC-008');
+    const procedureB = await createProcedure(tenant.admin.token, 'PROC-009');
+    const versionOfB = await request(app)
+      .post(`/api/procedures/${procedureB.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedureA.id}/versions/${versionOfB.body.id}/compliance-fix`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ section_key: 'etapes', issue: 'Section vide.' });
+    expect(res.status).toBe(404);
+  });
+
+  it('400 si section_key ou issue est manquant', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-011');
+    const version = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+
+    const res = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/compliance-fix`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ issue: 'Section vide.' });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('POST /api/procedures/:id/versions', () => {
   it('première version à 1.0, puis incrémentée automatiquement', async () => {
     tenant = await createTenant();
