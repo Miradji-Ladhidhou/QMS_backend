@@ -75,6 +75,29 @@ function lightTint(hex) {
   return [mix(r), mix(g), mix(b)].map((c) => c.toString(16).padStart(2, '0')).join('').toUpperCase();
 }
 
+// Répartit TABLE_WIDTH_DXA entre des colonnes selon des proportions données, en garantissant que
+// la somme des largeurs retournées vaut EXACTEMENT `total` — jamais un twip de plus ou de moins.
+// Un simple Math.round colonne par colonne (l'ancienne approche) peut décaler cette somme de
+// quelques twips par rapport à la largeur déclarée du tableau (Table.width) : LibreOffice
+// tolère l'écart et affiche un résultat correct, mais Word l'interprète plus strictement et peut
+// désaligner les bordures entre la ligne d'en-tête et les lignes de données (bug réel constaté
+// sur le tableau du bloc "tableau" ET sur le tableau d'identité). Méthode du plus grand reste :
+// arrondit chaque colonne vers le bas, puis distribue le reliquat (toujours < nombre de colonnes)
+// aux colonnes qui ont le plus perdu à l'arrondi, pour rester proche des proportions demandées.
+function distributeColumnWidths(total, fractions) {
+  const raw = fractions.map((fraction) => total * fraction);
+  const widths = raw.map(Math.floor);
+  const distributed = widths.reduce((sum, w) => sum + w, 0);
+  const remainder = total - distributed;
+  const order = raw
+    .map((value, index) => ({ index, fractional: value - Math.floor(value) }))
+    .sort((a, b) => b.fractional - a.fractional);
+  for (let k = 0; k < remainder; k += 1) {
+    widths[order[k % order.length].index] += 1;
+  }
+  return widths;
+}
+
 function borderLine(color, style = BorderStyle.SINGLE, size = 6) {
   return { style, size, color, space: 6 };
 }
@@ -208,14 +231,13 @@ function tableCellText(text, { header, style, width } = {}) {
 // refonte).
 function tableBlockToDocxTable(block, style) {
   const columnCount = Math.max(1, block.headers?.length || 0);
-  const columnWidth = Math.round(TABLE_WIDTH_DXA / columnCount);
-  const columnWidths = new Array(columnCount).fill(columnWidth);
+  const columnWidths = distributeColumnWidths(TABLE_WIDTH_DXA, new Array(columnCount).fill(1 / columnCount));
   const thinBlackBorder = borderLine('000000', BorderStyle.SINGLE, 2);
   const cellBorders = { top: thinBlackBorder, bottom: thinBlackBorder, left: thinBlackBorder, right: thinBlackBorder };
 
-  function cell(text, header) {
+  function cell(text, header, columnIndex) {
     return new TableCell({
-      width: { size: columnWidth, type: WidthType.DXA },
+      width: { size: columnWidths[columnIndex], type: WidthType.DXA },
       shading: header ? { type: ShadingType.CLEAR, fill: 'F2F2F2' } : undefined,
       borders: cellBorders,
       verticalAlign: VerticalAlign.CENTER,
@@ -228,10 +250,10 @@ function tableBlockToDocxTable(block, style) {
 
   const headerRow = new TableRow({
     cantSplit: true,
-    children: (block.headers || []).map((h) => cell(h, true)),
+    children: (block.headers || []).map((h, i) => cell(h, true, i)),
   });
   const dataRows = (block.rows || []).map(
-    (row) => new TableRow({ cantSplit: true, children: columnWidths.map((_, i) => cell(row[i], false)) })
+    (row) => new TableRow({ cantSplit: true, children: columnWidths.map((_, i) => cell(row[i], false, i)) })
   );
 
   return new Table({ width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA }, columnWidths, layout: TableLayoutType.FIXED, rows: [headerRow, ...dataRows] });
@@ -271,7 +293,7 @@ function identityTable(style, { procedure, version }) {
     ['Validée par', version.validator?.full_name || (version.status === 'approved' ? '—' : 'en attente')],
     ['Prochaine révision', formatDate(procedure.next_review_date)],
   ];
-  const columnWidths = [Math.round(TABLE_WIDTH_DXA * 0.25), Math.round(TABLE_WIDTH_DXA * 0.75)];
+  const columnWidths = distributeColumnWidths(TABLE_WIDTH_DXA, [0.25, 0.75]);
   return new Table({
     width: { size: TABLE_WIDTH_DXA, type: WidthType.DXA },
     columnWidths,
@@ -290,7 +312,7 @@ function identityTable(style, { procedure, version }) {
 }
 
 function historyTable(style, versions) {
-  const columnWidths = [0.1, 0.16, 0.28, 0.16, 0.3].map((fraction) => Math.round(TABLE_WIDTH_DXA * fraction));
+  const columnWidths = distributeColumnWidths(TABLE_WIDTH_DXA, [0.1, 0.16, 0.28, 0.16, 0.3]);
   const headerRow = new TableRow({
     cantSplit: true,
     children: ['Version', 'Statut', 'Rédigée par', 'Date', 'Validée par'].map((text, i) =>

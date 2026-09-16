@@ -25,6 +25,21 @@ async function hasEmbeddedMedia(buffer) {
   return Object.keys(zip.files).some((name) => name.startsWith('word/media/'));
 }
 
+// Somme des largeurs de <w:gridCol> pour chaque <w:tbl> du document — un Math.round colonne par
+// colonne peut décaler cette somme de quelques twips par rapport à la largeur déclarée du
+// tableau (bug réel constaté : LibreOffice tolère l'écart, Word désaligne les bordures entre
+// l'en-tête et les lignes de données). Toutes les tables de ce renderer partagent la même
+// largeur totale (TABLE_WIDTH_DXA = 9026, voir procedureWord.js), donc chaque somme doit y être
+// strictement égale.
+async function tableColumnWidthSums(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const xml = await zip.file('word/document.xml').async('string');
+  return xml
+    .split('<w:tbl>')
+    .slice(1)
+    .map((block) => [...block.matchAll(/<w:gridCol w:w="(\d+)"/g)].reduce((sum, m) => sum + parseInt(m[1], 10), 0));
+}
+
 const PROCEDURE = { number: 'PROC-042', title: 'Préparation de commande', process: 'Logistique', status: 'draft', next_review_date: '2027-01-01' };
 
 const AUTHOR = { full_name: 'Alice Rédactrice' };
@@ -189,6 +204,20 @@ describe('buildProcedureWordDocument', () => {
     // 8 lignes d'identité + 3 lignes d'historique (en-tête + 2 versions, voir VERSIONS) + 2
     // lignes du tableau manuel (en-tête + 1 ligne) = 13.
     expect(await countCantSplit(buffer)).toBe(13);
+  });
+
+  it('la somme des largeurs de colonnes de chaque tableau tombe exactement sur la largeur déclarée (jamais un twip d’écart)', async () => {
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure: PROCEDURE,
+      version: richVersion(),
+      versions: VERSIONS,
+    });
+    const sums = await tableColumnWidthSums(buffer);
+    // Identité (2 col.) + tableau manuel (4 col.) + historique (5 col.) = 3 tableaux, tous à la
+    // même largeur totale.
+    expect(sums).toHaveLength(3);
+    sums.forEach((sum) => expect(sum).toBe(9026));
   });
 
   it('sans logo tenant : aucun emplacement vide, aucune image embarquée', async () => {
