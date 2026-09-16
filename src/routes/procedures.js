@@ -103,7 +103,12 @@ router.post(
 // GET /generation-jobs/:jobId ci-dessous plutôt que d'attendre les ~10-15 appels IA en ligne.
 router.post(
   '/generate-full-draft',
-  [body('subject').trim().isLength({ min: 3 }).withMessage('Le sujet est requis (3 caractères minimum).')],
+  [
+    // max généreux (un sujet collé peut légitimement faire plusieurs dizaines de lignes,
+    // reformulé en un titre court par l'IA — voir generateProcedureFullPlan dans groq.js) :
+    // borne seulement le payload/coût d'appel, pas l'usage réel visé.
+    body('subject').trim().isLength({ min: 3, max: 20000 }).withMessage('Le sujet doit faire entre 3 et 20 000 caractères.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -622,7 +627,11 @@ router.post(
   '/',
   [
     body('number').trim().notEmpty().withMessage('Le numéro est requis.'),
-    body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    // max 300 : un titre reste un intitulé, jamais le texte complet d'un sujet collé sans
+    // reformulation (voir NewProcedureFullDraftModal.jsx et generateProcedureFullPlan dans
+    // groq.js, qui condense désormais tout sujet en un titre court côté génération IA) — filet
+    // de sécurité pour la création manuelle, qui ne passe pas par cette reformulation.
+    body('title').trim().notEmpty().isLength({ max: 300 }).withMessage('Le titre est requis (300 caractères maximum).'),
     body('process').optional({ values: 'falsy' }).trim(),
     body('next_review_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de révision invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),

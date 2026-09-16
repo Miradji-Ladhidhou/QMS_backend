@@ -178,6 +178,13 @@ export async function runProcedureFullDraftJob(jobId) {
     }
 
     const result = {
+      // title : intitulé court reformulé par l'IA (voir generateProcedureFullPlan) — jamais
+      // job.subject brut, qui peut être un texte long collé par l'utilisateur (bug réel
+      // constaté : un sujet de plusieurs dizaines de lignes utilisé tel quel comme titre de
+      // procédure a fait gonfler l'export PDF à 444 pages, voir pdfTheme.js). Repli sur le
+      // sujet tronqué si jamais l'IA ne renvoyait rien, pour ne jamais laisser le titre vide —
+      // mais ce repli ne doit normalement jamais s'activer.
+      title: plan.title || job.subject.slice(0, 120),
       objet: plan.objet,
       domaine_application: plan.domaine_application,
       responsabilites: plan.responsabilites,

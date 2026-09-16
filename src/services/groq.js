@@ -696,15 +696,17 @@ const PROCEDURE_FULL_PLAN_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textue
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
+  "title": "string",
   "objet": "string",
   "domaine_application": "string",
   "responsabilites": "string",
   "documents_associes": ["string", "string"],
   "plan": [{"key": "string", "label": "string", "subsections": ["string", "string"]}]
 }
+"title" est TOUJOURS un intitulé court (une dizaine de mots maximum, comme le titre d'un document officiel — ex. "Préparation et contrôle des commandes"), quelle que soit la longueur ou la forme du sujet fourni en entrée (un sujet en une phrase ou un long texte collé donnent le même genre de titre court) — jamais une phrase complète, jamais le sujet recopié tel quel.
 Le tableau "plan" doit contenir EXACTEMENT une entrée par section du gabarit fourni, dans le même ordre, avec le même "key"/"label" que dans le gabarit. Pour chaque section, "subsections" liste des sous-sections concrètes et opérationnelles, adaptées au sujet précis — jamais des généralités. Ne subdivise que si le sujet le justifie réellement : une section qui n'a besoin que d'un seul point peut n'avoir qu'une seule sous-section, inutile de forcer une découpe artificielle.`;
 
-const PROCEDURE_FULL_PLAN_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui prépare le plan détaillé d'une procédure documentée complète, à partir d'un sujet court et du gabarit de sections imposé par l'entreprise.
+const PROCEDURE_FULL_PLAN_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui prépare le plan détaillé d'une procédure documentée complète, à partir d'un sujet (parfois un texte long et informel, parfois une phrase courte) et du gabarit de sections imposé par l'entreprise.
 
 Pour chaque section du gabarit, décompose le sujet en sous-sections concrètes qui, une fois rédigées une par une, formeront un document complet et opérationnel — pas un résumé. Par exemple, pour un sujet "préparation de commande" et une section générique "Processus", des sous-sections plausibles seraient : réception de la commande, édition du bon de préparation, vérification des équipements, sélection du lot, traçabilité, prélèvement, contrôle, filmage, contrôle final, gestion des anomalies, formation — adapte cette logique au sujet réellement fourni, ne recopie pas cet exemple tel quel.
 
@@ -714,16 +716,20 @@ function buildProcedureFullPlanUserPrompt(subject, template) {
   const sections = (template?.section_structure || [])
     .map((section, index) => `${index + 1}. ${section.label} (key: ${section.key})`)
     .join('\n');
-  return `Sujet de la procédure à planifier : ${subject}
+  return `Sujet de la procédure à planifier (peut être un texte long — reformule-le en "title" court, ne le recopie jamais tel quel dans ce champ) :
+${subject}
 
 Gabarit de sections à respecter :
 ${sections || "Aucun gabarit configuré — utilise les sections standard objet/domaine d'application/responsabilités."}
 ${template?.fixed_instructions ? `\nConsignes de style propres à cette entreprise, à respecter : ${template.fixed_instructions}` : ''}`;
 }
 
-// subject : texte court tapé par l'utilisateur (ex. "procédure de préparation de commande").
-// template : la ligne procedure_templates du tenant (ou le repli par défaut, voir
-// fetchTenantTemplate dans routes/procedures.js).
+// subject : texte tapé (ou collé) par l'utilisateur — un sujet court ("procédure de
+// préparation de commande") comme un texte long et informel, voir NewProcedureFullDraftModal.jsx
+// côté frontend. template : la ligne procedure_templates du tenant (ou le repli par défaut,
+// voir fetchTenantTemplate dans routes/procedures.js). Le "title" retourné est TOUJOURS un
+// intitulé court reformulé par l'IA (voir le contrat de réponse) — c'est lui, jamais le sujet
+// brut, qui doit devenir procedure.title côté appelant (procedureFullDraftJob.js).
 export async function generateProcedureFullPlan(subject, template) {
   return callGroq(PROCEDURE_FULL_PLAN_SYSTEM_PROMPT, buildProcedureFullPlanUserPrompt(subject, template));
 }

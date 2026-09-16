@@ -34,6 +34,28 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
+// Filet de sécurité : un titre/sous-titre pathologiquement long (ex. un sujet de procédure
+// collé sans être résumé par l'IA — bug réel constaté, un document réduit à un en-tête a
+// atteint 444 pages) ne doit jamais pouvoir gonfler l'en-tête au point de repousser tout le
+// contenu hors de la page. Le problème se reproduit en boucle sur CHAQUE nouvelle page,
+// puisque l'en-tête est redessiné à chaque doc.on('pageAdded', ...) chez tous les appelants —
+// une seule chaîne trop longue peut donc, à elle seule, faire exploser le nombre de pages de
+// tout le document. Le vrai correctif (mieux piloter la longueur du texte à la source, voir
+// NewProcedureFullDraftModal.jsx côté frontend) vit ailleurs ; ceci protège TOUS les appelants
+// de pdfTheme.js, présents et futurs, quelle que soit la cause en amont.
+const MAX_HEADER_TEXT_LENGTH = 200;
+// Plafond dur sur la hauteur totale de l'en-tête, en plus de la troncature ci-dessus — en
+// pratique jamais atteint une fois le texte tronqué (une chaîne de 200 caractères ne prend
+// qu'une poignée de lignes), mais garantit qu'aucune combinaison nom d'entreprise + titre +
+// sous-titre ne peut dépasser une fraction raisonnable d'une page A4 (841.89pt), même si un
+// jour cette fonction sert un format de page plus étroit.
+const MAX_HEADER_HEIGHT = 260;
+
+function truncateForHeader(text) {
+  if (!text) return text;
+  return text.length > MAX_HEADER_TEXT_LENGTH ? `${text.slice(0, MAX_HEADER_TEXT_LENGTH - 1).trimEnd()}…` : text;
+}
+
 // Dessine l'en-tête "lettre" (logo à gauche, nom d'entreprise + titre du document à droite,
 // filet fin en bas) et positionne doc.y juste après. Hauteur calculée depuis le texte réel
 // (titre parfois long/multi-lignes, ex. numéro + titre d'une CAPA) plutôt que fixée, pour ne
@@ -46,28 +68,32 @@ function formatDateTime(dateStr) {
 // Retourne la hauteur totale de l'en-tête (utile à drawLogo si un appelant doit la recaler,
 // ex. lors d'un redessin sur une nouvelle page).
 export function drawLetterheadHeader(doc, { pageWidth, marginX, tenantName, tenantLogo, title, subtitle, generatedBy }) {
+  const safeTenantName = truncateForHeader(tenantName);
+  const safeTitle = truncateForHeader(title);
+  const safeSubtitle = truncateForHeader(subtitle);
+
   const textX = marginX + LOGO_SIZE + LOGO_GAP;
   const textWidth = pageWidth - marginX - textX;
 
   doc.font('Body-Bold').fontSize(14);
-  const nameHeight = doc.heightOfString(tenantName || 'Entreprise', { width: textWidth });
+  const nameHeight = doc.heightOfString(safeTenantName || 'Entreprise', { width: textWidth });
   doc.font('Body').fontSize(12);
-  const titleHeight = doc.heightOfString(title, { width: textWidth });
+  const titleHeight = doc.heightOfString(safeTitle, { width: textWidth });
 
   const metaLine = generatedBy ? `Généré par ${generatedBy} le ${formatDateTime(new Date().toISOString())}` : `Généré le ${formatDateTime(new Date().toISOString())}`;
   doc.fontSize(8);
-  const subtitleHeight = subtitle ? doc.heightOfString(subtitle, { width: textWidth }) + 4 : 0;
+  const subtitleHeight = safeSubtitle ? doc.heightOfString(safeSubtitle, { width: textWidth }) + 4 : 0;
 
   const textBlockHeight = nameHeight + 4 + titleHeight + subtitleHeight + 4 + 10; // + interlignes + ligne méta
-  const headerHeight = Math.max(LOGO_SIZE + HEADER_TOP_PADDING, textBlockHeight + HEADER_TOP_PADDING);
+  const headerHeight = Math.min(MAX_HEADER_HEIGHT, Math.max(LOGO_SIZE + HEADER_TOP_PADDING, textBlockHeight + HEADER_TOP_PADDING));
 
   let y = HEADER_TOP_PADDING;
-  doc.font('Body-Bold').fontSize(14).fillColor(INK).text(tenantName || 'Entreprise', textX, y, { width: textWidth });
+  doc.font('Body-Bold').fontSize(14).fillColor(INK).text(safeTenantName || 'Entreprise', textX, y, { width: textWidth });
   y += nameHeight + 4;
-  doc.font('Body').fontSize(12).fillColor(INK).text(title, textX, y, { width: textWidth });
+  doc.font('Body').fontSize(12).fillColor(INK).text(safeTitle, textX, y, { width: textWidth });
   y += titleHeight + 4;
-  if (subtitle) {
-    doc.fontSize(8).fillColor(MUTED).text(subtitle, textX, y, { width: textWidth });
+  if (safeSubtitle) {
+    doc.fontSize(8).fillColor(MUTED).text(safeSubtitle, textX, y, { width: textWidth });
     y += subtitleHeight;
   }
   doc.fontSize(8).fillColor(MUTED).text(metaLine, textX, y, { width: textWidth });
