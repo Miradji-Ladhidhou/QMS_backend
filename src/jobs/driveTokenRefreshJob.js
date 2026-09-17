@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { supabase } from '../services/supabase.js';
 import { refreshAccessTokenIfNeeded } from '../services/googleDrive.js';
+import { withJobRunTracking } from '../services/jobRunTracker.js';
 
 // Rafraîchit préventivement chaque connexion Google Drive proche de l'expiration, pour que le
 // prochain upload d'un tenant ne paie jamais la latence d'un aller-retour OAuth synchrone —
@@ -12,15 +13,15 @@ import { refreshAccessTokenIfNeeded } from '../services/googleDrive.js';
 export async function runDriveTokenRefreshJob() {
   console.log(`[driveTokenRefreshJob] Démarrage — ${new Date().toISOString()}`);
 
+  // Relancée (jamais avalée en un simple retour) : voir moduleKpiJob.js.
   const { data: connections, error } = await supabase.from('google_drive_connections').select('*');
-  if (error) {
-    console.error('[driveTokenRefreshJob]', error.message);
-    return;
-  }
+  if (error) throw new Error(error.message);
 
+  let ok = 0;
   for (const connection of connections) {
     try {
       await refreshAccessTokenIfNeeded(connection);
+      ok += 1;
     } catch (err) {
       // Connexion révoquée ou refresh_token expiré côté Google : rien à faire ici, un tenant
       // ne doit jamais faire planter le traitement des autres. Le prochain upload de ce tenant
@@ -30,6 +31,7 @@ export async function runDriveTokenRefreshJob() {
   }
 
   console.log(`[driveTokenRefreshJob] Terminé — ${new Date().toISOString()}`);
+  return { ok, total: connections.length };
 }
 
 // Toutes les 15 minutes : largement sous la marge de sécurité de refreshAccessTokenIfNeeded
@@ -37,7 +39,9 @@ export async function runDriveTokenRefreshJob() {
 // jamais qu'à quelques minutes d'avoir été vérifié quand un upload en a besoin.
 export function scheduleDriveTokenRefreshJob() {
   cron.schedule('*/15 * * * *', () => {
-    runDriveTokenRefreshJob().catch((err) => console.error('[driveTokenRefreshJob] Échec :', err.message));
+    withJobRunTracking('driveTokenRefreshJob', runDriveTokenRefreshJob).catch((err) =>
+      console.error('[driveTokenRefreshJob] Échec :', err.message)
+    );
   });
   console.log('[driveTokenRefreshJob] Planifié toutes les 15 minutes.');
 }

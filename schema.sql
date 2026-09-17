@@ -1337,6 +1337,41 @@ create table super_admin_audit_log (
   created_at  timestamptz not null default now()
 );
 
+-- Historique des exécutions des tâches planifiées (notificationJob, backupJob,
+-- driveTokenRefreshJob, dashboardSnapshotJob, moduleKpiJob — voir services/jobRunTracker.js) :
+-- avant cette table, un job en échec ne laissait de trace que dans les logs bruts de
+-- l'hébergeur, invisibles depuis l'app (voir GET /api/super-admin/job-runs, SystemTab). Une
+-- ligne par exécution planifiée — jamais pour un appel manuel (tests, scripts) : le wrapper
+-- n'instrumente que scheduleXJob(), pas runXJob() directement, pour ne jamais polluer cet
+-- historique avec des exécutions de test. Pas de tenant_id (table plateforme, traverse
+-- volontairement les tenants), même raisonnement que super_admin_audit_log ci-dessus.
+create table job_runs (
+  id          uuid primary key default gen_random_uuid(),
+  job_name    text not null,
+  started_at  timestamptz not null,
+  finished_at timestamptz,
+  status      text not null default 'running' check (status in ('running', 'success', 'partial', 'failed')),
+  summary     text,
+  error       text,
+  created_at  timestamptz not null default now()
+);
+
+-- Journal des appels IA (Groq) en échec, par tenant et par fonctionnalité (voir
+-- services/groq.js#callGroq, services/requestContext.js) : avant cette table, un échec IA ne
+-- partait qu'en console.error, invisible nulle part dans l'app — un tenant qui dit "l'IA ne
+-- marche pas" ne pouvait pas être diagnostiqué sans lui demander de reproduire devant vous.
+-- tenant_id sans FK (même raisonnement que super_admin_audit_log.actor_id/target_id) : une
+-- ligne journalisée ici ne doit jamais bloquer ni compliquer la suppression d'un tenant.
+-- Peut être null (appel fait hors d'une requête HTTP authentifiée, ex. un script).
+create table ai_call_failures (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid,
+  feature     text not null,
+  category    text not null check (category in ('rate_limit', 'auth', 'timeout', 'network', 'empty_response', 'malformed_response', 'unexpected')),
+  message     text,
+  created_at  timestamptz not null default now()
+);
+
 -- Un instantané par tenant par jour des métriques du dashboard (voir GET /api/dashboard/stats,
 -- computeTenantMetrics dans routes/dashboard.js), écrit uniquement par dashboardSnapshotJob.js
 -- (tous les jours à 3h) — jamais par la route elle-même, pour éviter toute course entre
@@ -1689,6 +1724,9 @@ create index idx_category_permissions_subject on category_permissions (subject_t
 
 create index idx_super_admin_audit_log_created_at on super_admin_audit_log (created_at desc);
 create index idx_super_admin_audit_log_target on super_admin_audit_log (target_type, target_id);
+create index idx_job_runs_job_name_started_at on job_runs (job_name, started_at desc);
+create index idx_ai_call_failures_created_at on ai_call_failures (created_at desc);
+create index idx_ai_call_failures_tenant_id on ai_call_failures (tenant_id, created_at desc);
 
 create index idx_dashboard_metric_snapshots_tenant_date on dashboard_metric_snapshots (tenant_id, snapshot_date desc);
 
@@ -2055,6 +2093,8 @@ alter table groups enable row level security;
 alter table group_members enable row level security;
 alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
+alter table job_runs enable row level security;
+alter table ai_call_failures enable row level security;
 alter table dashboard_metric_snapshots enable row level security;
 alter table record_shares enable row level security;
 alter table categories enable row level security;
@@ -2365,6 +2405,17 @@ create policy super_admin_audit_log_select on super_admin_audit_log
 create policy super_admin_audit_log_insert on super_admin_audit_log
   for insert
   with check (auth_is_super_admin());
+
+-- Seul le backend (clé service_role, qui contourne RLS) écrit dans job_runs — aucune policy
+-- insert/update pour les rôles authentifiés normaux, même un super admin en lecture directe.
+create policy job_runs_select on job_runs
+  for select
+  using (auth_is_super_admin());
+
+-- Même raisonnement que job_runs_select ci-dessus.
+create policy ai_call_failures_select on ai_call_failures
+  for select
+  using (auth_is_super_admin());
 
 create policy dashboard_metric_snapshots_isolation on dashboard_metric_snapshots
   for all

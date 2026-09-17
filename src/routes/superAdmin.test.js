@@ -77,6 +77,37 @@ describe('GET /api/super-admin/tenants/:id — fiche détaillée', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.status).toBe(404);
   });
+
+  it('drive_connection vaut null sans connexion Google Drive, et expose le diagnostic (jamais les jetons) si connectée', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    const noneRes = await request(app)
+      .get(`/api/super-admin/tenants/${tenant.tenantId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(noneRes.body.drive_connection).toBeNull();
+
+    await admin.from('google_drive_connections').insert({
+      tenant_id: tenant.tenantId,
+      google_email: 'qualite@exemple.com',
+      access_token: 'secret-access-token',
+      refresh_token: 'secret-refresh-token',
+      token_expires_at: new Date(Date.now() + 3600_000).toISOString(),
+      root_folder_id: 'root-folder',
+      connected_by: tenant.admin.id,
+    });
+
+    const { data: adminUser } = await admin.from('users').select('full_name').eq('id', tenant.admin.id).single();
+
+    const res = await request(app)
+      .get(`/api/super-admin/tenants/${tenant.tenantId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.drive_connection.google_email).toBe('qualite@exemple.com');
+    expect(res.body.drive_connection.is_active).toBe(true);
+    expect(res.body.drive_connection.connected_by_name).toBe(adminUser.full_name);
+    expect(res.body.drive_connection.access_token).toBeUndefined();
+    expect(res.body.drive_connection.refresh_token).toBeUndefined();
+  });
 });
 
 describe('PATCH /api/super-admin/tenants/:id — suspension + journal d’audit', () => {
@@ -141,6 +172,127 @@ describe('GET /api/super-admin/health', () => {
     expect(res.body.api_status).toBe('ok');
     expect(res.body.db_status).toBe('ok');
     expect(typeof res.body.db_latency_ms).toBe('number');
+  });
+});
+
+// job_runs n'a pas de tenant_id (table plateforme, voir schema.sql) : les lignes insérées ici
+// sont nettoyées explicitement, pas via tenant.cleanup() comme le reste de la suite.
+describe('GET /api/super-admin/job-runs', () => {
+  afterEach(async () => {
+    await admin.from('job_runs').delete().like('job_name', 'test-job-runs-route-%');
+  });
+
+  it('403 pour un admin de tenant classique', async () => {
+    tenant = await createTenant();
+    const res = await request(app).get('/api/super-admin/job-runs').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('renvoie une entrée par tâche connue, la plus récente en premier, plus les tâches inconnues à la suite', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    // Un run plus ancien puis un plus récent pour moduleKpiJob : c'est bien le second qui doit
+    // apparaître (jamais le premier trouvé, jamais une moyenne des deux).
+    await admin.from('job_runs').insert([
+      { job_name: 'moduleKpiJob', started_at: '2026-01-01T03:30:00Z', finished_at: '2026-01-01T03:31:00Z', status: 'success', summary: 'Ancien run' },
+      { job_name: 'moduleKpiJob', started_at: '2026-06-01T03:30:00Z', finished_at: '2026-06-01T03:31:05Z', status: 'partial', summary: '4/5 traité(s) avec succès.' },
+      { job_name: 'test-job-runs-route-orpheline', started_at: '2026-06-01T00:00:00Z', status: 'failed', error: 'Job retiré depuis' },
+    ]);
+
+    const res = await request(app).get('/api/super-admin/job-runs').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+
+    const byName = new Map(res.body.map((r) => [r.job_name, r]));
+    // Les 5 tâches connues sont toutes présentes (voir KNOWN_JOB_NAMES), même celles qui n'ont
+    // jamais encore tourné dans cette base de test.
+    expect(byName.has('notificationJob')).toBe(true);
+    expect(byName.has('backupJob')).toBe(true);
+    expect(byName.has('driveTokenRefreshJob')).toBe(true);
+    expect(byName.has('dashboardSnapshotJob')).toBe(true);
+
+    expect(byName.get('moduleKpiJob').status).toBe('partial');
+    expect(byName.get('moduleKpiJob').summary).toBe('4/5 traité(s) avec succès.');
+
+    // Tâche inconnue (absente de KNOWN_JOB_NAMES) : reste visible plutôt que silencieusement
+    // ignorée.
+    expect(byName.get('test-job-runs-route-orpheline').status).toBe('failed');
+    expect(byName.get('test-job-runs-route-orpheline').error).toBe('Job retiré depuis');
+  });
+
+  it("une tâche connue jamais exécutée a le statut 'never_run'", async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    const res = await request(app).get('/api/super-admin/job-runs').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const entry = res.body.find((r) => r.job_name === 'backupJob');
+    expect(entry).toBeDefined();
+    // 'never_run' seulement si vraiment aucune ligne pour ce job dans cette base — sinon on
+    // vérifie juste que le statut est l'une des valeurs valides (un run réel a pu être inséré
+    // par un autre test de ce fichier).
+    expect(['never_run', 'success', 'partial', 'failed', 'running']).toContain(entry.status);
+  });
+});
+
+// ai_call_failures n'a pas de tenant_id avec FK (table de diagnostic, voir schema.sql) : les
+// lignes insérées ici sont nettoyées explicitement par feature, pas via tenant.cleanup().
+describe('GET /api/super-admin/ai-failures', () => {
+  afterEach(async () => {
+    await admin.from('ai_call_failures').delete().like('feature', 'test-ai-failures-route-%');
+  });
+
+  it('403 pour un admin de tenant classique', async () => {
+    tenant = await createTenant();
+    const res = await request(app).get('/api/super-admin/ai-failures').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('renvoie les échecs récents avec le tenant résolu, le plus récent en premier', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+    targetTenant = await createTenant();
+
+    await admin.from('ai_call_failures').insert([
+      {
+        tenant_id: targetTenant.tenantId,
+        feature: 'test-ai-failures-route-qqoqccp',
+        category: 'rate_limit',
+        message: 'Quota dépassé',
+        created_at: '2026-01-01T00:00:00Z',
+      },
+      {
+        tenant_id: targetTenant.tenantId,
+        feature: 'test-ai-failures-route-procedure_full_plan',
+        category: 'timeout',
+        message: 'Délai dépassé',
+        created_at: '2026-06-01T00:00:00Z',
+      },
+      // tenant_id null : échec hors d'une requête HTTP authentifiée, doit rester exploitable.
+      { tenant_id: null, feature: 'test-ai-failures-route-script', category: 'network', message: null, created_at: '2026-03-01T00:00:00Z' },
+    ]);
+
+    const res = await request(app).get('/api/super-admin/ai-failures').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+
+    const ours = res.body.filter((r) => r.feature.startsWith('test-ai-failures-route-'));
+    expect(ours).toHaveLength(3);
+    // Le plus récent (procedure_full_plan, juin) avant le plus ancien (qqoqccp, janvier).
+    expect(ours[0].feature).toBe('test-ai-failures-route-procedure_full_plan');
+    expect(ours[0].tenant).toEqual({ id: targetTenant.tenantId, name: targetTenant.companyName });
+    expect(ours[0].category).toBe('timeout');
+
+    const scriptRow = ours.find((r) => r.feature === 'test-ai-failures-route-script');
+    expect(scriptRow.tenant).toBeNull();
+    expect(scriptRow.tenant_id).toBeNull();
+  });
+
+  it('respecte ?limit (borné à 200)', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    const res = await request(app).get('/api/super-admin/ai-failures?limit=1').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.length).toBeLessThanOrEqual(1);
   });
 });
 

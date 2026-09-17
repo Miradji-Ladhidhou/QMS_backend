@@ -1,7 +1,26 @@
 import Groq from 'groq-sdk';
 import { blocksToPlainText } from '../lib/procedureBlocks.js';
+import { supabase } from './supabase.js';
+import { getRequestContext } from './requestContext.js';
 
 const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
+
+// Journalise un appel IA en échec (voir ai_call_failures dans schema.sql, GET
+// /api/super-admin/ai-failures, SystemTab côté frontend) — pour qu'un tenant qui dit "l'IA ne
+// marche pas" puisse être diagnostiqué sans lui demander de reproduire devant vous. tenantId
+// vient du contexte de requête (services/requestContext.js), établi par requireAuth : jamais
+// threadé à travers les ~20 fonctions generateXxx de ce fichier ni leurs appelants. Best-effort,
+// ne bloque et ne fait jamais échouer l'appel IA lui-même (déjà en échec) sur un souci
+// d'écriture dans cette table.
+async function logAiFailure(feature, category, message) {
+  try {
+    const { tenantId } = getRequestContext();
+    await supabase.from('ai_call_failures').insert({ tenant_id: tenantId || null, feature, category, message: message?.slice(0, 500) });
+  } catch (err) {
+    console.error("[groq] Impossible de journaliser l'échec d'appel IA :", err.message);
+  }
+}
+
 const MODEL = 'openai/gpt-oss-120b';
 
 // Même structure de sortie pour tous les appels IA de l'app (QQOQCCP et, depuis, tous les
@@ -41,7 +60,10 @@ const CAPA_SUGGESTION_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001) qui a
 À partir du contexte fourni par l'utilisateur, produis :
 ${RESPONSE_CONTRACT}`;
 
-async function callGroq(systemPrompt, userPrompt) {
+// feature : identifiant court de la fonctionnalité appelante (voir chaque site d'appel
+// ci-dessous, ex. 'qqoqccp', 'procedure_full_plan') — uniquement pour journaliser un échec
+// (voir logAiFailure), jamais utilisé pour changer le comportement de l'appel lui-même.
+async function callGroq(systemPrompt, userPrompt, feature) {
   if (!groq) {
     throw new Error('GROQ_API_KEY manquant : impossible de générer une suggestion IA.');
   }
@@ -60,15 +82,19 @@ async function callGroq(systemPrompt, userPrompt) {
     // Distinct de l'erreur de parsing JSON ci-dessous : celle-ci couvre l'appel réseau/API
     // lui-même (quota, authentification, timeout, indisponibilité de Groq).
     if (err instanceof Groq.RateLimitError) {
+      await logAiFailure(feature, 'rate_limit', err.message);
       throw new Error('Quota Groq dépassé : réessayez plus tard.');
     }
     if (err instanceof Groq.AuthenticationError) {
+      await logAiFailure(feature, 'auth', err.message);
       throw new Error('Clé Groq invalide ou manquante (vérifiez GROQ_API_KEY).');
     }
     if (err instanceof Groq.APIConnectionTimeoutError) {
+      await logAiFailure(feature, 'timeout', err.message);
       throw new Error("Délai d'attente dépassé lors de l'appel à Groq.");
     }
     if (err instanceof Groq.APIConnectionError) {
+      await logAiFailure(feature, 'network', err.message);
       throw new Error("Erreur réseau lors de l'appel à Groq.");
     }
     // Catégorie imprévue (ni quota, ni auth, ni réseau/timeout) : err.message vient du SDK
@@ -76,11 +102,13 @@ async function callGroq(systemPrompt, userPrompt) {
     // et routes/qqoqccp.js, qui affichent directement le message de cette erreur), on ne garde
     // ici que le détail utile côté serveur pour le diagnostic.
     console.error('Échec inattendu de l’appel à Groq :', err);
+    await logAiFailure(feature, 'unexpected', err.message);
     throw new Error("Échec de l'appel à Groq. Réessayez dans quelques instants.");
   }
 
   const raw = completion.choices?.[0]?.message?.content;
   if (!raw) {
+    await logAiFailure(feature, 'empty_response', null);
     throw new Error('Réponse Groq vide : impossible de générer une suggestion.');
   }
 
@@ -88,6 +116,7 @@ async function callGroq(systemPrompt, userPrompt) {
     return JSON.parse(raw);
   } catch (err) {
     console.error('Réponse Groq mal formée (JSON invalide) :', err, raw);
+    await logAiFailure(feature, 'malformed_response', err.message);
     throw new Error('Réponse Groq mal formée : impossible de générer une suggestion.');
   }
 }
@@ -107,7 +136,7 @@ Pourquoi : ${pourquoi || 'non renseigné'}`;
 // champs que qqoqccp_analyses (voir schema.sql), pour pouvoir passer directement une ligne
 // de la table sans transformation.
 export async function generateQqoqccpSuggestion(analysisData) {
-  return callGroq(QQOQCCP_SYSTEM_PROMPT, buildUserPrompt(analysisData));
+  return callGroq(QQOQCCP_SYSTEM_PROMPT, buildUserPrompt(analysisData), 'qqoqccp');
 }
 
 // context : texte libre décrivant la situation (assemblé côté route à partir du constat
@@ -115,7 +144,7 @@ export async function generateQqoqccpSuggestion(analysisData) {
 // fournisseur — voir routes/ai.js). Même contrat de sortie que generateQqoqccpSuggestion,
 // pour que le frontend affiche les deux avec le même composant.
 export async function generateCapaSuggestion(context) {
-  return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context);
+  return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context, 'capa_suggestion');
 }
 
 const HACCP_HAZARD_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (description, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de hazard_type reste l'un des identifiants anglais fixes ci-dessous.
@@ -152,7 +181,7 @@ Description : ${stepDescription || 'non renseignée'}`;
 // cocher (AiHazardSuggestion.jsx), chaque danger accepté devient une ligne haccp_hazards
 // distincte via POST /haccp/plans/:planId/steps/:stepId/hazards.
 export async function generateHaccpHazardSuggestion(stepData) {
-  return callGroq(HACCP_HAZARD_SYSTEM_PROMPT, buildHazardUserPrompt(stepData));
+  return callGroq(HACCP_HAZARD_SYSTEM_PROMPT, buildHazardUserPrompt(stepData), 'haccp_hazard');
 }
 
 const HACCP_SIGNIFICANCE_RESPONSE_CONTRACT = `Rédige la valeur de justification en français, quelle que soit la langue du contexte fourni en entrée.
@@ -211,7 +240,7 @@ ${laterStepsText}`;
 // (AiCcpSignificanceSuggestion.jsx) ne fait que préremplir la case "danger significatif" et sa
 // justification dans HazardFormModal (HaccpDetail.jsx), à valider avant d'enregistrer.
 export async function generateHaccpSignificanceSuggestion(data) {
-  return callGroq(HACCP_SIGNIFICANCE_SYSTEM_PROMPT, buildSignificanceUserPrompt(data));
+  return callGroq(HACCP_SIGNIFICANCE_SYSTEM_PROMPT, buildSignificanceUserPrompt(data), 'haccp_significance');
 }
 
 const HACCP_CCP_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs en français, quelle que soit la langue du contexte fourni en entrée.
@@ -252,7 +281,7 @@ Pourquoi ce danger est jugé significatif : ${justification || 'non renseigné'}
 // (HaccpDetail.jsx), à valider ou corriger avant d'enregistrer via POST/PATCH
 // /haccp/hazards/:hazardId/ccps.
 export async function generateHaccpCcpSuggestion(data) {
-  return callGroq(HACCP_CCP_SYSTEM_PROMPT, buildCcpUserPrompt(data));
+  return callGroq(HACCP_CCP_SYSTEM_PROMPT, buildCcpUserPrompt(data), 'haccp_ccp');
 }
 
 const RISK_SUGGESTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (title, category, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de type reste l'un des identifiants anglais fixes ci-dessous.
@@ -289,7 +318,7 @@ Description de l'activité : ${context}`;
 // appel : le frontend affiche les suggestions dans une liste à cocher (AiRiskSuggestion.jsx),
 // chaque risque/opportunité accepté devient une ligne risks distincte via POST /risks.
 export async function generateRiskSuggestion(data) {
-  return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data));
+  return callGroq(RISK_SUGGESTION_SYSTEM_PROMPT, buildRiskSuggestionUserPrompt(data), 'risk_suggestion');
 }
 
 const RISK_TREATMENT_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (treatment_plan, rationale) en français, quelle que soit la langue du contexte fourni en entrée.
@@ -326,7 +355,7 @@ Contrôles déjà en place : ${currentControls || 'aucun renseigné'}`;
 // résiduelle du formulaire d'édition (RiskDetail.jsx), à valider ou corriger avant
 // d'enregistrer via PATCH /risks/:id — même principe que generateCapaSuggestion.
 export async function generateRiskTreatmentSuggestion(data) {
-  return callGroq(RISK_TREATMENT_SYSTEM_PROMPT, buildRiskTreatmentUserPrompt(data));
+  return callGroq(RISK_TREATMENT_SYSTEM_PROMPT, buildRiskTreatmentUserPrompt(data), 'risk_treatment');
 }
 
 const PDCA_PHASE_RESPONSE_CONTRACT = `Rédige la valeur en français, quelle que soit la langue du contexte fourni en entrée.
@@ -370,7 +399,7 @@ ${priorPhases.length ? `\nCe qui a déjà été documenté pour les étapes pré
 // (PdcaDetail.jsx), à valider ou corriger avant d'enregistrer via PATCH /pdca/:id — même
 // principe que generateCapaSuggestion et le reste des suggestions IA de l'app.
 export async function generatePdcaPhaseSuggestion(data) {
-  return callGroq(PDCA_PHASE_SYSTEM_PROMPT, buildPdcaPhaseUserPrompt(data));
+  return callGroq(PDCA_PHASE_SYSTEM_PROMPT, buildPdcaPhaseUserPrompt(data), 'pdca_phase');
 }
 
 // =============================================================================
@@ -419,7 +448,7 @@ ${template?.fixed_instructions ? `\nConsignes de style propres à cette entrepri
 // formData : { title, process } — mêmes noms que procedures.title/process. template : la ligne
 // procedure_templates du tenant ({ section_structure }), ou null si aucun gabarit configuré.
 export async function generateProcedureDraft(formData, template) {
-  return callGroq(PROCEDURE_DRAFT_SYSTEM_PROMPT, buildProcedureDraftUserPrompt(formData, template));
+  return callGroq(PROCEDURE_DRAFT_SYSTEM_PROMPT, buildProcedureDraftUserPrompt(formData, template), 'procedure_draft');
 }
 
 // Même contrat de sortie que generateProcedureDraft (objet/domaine_application/
@@ -461,7 +490,7 @@ ${template?.fixed_instructions ? `\nConsignes de style propres à cette entrepri
 // ai_synthesis/ai_suggested_actions si l'IA a déjà été utilisée sur cette analyse). template :
 // la ligne procedure_templates du tenant.
 export async function generateProcedureDraftFromQqoqccp(analysis, template) {
-  return callGroq(PROCEDURE_DRAFT_FROM_QQOQCCP_SYSTEM_PROMPT, buildProcedureDraftFromQqoqccpUserPrompt(analysis, template));
+  return callGroq(PROCEDURE_DRAFT_FROM_QQOQCCP_SYSTEM_PROMPT, buildProcedureDraftFromQqoqccpUserPrompt(analysis, template), 'procedure_draft_from_qqoqccp');
 }
 
 const PROCEDURE_COMPLIANCE_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
@@ -497,7 +526,7 @@ ${actualSections || 'Aucune section rédigée.'}`;
 // procedureContent : le jsonb procedure_versions.content de la version à vérifier. template :
 // la ligne procedure_templates du tenant.
 export async function checkProcedureTemplateCompliance(procedureContent, template) {
-  return callGroq(PROCEDURE_COMPLIANCE_SYSTEM_PROMPT, buildProcedureComplianceUserPrompt(procedureContent, template));
+  return callGroq(PROCEDURE_COMPLIANCE_SYSTEM_PROMPT, buildProcedureComplianceUserPrompt(procedureContent, template), 'procedure_compliance_check');
 }
 
 const PROCEDURE_COMPLIANCE_FIX_RESPONSE_CONTRACT = `Rédige la valeur en français.
@@ -545,7 +574,7 @@ ${template?.fixed_instructions ? `\nConsignes de style propres à cette entrepri
 // frontend (ProcedureComplianceCheck.jsx) affiche la correction proposée et ne l'applique au
 // brouillon que si l'auteur clique explicitement pour l'accepter.
 export async function generateProcedureComplianceFix(data) {
-  return callGroq(PROCEDURE_COMPLIANCE_FIX_SYSTEM_PROMPT, buildProcedureComplianceFixUserPrompt(data));
+  return callGroq(PROCEDURE_COMPLIANCE_FIX_SYSTEM_PROMPT, buildProcedureComplianceFixUserPrompt(data), 'procedure_compliance_fix');
 }
 
 const PROCEDURE_DISTRIBUTION_SHEET_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
@@ -610,7 +639,8 @@ ${formatProcedureContentForDistributionSheetPrompt(procedureContent)}`;
 export async function generateProcedureDistributionSheet(procedureContent, targetAudience) {
   return callGroq(
     PROCEDURE_DISTRIBUTION_SHEET_SYSTEM_PROMPT,
-    buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience)
+    buildProcedureDistributionSheetUserPrompt(procedureContent, targetAudience),
+    'procedure_distribution_sheet'
   );
 }
 
@@ -642,7 +672,8 @@ ${formatProcedureContentForPrompt(newContent)}`;
 export async function compareProcedureVersions(previousContent, newContent) {
   return callGroq(
     PROCEDURE_VERSION_COMPARISON_SYSTEM_PROMPT,
-    buildProcedureVersionComparisonUserPrompt(previousContent, newContent)
+    buildProcedureVersionComparisonUserPrompt(previousContent, newContent),
+    'procedure_version_comparison'
   );
 }
 
@@ -678,7 +709,8 @@ ${formatProcedureContentForPrompt(currentProcedure)}`;
 export async function suggestProcedureRevisionFromCapa(capaData, currentProcedure) {
   return callGroq(
     PROCEDURE_REVISION_FROM_CAPA_SYSTEM_PROMPT,
-    buildProcedureRevisionFromCapaUserPrompt(capaData, currentProcedure)
+    buildProcedureRevisionFromCapaUserPrompt(capaData, currentProcedure),
+    'procedure_revision_from_capa'
   );
 }
 
@@ -726,7 +758,7 @@ ${template?.fixed_instructions ? `\nConsignes de style propres à cette entrepri
 // intitulé court reformulé par l'IA (voir le contrat de réponse) — c'est lui, jamais le sujet
 // brut, qui doit devenir procedure.title côté appelant (procedureFullDraftJob.js).
 export async function generateProcedureFullPlan(subject, template) {
-  return callGroq(PROCEDURE_FULL_PLAN_SYSTEM_PROMPT, buildProcedureFullPlanUserPrompt(subject, template));
+  return callGroq(PROCEDURE_FULL_PLAN_SYSTEM_PROMPT, buildProcedureFullPlanUserPrompt(subject, template), 'procedure_full_plan');
 }
 
 const PROCEDURE_SUBSECTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles en français.
@@ -772,5 +804,5 @@ ${wantsCallout ? "\nCette sous-section touche à un enjeu de sécurité, de tra�
 // services/procedureFullDraftJob.js#runProcedureFullDraftJob pour la construction de ces
 // arguments à chaque itération de la boucle séquentielle.
 export async function generateProcedureSubsectionContent(args) {
-  return callGroq(PROCEDURE_SUBSECTION_SYSTEM_PROMPT, buildProcedureSubsectionUserPrompt(args));
+  return callGroq(PROCEDURE_SUBSECTION_SYSTEM_PROMPT, buildProcedureSubsectionUserPrompt(args), 'procedure_subsection');
 }

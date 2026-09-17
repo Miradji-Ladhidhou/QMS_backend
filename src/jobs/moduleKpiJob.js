@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { supabase } from '../services/supabase.js';
 import { recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
+import { withJobRunTracking } from '../services/jobRunTracker.js';
 
 // Recalcul quotidien de tous les KPI de module (calculation_type='module'). Best-effort : un
 // KPI ou un tenant en échec n'empêche jamais les suivants — une valeur pas encore à jour se
@@ -21,8 +22,11 @@ export async function runModuleKpiJob() {
     .limit(50000);
 
   if (error || !kpis) {
-    console.error('[moduleKpiJob] Impossible de lister les KPI de module :', error?.message);
-    return { ok: 0, total: 0 };
+    // Relancée (jamais un { ok: 0, total: 0 } silencieux) : ce chiffre se lirait comme un
+    // succès sans rien à traiter plutôt que comme l'échec réel qu'il est — voir
+    // services/jobRunTracker.js, qui doit pouvoir distinguer les deux (statut 'failed' avec le
+    // vrai message d'erreur, pas un résumé "0/0 traité(s) avec succès." trompeur).
+    throw new Error(`Impossible de lister les KPI de module : ${error?.message || 'réponse vide'}`);
   }
 
   const rowsCache = new Map();
@@ -43,7 +47,7 @@ export async function runModuleKpiJob() {
 // Après l'instantané du dashboard (3h) pour ne pas concourir pour les mêmes ressources DB.
 export function scheduleModuleKpiJob() {
   cron.schedule('30 3 * * *', () => {
-    runModuleKpiJob().catch((err) => console.error('[moduleKpiJob] Échec :', err.message));
+    withJobRunTracking('moduleKpiJob', runModuleKpiJob).catch((err) => console.error('[moduleKpiJob] Échec :', err.message));
   });
   console.log('[moduleKpiJob] Recalcul quotidien des KPI de module planifié tous les jours à 3h30.');
 }

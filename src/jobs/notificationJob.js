@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { supabase } from '../services/supabase.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
+import { withJobRunTracking } from '../services/jobRunTracker.js';
 import {
   getUserEmail,
   getUserFullName,
@@ -366,28 +367,27 @@ async function processTenant(tenantId) {
 export async function runNotificationJob() {
   console.log(`[notificationJob] Démarrage — ${new Date().toISOString()}`);
 
-  let tenants;
-  try {
-    tenants = await getTenants();
-  } catch (err) {
-    console.error('[notificationJob]', err.message);
-    return;
-  }
+  // Relancée (jamais avalée en un simple retour) : voir moduleKpiJob.js, un job qui n'a rien
+  // pu traiter doit être visible comme un échec réel dans job_runs, pas comme un succès vide.
+  const tenants = await getTenants();
 
+  let ok = 0;
   for (const tenant of tenants) {
     try {
       await processTenant(tenant.id);
+      ok += 1;
     } catch (err) {
       console.error(`[notificationJob] Erreur pour le tenant ${tenant.id} :`, err.message);
     }
   }
 
   console.log(`[notificationJob] Terminé — ${new Date().toISOString()}`);
+  return { ok, total: tenants.length };
 }
 
 export function scheduleNotificationJob() {
   cron.schedule('0 8 * * *', () => {
-    runNotificationJob().catch((err) => console.error('[notificationJob] Échec :', err.message));
+    withJobRunTracking('notificationJob', runNotificationJob).catch((err) => console.error('[notificationJob] Échec :', err.message));
   });
   console.log('[notificationJob] Planifié tous les jours à 8h00.');
 }

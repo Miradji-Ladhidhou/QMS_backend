@@ -1,4 +1,5 @@
 import { supabase } from '../services/supabase.js';
+import { runWithRequestContext } from '../services/requestContext.js';
 
 export async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -43,7 +44,11 @@ export async function requireAuth(req, res, next) {
   req.userRole = profile.role;
   req.isSuperAdmin = profile.is_super_admin;
 
-  next();
+  // Établit le contexte de requête (voir services/requestContext.js) pour toute la suite du
+  // traitement de CETTE requête — englobe next() pour couvrir aussi bien les middlewares/routes
+  // synchrones que leurs opérations asynchrones (Node propage l'AsyncLocalStorage à travers
+  // await/Promise/setTimeout automatiquement).
+  runWithRequestContext({ tenantId: profile.tenant_id, userId: user.id }, next);
 }
 
 export function requireRole(...roles) {

@@ -129,7 +129,28 @@ router.get('/tenants/:id', async (req, res) => {
 
   const recentActions = await resolveActors(recentActionRows || []);
 
-  res.json({ tenant, users, module_counts: moduleCounts, recent_actions: recentActions });
+  // Diagnostic de la connexion Google Drive de ce tenant (voir driveTokenRefreshJob.js côté
+  // planification, JobRunsPanel côté frontend pour la vue d'ensemble) — jamais access_token/
+  // refresh_token eux-mêmes (secrets), seulement de quoi diagnostiquer un ticket "mes exports
+  // Drive ne partent plus" sans avoir à interroger la base directement. updated_at reflète le
+  // dernier rafraîchissement RÉUSSI du jeton d'accès (voir refreshAccessTokenIfNeeded,
+  // services/googleDrive.js) — un connected_by resté silencieux depuis bien plus que les 15
+  // minutes du job planifié, alors que is_active vaut true, est le signal qu'un rafraîchissement
+  // échoue silencieusement pour CE tenant précis (le calcul de "trop vieux" reste côté frontend,
+  // même convention que STALE_BACKUP_THRESHOLD_MS dans SuperAdmin.jsx).
+  const { data: driveConnectionRow } = await supabase
+    .from('google_drive_connections')
+    .select('google_email, is_active, token_expires_at, connected_by, created_at, updated_at')
+    .eq('tenant_id', tenant.id)
+    .maybeSingle();
+
+  let driveConnection = driveConnectionRow;
+  if (driveConnectionRow?.connected_by) {
+    const { data: connectedByUser } = await supabase.from('users').select('full_name').eq('id', driveConnectionRow.connected_by).maybeSingle();
+    driveConnection = { ...driveConnectionRow, connected_by_name: connectedByUser?.full_name || null };
+  }
+
+  res.json({ tenant, users, module_counts: moduleCounts, recent_actions: recentActions, drive_connection: driveConnection || null });
 });
 
 // POST /api/super-admin/tenants — crée un tenant vide (aucun utilisateur). Repli sur un slug
@@ -554,6 +575,78 @@ router.get('/health', async (req, res) => {
     process_uptime_seconds: Math.round(process.uptime()),
     checked_at: new Date().toISOString(),
   });
+});
+
+// Tâches planifiées connues (voir jobs/*.js) — une entrée par nom ici même si le job n'a encore
+// jamais tourné (voir GET /job-runs juste en dessous), pour qu'un job qui ne s'est pas encore
+// déclenché (redéploiement récent) reste visible plutôt que de disparaître silencieusement de
+// la liste.
+const KNOWN_JOB_NAMES = ['notificationJob', 'backupJob', 'driveTokenRefreshJob', 'dashboardSnapshotJob', 'moduleKpiJob'];
+
+// GET /api/super-admin/job-runs — dernière exécution de chaque tâche planifiée (voir
+// services/jobRunTracker.js), pour repérer une tâche en échec sans éplucher les logs bruts de
+// l'hébergeur. Ne renvoie que la DERNIÈRE exécution par job (voir SystemTab côté frontend) —
+// pas un historique complet, ce n'est pas ce dont le support a besoin au quotidien.
+router.get('/job-runs', async (req, res) => {
+  const { data, error } = await supabase
+    .from('job_runs')
+    .select('id, job_name, started_at, finished_at, status, summary, error')
+    .order('started_at', { ascending: false })
+    .limit(500);
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible de récupérer l'historique des tâches planifiées." });
+  }
+
+  const latestByJob = new Map();
+  for (const run of data) {
+    if (!latestByJob.has(run.job_name)) latestByJob.set(run.job_name, run);
+  }
+
+  const results = KNOWN_JOB_NAMES.map((jobName) => latestByJob.get(jobName) || { job_name: jobName, status: 'never_run' });
+  // Une tâche renommée/retirée depuis le dernier déploiement reste visible à la suite — mieux
+  // vaut un nom de job orphelin affiché qu'une exécution silencieusement invisible.
+  for (const [jobName, run] of latestByJob) {
+    if (!KNOWN_JOB_NAMES.includes(jobName)) results.push(run);
+  }
+
+  res.json(results);
+});
+
+async function resolveFailureTenants(rows) {
+  const tenantIds = [...new Set(rows.map((row) => row.tenant_id).filter(Boolean))];
+  const tenantsById = new Map();
+
+  if (tenantIds.length > 0) {
+    const { data: tenants } = await supabase.from('tenants').select('id, name').in('id', tenantIds);
+    for (const t of tenants || []) {
+      tenantsById.set(t.id, t);
+    }
+  }
+
+  return rows.map((row) => ({ ...row, tenant: row.tenant_id ? tenantsById.get(row.tenant_id) || null : null }));
+}
+
+// GET /api/super-admin/ai-failures — appels IA (Groq) en échec les plus récents, avec le tenant
+// concerné résolu (voir services/groq.js#logAiFailure, ai_call_failures dans schema.sql) — pour
+// qu'un tenant qui dit "l'IA ne marche pas" puisse être diagnostiqué directement, sans lui
+// demander de reproduire devant vous. tenant_id peut être null (échec hors d'une requête HTTP
+// authentifiée) : tenant reste alors null aussi, jamais une erreur.
+router.get('/ai-failures', async (req, res) => {
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50;
+
+  const { data, error } = await supabase
+    .from('ai_call_failures')
+    .select('id, tenant_id, feature, category, message, created_at')
+    .order('created_at', { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible de récupérer le journal des échecs IA." });
+  }
+
+  res.json(await resolveFailureTenants(data));
 });
 
 // GET /api/super-admin/backup-status — dernière sauvegarde locale (lue directement sur
