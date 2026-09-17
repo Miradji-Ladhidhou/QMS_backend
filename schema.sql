@@ -1372,6 +1372,34 @@ create table ai_call_failures (
   created_at  timestamptz not null default now()
 );
 
+-- Journal d'activité plateforme complet (connexions/déconnexions, échecs de connexion, mot de
+-- passe, CRUD sur tous les modules métier, transitions de workflow, exports) — réservé au
+-- super admin, voir services/activityLog.js et GET /api/super-admin/activity-log. Coexiste
+-- avec document_audit_log (exigence ISO/FDA, scopé aux documents) et super_admin_audit_log
+-- (actions DU super admin, conservé tel quel) : ne remplace ni l'un ni l'autre — superAdmin.js
+-- écrit désormais dans les deux tables pour que cette table-ci devienne le seul endroit à
+-- consulter côté UI. tenant_id/actor_id sans FK, même raisonnement que super_admin_audit_log/
+-- job_runs/ai_call_failures ci-dessus. actor_email capturé indépendamment de actor_id : reste
+-- lisible même si le compte est supprimé ensuite, et c'est la seule identité disponible pour
+-- login_failed (email inconnu du système, donc jamais de actor_id résolu). action en
+-- SCREAMING_SNAKE_CASE, "${ENTITY}_${VERBE}" dérivé automatiquement (voir activityLog.js) —
+-- jamais une constante nommée à la main par module. Immuable (même trigger que
+-- document_audit_log/super_admin_audit_log juste en dessous) : une piste d'audit ne se
+-- corrige jamais après coup, elle se complète.
+create table activity_log (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid,
+  actor_id    uuid,
+  actor_email text,
+  action      text not null,
+  entity_type text not null,
+  entity_id   uuid,
+  metadata    jsonb,
+  ip_address  text,
+  user_agent  text,
+  created_at  timestamptz not null default now()
+);
+
 -- Un instantané par tenant par jour des métriques du dashboard (voir GET /api/dashboard/stats,
 -- computeTenantMetrics dans routes/dashboard.js), écrit uniquement par dashboardSnapshotJob.js
 -- (tous les jours à 3h) — jamais par la route elle-même, pour éviter toute course entre
@@ -1544,6 +1572,29 @@ set search_path = public
 as $$
   select coalesce((select is_super_admin from public.users where id = auth.uid()), false);
 $$;
+
+-- Résout tenant_id/user_id à partir d'un email AVANT toute session (POST /api/auth/activity,
+-- voir services/activityLog.js — login_failed/password_reset_requested) : public.users n'a
+-- pas de colonne email, elle vit dans auth.users (schéma Supabase Auth). SECURITY DEFINER +
+-- search_path fixe, EXECUTE retiré à anon/authenticated (voir plus bas) : ne doit jamais
+-- devenir un oracle d'énumération d'emails, réservée au backend (service_role).
+create or replace function lookup_user_by_email(p_email text)
+returns table(user_id uuid, tenant_id uuid)
+language sql
+stable
+security definer
+set search_path = public, auth
+as $$
+  select u.id, u.tenant_id
+  from public.users u
+  join auth.users au on au.id = u.id
+  where au.email = lower(p_email)
+  limit 1;
+$$;
+
+revoke all on function lookup_user_by_email(text) from public;
+revoke execute on function lookup_user_by_email(text) from anon, authenticated;
+grant execute on function lookup_user_by_email(text) to service_role;
 
 -- =============================================================================
 -- INDEX
@@ -1727,6 +1778,11 @@ create index idx_super_admin_audit_log_target on super_admin_audit_log (target_t
 create index idx_job_runs_job_name_started_at on job_runs (job_name, started_at desc);
 create index idx_ai_call_failures_created_at on ai_call_failures (created_at desc);
 create index idx_ai_call_failures_tenant_id on ai_call_failures (tenant_id, created_at desc);
+create index idx_activity_log_created_at on activity_log (created_at desc);
+create index idx_activity_log_tenant_id on activity_log (tenant_id, created_at desc);
+create index idx_activity_log_actor_id on activity_log (actor_id, created_at desc);
+create index idx_activity_log_entity on activity_log (entity_type, entity_id);
+create index idx_activity_log_action on activity_log (action);
 
 create index idx_dashboard_metric_snapshots_tenant_date on dashboard_metric_snapshots (tenant_id, snapshot_date desc);
 
@@ -1879,6 +1935,20 @@ $$;
 create trigger trg_super_admin_audit_log_immutable
   before update or delete on super_admin_audit_log
   for each row execute function super_admin_audit_log_immutable();
+
+-- Même garantie d'immuabilité que document_audit_log/super_admin_audit_log, pour la même raison.
+create or replace function activity_log_immutable()
+returns trigger
+language plpgsql
+as $$
+begin
+  raise exception 'activity_log est immuable : aucune modification ni suppression autorisée.';
+end;
+$$;
+
+create trigger trg_activity_log_immutable
+  before update or delete on activity_log
+  for each row execute function activity_log_immutable();
 
 create trigger trg_user_notification_preferences_updated_at before update on user_notification_preferences
   for each row execute function set_updated_at();
@@ -2095,6 +2165,7 @@ alter table category_permissions enable row level security;
 alter table super_admin_audit_log enable row level security;
 alter table job_runs enable row level security;
 alter table ai_call_failures enable row level security;
+alter table activity_log enable row level security;
 alter table dashboard_metric_snapshots enable row level security;
 alter table record_shares enable row level security;
 alter table categories enable row level security;
@@ -2414,6 +2485,11 @@ create policy job_runs_select on job_runs
 
 -- Même raisonnement que job_runs_select ci-dessus.
 create policy ai_call_failures_select on ai_call_failures
+  for select
+  using (auth_is_super_admin());
+
+-- Même raisonnement que job_runs_select/ai_call_failures_select ci-dessus.
+create policy activity_log_select on activity_log
   for select
   using (auth_is_super_admin());
 

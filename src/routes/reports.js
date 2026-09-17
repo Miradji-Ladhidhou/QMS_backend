@@ -7,6 +7,7 @@ import { buildListReportPdf } from '../services/listReportPdf.js';
 import { buildListReportXlsx } from '../services/listReportXlsx.js';
 import { buildListReportWord } from '../services/listReportWord.js';
 import { buildListReportCsv } from '../services/listReportCsv.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -52,6 +53,16 @@ router.post(
         rows,
       });
 
+      await logActivity({
+        tenantId: req.tenantId,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'EXPORT_PDF',
+        entityType: 'export',
+        metadata: { title, row_count: rows.length },
+        req,
+      });
+
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'attachment; filename="rapport.pdf"');
       res.send(pdfBuffer);
@@ -87,6 +98,16 @@ router.post(
     try {
       const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
       const xlsxBuffer = await buildListReportXlsx({ tenantName: tenant?.name, title, subtitle, generatedBy, columns, rows });
+
+      await logActivity({
+        tenantId: req.tenantId,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'EXPORT_XLSX',
+        entityType: 'export',
+        metadata: { title, row_count: rows.length },
+        req,
+      });
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', 'attachment; filename="rapport.xlsx"');
@@ -124,6 +145,16 @@ router.post(
       const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
       const wordBuffer = await buildListReportWord({ tenantName: tenant?.name, title, subtitle, generatedBy, columns, rows });
 
+      await logActivity({
+        tenantId: req.tenantId,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'EXPORT_WORD',
+        entityType: 'export',
+        metadata: { title, row_count: rows.length },
+        req,
+      });
+
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       res.setHeader('Content-Disposition', 'attachment; filename="rapport.docx"');
       res.send(wordBuffer);
@@ -158,6 +189,16 @@ router.post(
     try {
       const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
       const csvContent = buildListReportCsv({ tenantName: tenant?.name, title, subtitle, generatedBy, columns, rows });
+
+      await logActivity({
+        tenantId: req.tenantId,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'EXPORT_CSV',
+        entityType: 'export',
+        metadata: { title, row_count: rows.length },
+        req,
+      });
 
       res.setHeader('Content-Type', 'text/csv;charset=utf-8');
       res.setHeader('Content-Disposition', 'attachment; filename="rapport.csv"');

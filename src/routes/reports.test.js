@@ -1,9 +1,23 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
-import { createTenant } from '../test-utils/tenant.js';
+import { admin, createTenant } from '../test-utils/tenant.js';
 
 let tenant;
+
+// activity_log est immuable (trigger, voir schema.sql) : pas de nettoyage, on retrouve la
+// ligne par action + tenant_id.
+async function latestActivityRow(action, tenantId) {
+  const { data } = await admin
+    .from('activity_log')
+    .select('*')
+    .eq('action', action)
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return data;
+}
 
 afterEach(async () => {
   if (tenant) {
@@ -61,6 +75,11 @@ describe('POST /api/reports/table-pdf', () => {
     expect(res.headers['content-type']).toBe('application/pdf');
     const buffer = Buffer.from(res.body);
     expect(buffer.subarray(0, 4).toString()).toBe('%PDF');
+
+    const row = await latestActivityRow('EXPORT_PDF', tenant.tenantId);
+    expect(row.actor_id).toBe(member.id);
+    expect(row.entity_type).toBe('export');
+    expect(row.metadata).toEqual({ title: 'Registre des risques', row_count: 2 });
   });
 
   it('200 avec generatedBy fourni (traçabilité — voir listReportPdf.js)', async () => {
@@ -144,6 +163,10 @@ describe('POST /api/reports/table-xlsx', () => {
     const buffer = Buffer.from(res.body);
     // Signature de fichier ZIP (PK\x03\x04) : un .xlsx est un conteneur ZIP.
     expect(buffer.subarray(0, 2).toString()).toBe('PK');
+
+    const row = await latestActivityRow('EXPORT_XLSX', tenant.tenantId);
+    expect(row.entity_type).toBe('export');
+    expect(row.metadata).toEqual({ title: 'Registre des risques', row_count: 2 });
   });
 });
 
@@ -189,6 +212,10 @@ describe('POST /api/reports/table-word', () => {
     expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     const buffer = Buffer.from(res.body);
     expect(buffer.subarray(0, 2).toString()).toBe('PK');
+
+    const row = await latestActivityRow('EXPORT_WORD', tenant.tenantId);
+    expect(row.entity_type).toBe('export');
+    expect(row.metadata).toEqual({ title: 'Registre des risques', row_count: 2 });
   });
 
   it('200 quand rows est vide (message de repli plutôt qu’un tableau sans lignes)', async () => {
@@ -250,5 +277,9 @@ describe('POST /api/reports/table-csv', () => {
     expect(lines[4]).toBe('Titre;Statut');
     expect(lines[5]).toBe('Panne serveur;Identifié');
     expect(lines[6]).toBe('"Virgule; et ""guillemets""";');
+
+    const row = await latestActivityRow('EXPORT_CSV', tenant.tenantId);
+    expect(row.entity_type).toBe('export');
+    expect(row.metadata).toEqual({ title: 'Registre des risques', row_count: 2 });
   });
 });

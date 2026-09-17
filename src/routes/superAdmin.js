@@ -4,6 +4,7 @@ import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
 import { logSuperAdminAction } from '../services/superAdminAudit.js';
+import { logActivity } from '../services/activityLog.js';
 import {
   runDatabaseBackup,
   restoreFromFile,
@@ -206,6 +207,16 @@ router.post(
       targetId: tenant.id,
       details: { tenant_name: tenant.name },
     });
+    await logActivity({
+      tenantId: tenant.id,
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      action: 'TENANT_CREATED',
+      entityType: 'tenant',
+      entityId: tenant.id,
+      metadata: { label: tenant.name },
+      req,
+    });
 
     res.status(201).json({ ...tenant, user_count: 0 });
   }
@@ -270,6 +281,16 @@ router.patch(
       targetId: data.id,
       details: { tenant_name: data.name, updated_fields: Object.keys(update) },
     });
+    await logActivity({
+      tenantId: data.id,
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      action: action.toUpperCase(),
+      entityType: 'tenant',
+      entityId: data.id,
+      metadata: { label: data.name, changed_fields: Object.keys(update) },
+      req,
+    });
 
     res.json(data);
   }
@@ -307,6 +328,16 @@ router.delete('/tenants/:id', async (req, res) => {
     targetType: 'tenant',
     targetId: tenant.id,
     details: { tenant_name: tenant.name, member_count: (members || []).length },
+  });
+  await logActivity({
+    tenantId: tenant.id,
+    actorId: req.user.id,
+    actorEmail: req.user.email,
+    action: 'TENANT_DELETED',
+    entityType: 'tenant',
+    entityId: tenant.id,
+    metadata: { label: tenant.name },
+    req,
   });
 
   res.json({ ok: true });
@@ -377,6 +408,16 @@ router.post(
       targetId: userId,
       details: { email, tenant_name: tenant.name },
     });
+    await logActivity({
+      tenantId: tenant.id,
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      action: 'USER_CREATED',
+      entityType: 'user',
+      entityId: userId,
+      metadata: { label: email },
+      req,
+    });
 
     res.status(201).json({ ...profile, email });
   }
@@ -442,6 +483,30 @@ router.patch(
       targetId: data.id,
       details: { updated_fields: Object.keys(update) },
     });
+    await logActivity({
+      tenantId: data.tenant_id,
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      action: 'USER_UPDATED',
+      entityType: 'user',
+      entityId: data.id,
+      metadata: { label: data.full_name, changed_fields: Object.keys(update) },
+      req,
+    });
+    // Distinct de USER_UPDATED (explicitement demandé) : un changement de rôle est le seul
+    // champ qu'un auditeur cherche systématiquement, mérite sa propre action filtrable.
+    if ('role' in update) {
+      await logActivity({
+        tenantId: data.tenant_id,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'USER_ROLE_CHANGED',
+        entityType: 'user',
+        entityId: data.id,
+        metadata: { label: data.full_name, role: data.role },
+        req,
+      });
+    }
 
     res.json(data);
   }
@@ -482,6 +547,16 @@ router.delete('/users/:id', async (req, res) => {
     targetId: target.id,
     details: { full_name: target.full_name, tenant_id: target.tenant_id },
   });
+  await logActivity({
+    tenantId: target.tenant_id,
+    actorId: req.user.id,
+    actorEmail: req.user.email,
+    action: 'USER_DELETED',
+    entityType: 'user',
+    entityId: target.id,
+    metadata: { label: target.full_name },
+    req,
+  });
 
   res.json({ ok: true });
 });
@@ -504,6 +579,48 @@ router.get('/audit-log', async (req, res) => {
   }
 
   res.json(await resolveActors(data));
+});
+
+// sortBy sur liste blanche : jamais une colonne passée telle quelle à .order(), qui accepterait
+// n'importe quel nom de colonne (voire une tentative d'injection via un nom de colonne inconnu).
+const ACTIVITY_LOG_SORT_COLUMNS = ['created_at', 'action', 'entity_type', 'actor_email', 'tenant_id'];
+
+// GET /api/super-admin/activity-log — journal d'activité plateforme complet (voir
+// services/activityLog.js), paginé/filtrable/triable, consommé par SuperAdmin.jsx#AuditTab.
+// Remplace GET /audit-log (borné à 200, sans filtre) comme seul endroit à consulter — celui-ci
+// reste néanmoins actif (super_admin_audit_log continue d'être écrit tel quel, voir
+// dual-write ci-dessus). `search` en ilike sur actor_email/action/entity_type : pas d'index
+// dédié (recherche support ponctuelle, pas un besoin de performance à grande échelle comme les
+// filtres exacts ci-dessus qui ont chacun leur index, voir add-activity-log-table.sql).
+router.get('/activity-log', async (req, res) => {
+  const requestedLimit = Number.parseInt(req.query.limit, 10);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 200) : 50;
+  const requestedPage = Number.parseInt(req.query.page, 10);
+  const page = Number.isFinite(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const sortBy = ACTIVITY_LOG_SORT_COLUMNS.includes(req.query.sortBy) ? req.query.sortBy : 'created_at';
+  const ascending = req.query.sortOrder === 'asc';
+
+  let query = supabase.from('activity_log').select('*', { count: 'exact' });
+
+  if (req.query.action) query = query.eq('action', req.query.action);
+  if (req.query.entity) query = query.eq('entity_type', req.query.entity);
+  if (req.query.actorId) query = query.eq('actor_id', req.query.actorId);
+  if (req.query.tenantId) query = query.eq('tenant_id', req.query.tenantId);
+  if (req.query.dateFrom) query = query.gte('created_at', req.query.dateFrom);
+  if (req.query.dateTo) query = query.lte('created_at', req.query.dateTo);
+  if (req.query.search) {
+    const term = `%${req.query.search}%`;
+    query = query.or(`actor_email.ilike.${term},action.ilike.${term},entity_type.ilike.${term}`);
+  }
+
+  const from = (page - 1) * limit;
+  const { data, error, count } = await query.order(sortBy, { ascending }).range(from, from + limit - 1);
+
+  if (error) {
+    return res.status(500).json({ error: "Impossible de récupérer le journal d'activité." });
+  }
+
+  res.json({ data: await resolveActors(data), total: count || 0, page, limit });
 });
 
 // GET /api/super-admin/stats — vue d'ensemble plateforme : comptes tenants par statut/plan,
@@ -691,6 +808,14 @@ router.post('/backup', async (req, res) => {
     targetType: 'platform',
     details: { filename: backup.filename, size_bytes: backup.sizeBytes, destination: 'local' },
   });
+  await logActivity({
+    actorId: req.user.id,
+    actorEmail: req.user.email,
+    action: 'BACKUP_CREATED',
+    entityType: 'backup',
+    metadata: { label: backup.filename, size_bytes: backup.sizeBytes, destination: 'local' },
+    req,
+  });
 
   res.json({
     filename: backup.filename,
@@ -715,6 +840,14 @@ router.get('/backups/:filename', async (req, res) => {
     action: 'db_backup_downloaded',
     targetType: 'platform',
     details: { filename: req.params.filename },
+  });
+  await logActivity({
+    actorId: req.user.id,
+    actorEmail: req.user.email,
+    action: 'BACKUP_DOWNLOADED',
+    entityType: 'backup',
+    metadata: { label: req.params.filename },
+    req,
   });
 
   res.download(filePath, req.params.filename);
@@ -748,6 +881,14 @@ router.post('/backup-drive', async (req, res) => {
       destination: 'google_drive',
       drive_file_id: driveFile.id,
     },
+  });
+  await logActivity({
+    actorId: req.user.id,
+    actorEmail: req.user.email,
+    action: 'BACKUP_CREATED',
+    entityType: 'backup',
+    metadata: { label: backup.filename, size_bytes: backup.sizeBytes, destination: 'google_drive' },
+    req,
   });
 
   res.json({
@@ -841,6 +982,17 @@ router.post(
         drive_file_id: fileId,
         orphaned_profiles_removed: reconcileResult?.orphanedProfilesRemoved || 0,
       },
+    });
+    await logActivity({
+      actorId: req.user.id,
+      actorEmail: req.user.email,
+      action: 'BACKUP_RESTORED',
+      entityType: 'backup',
+      metadata: {
+        label: driveFile.name,
+        orphaned_profiles_removed: reconcileResult?.orphanedProfilesRemoved || 0,
+      },
+      req,
     });
 
     res.json({ ok: true, orphaned_profiles_removed: reconcileResult?.orphanedProfilesRemoved || 0 });

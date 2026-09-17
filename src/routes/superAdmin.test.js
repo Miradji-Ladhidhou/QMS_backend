@@ -148,6 +148,59 @@ describe('PATCH /api/super-admin/tenants/:id — suspension + journal d’audit'
   });
 });
 
+describe('GET /api/super-admin/activity-log — double écriture + pagination/filtre/tri', () => {
+  it('les actions de tenant (suspend/réactive) apparaissent, filtrables par entity et tenantId, paginées', async () => {
+    tenant = await createTenant();
+    targetTenant = await createTenant();
+    await makeSuperAdmin(tenant);
+
+    await request(app)
+      .patch(`/api/super-admin/tenants/${targetTenant.tenantId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ is_suspended: true });
+    await request(app)
+      .patch(`/api/super-admin/tenants/${targetTenant.tenantId}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ is_suspended: false });
+
+    const res = await request(app)
+      .get('/api/super-admin/activity-log')
+      .query({ entity: 'tenant', tenantId: targetTenant.tenantId, limit: 10 })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.page).toBe(1);
+    expect(res.body.limit).toBe(10);
+    expect(res.body.total).toBeGreaterThanOrEqual(2);
+    const actions = res.body.data.map((row) => row.action);
+    expect(actions).toContain('TENANT_SUSPENDED');
+    expect(actions).toContain('TENANT_REACTIVATED');
+    expect(res.body.data.every((row) => row.tenant_id === targetTenant.tenantId)).toBe(true);
+    expect(res.body.data[0].actor.full_name).toBe('Test Admin');
+  });
+
+  it('un changement de rôle via PATCH /users/:id produit à la fois USER_UPDATED et USER_ROLE_CHANGED', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    await makeSuperAdmin(tenant);
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .patch(`/api/super-admin/users/${member.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ role: 'manager' });
+    expect(res.status).toBe(200);
+
+    const log = await request(app)
+      .get('/api/super-admin/activity-log')
+      .query({ entity: 'user', actorId: tenant.admin.id })
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    const actions = log.body.data.filter((row) => row.entity_id === member.id).map((row) => row.action);
+    expect(actions).toContain('USER_UPDATED');
+    expect(actions).toContain('USER_ROLE_CHANGED');
+  });
+});
+
 describe('GET /api/super-admin/stats', () => {
   it('renvoie des totaux cohérents (au moins notre tenant de test)', async () => {
     tenant = await createTenant();
