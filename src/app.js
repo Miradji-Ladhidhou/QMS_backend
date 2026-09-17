@@ -7,7 +7,6 @@ import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import jwt from 'jsonwebtoken';
 import { authLimiter, apiLimiter } from './middleware/rateLimit.js';
 import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
@@ -92,27 +91,7 @@ app.use(apiLimiter);
 app.use(express.json({ limit: '5mb' }));
 
 app.get('/health', (req, res) => {
-  // Diagnostic temporaire (SUPABASE_JWT_SECRET, voir middleware/auth.js) — jamais la valeur
-  // elle-même, juste sa présence/longueur et un aller-retour signature/vérification local pour
-  // confirmer que la variable d'environnement Render est bien celle attendue par jsonwebtoken.
-  // À retirer une fois le diagnostic terminé.
-  let jwtSelfTest = 'no_secret';
-  const secret = process.env.SUPABASE_JWT_SECRET;
-  if (secret) {
-    try {
-      const testToken = jwt.sign({ sub: 'diagnostic' }, secret, { algorithm: 'HS256', expiresIn: 60 });
-      const decoded = jwt.verify(testToken, secret);
-      jwtSelfTest = decoded.sub === 'diagnostic' ? 'ok' : 'mismatch';
-    } catch (err) {
-      jwtSelfTest = `error: ${err.message}`;
-    }
-  }
-  res.json({
-    status: 'ok',
-    jwtSecretPresent: Boolean(secret),
-    jwtSecretLength: secret ? secret.length : 0,
-    jwtSelfTest,
-  });
+  res.json({ status: 'ok' });
 });
 
 app.use('/api/auth', authLimiter, authRoutes);
