@@ -22,14 +22,14 @@ function formatDateShort(dateStr) {
 const KPI_RECENT_WINDOW = 6;
 
 // records : déjà trié par period_date croissant chez les deux appelants (voir plus bas).
-function computeRecentAverage(records) {
+export function computeRecentAverage(records) {
   const recent = records.slice(-KPI_RECENT_WINDOW);
   return recent.length > 0 ? Number((recent.reduce((sum, r) => sum + r.value, 0) / recent.length).toFixed(2)) : null;
 }
 
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js) : neutre si pas d'objectif ou pas
 // encore de valeur, sinon atteint/non atteint selon le sens de l'objectif.
-function getKpiStatus(value, target, targetDirection) {
+export function getKpiStatus(value, target, targetDirection) {
   if (value === null || value === undefined || target === null || target === undefined) {
     return 'neutral';
   }
@@ -48,7 +48,7 @@ const SERIES_COLORS = ['#1F3864', '#E69F00', '#009E73', '#CC79A7', '#0072B2', '#
 // n'est "multi-séries" que si plusieurs libellés distincts apparaissent réellement dans ses
 // enregistrements (séries de calcul + éventuelle saisie manuelle détachée), jamais sur la
 // seule présence de plusieurs calculation_configs si une seule a des valeurs.
-function buildSeriesInfo(kpi) {
+export function buildSeriesInfo(kpi) {
   const seriesConfigs = kpi.calculation_configs || [];
   const seriesById = new Map(seriesConfigs.map((c) => [c.id, c]));
   const manualLabel = seriesConfigs.length > 1 ? 'Valeur manuelle' : 'Valeur';
@@ -313,6 +313,48 @@ function drawSeriesAverages(doc, x, y, maxWidth, seriesList, unit) {
   return cursorY + lineHeight;
 }
 
+// Commentaires (kpi_records.comment, saisis à l'enregistrement d'une valeur — voir
+// RECORDS_SELECT dans routes/kpis.js) : jamais dans le tableau période/valeur/source, trop
+// étroit pour du texte libre — un bloc séparé en dessous, uniquement les relevés qui en portent
+// réellement un (la plupart n'en ont pas). Hauteur mesurée à l'avance (measureComments) plutôt
+// que laissée au retour à la ligne automatique de pdfkit : mêmes raisons que le reste du
+// fichier (ensureSpace doit connaître la hauteur totale d'une section AVANT de la dessiner,
+// pour ne jamais la couper au milieu sur un saut de page).
+function formatCommentEntry(record, seriesLabel) {
+  const label = seriesLabel ? ` (${seriesLabel})` : '';
+  return `${formatDateShort(record.period_date)}${label} — ${record.comment.trim()}`;
+}
+
+function collectMonoComments(lastRecords) {
+  return [...lastRecords].reverse().filter((r) => r.comment && r.comment.trim()).map((r) => formatCommentEntry(r));
+}
+
+function collectMultiComments(seriesList) {
+  return seriesList
+    .flatMap((series) => series.records.slice(-RECORD_ROWS_MAX).map((record) => ({ record, seriesLabel: series.label })))
+    .filter(({ record }) => record.comment && record.comment.trim())
+    .sort((a, b) => (a.record.period_date < b.record.period_date ? 1 : -1))
+    .map(({ record, seriesLabel }) => formatCommentEntry(record, seriesLabel));
+}
+
+function measureComments(doc, lines, width) {
+  if (lines.length === 0) return 0;
+  doc.font('Body').fontSize(7);
+  const height = lines.reduce((sum, text) => sum + doc.heightOfString(text, { width }) + 2, 0);
+  return 9 + height + 4;
+}
+
+function drawComments(doc, x, width, lines) {
+  if (lines.length === 0) return;
+  doc.font('Body').fontSize(7).fillColor(MUTED).text('Commentaires :', x, doc.y, { width });
+  doc.y += 9;
+  lines.forEach((text) => {
+    doc.font('Body').fontSize(7).fillColor(INK).text(text, x, doc.y, { width });
+    doc.y += doc.heightOfString(text, { width }) + 2;
+  });
+  doc.y += 4;
+}
+
 // Enveloppe locale de drawLetterheadHeader (pdfTheme.js) qui garde la même signature
 // (doc, tenantName, tenantLogo) que l'ancien drawPageHeader — évite de faire remonter un objet
 // headerArgs à travers ensureSpace/drawKpiSection/drawSummaryPage, déjà tous paramétrés sur
@@ -350,11 +392,13 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   // moyennes par série (drawSeriesAverages) et un graphique multi-lignes pleine largeur, sans
   // tableau période/valeur/source à côté (pas de colonne "valeur" unique qui aurait un sens).
   if (showMultiSeries) {
+    const multiCommentLines = collectMultiComments(seriesList);
     // Hauteur de la rangée de moyennes inconnue à l'avance (dépend du nombre de séries et de
     // la longueur des libellés, donc du retour à la ligne) — 26pt couvre confortablement
     // jusqu'à 2 lignes, cas très largement majoritaire ; mieux vaut sur-estimer que risquer
-    // une section coupée (même principe que le commentaire mono-série ci-dessous).
-    const requiredHeight = 20 + 26 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0);
+    // une section coupée (même principe que le bloc de commentaires, mesuré séparément).
+    const requiredHeight =
+      20 + 26 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0) + measureComments(doc, multiCommentLines, CONTENT_WIDTH);
     ensureSpace(doc, tenantName, tenantLogo, requiredHeight);
 
     const sectionTop = doc.y;
@@ -375,6 +419,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     });
 
     doc.y = chartY + CHART_HEIGHT + 6;
+
+    drawComments(doc, PAGE_MARGIN, CONTENT_WIDTH, multiCommentLines);
 
     if (isImportBased) {
       const auditLine =
@@ -401,12 +447,14 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
   // KPI du frontend et le Dashboard.
   const averageValue = computeRecentAverage(records);
   const status = getKpiStatus(averageValue, kpi.target, targetDirection);
+  const monoCommentLines = collectMonoComments(lastRecords);
 
   // 32pt titre+objectif avant le graphique, CHART_HEIGHT pour le graphique, puis marge/
   // séparateur/mention d'audit — sous-estimer ce total est ce qui casse la mise en page
   // (une section qui déborde milieu de dessin se retrouve coupée n'importe où sur la page
   // suivante). Mieux vaut sur-estimer largement que de risquer une section tronquée.
-  const requiredHeight = 32 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0);
+  const requiredHeight =
+    32 + CHART_HEIGHT + 26 + (isImportBased ? 14 : 0) + measureComments(doc, monoCommentLines, CONTENT_WIDTH);
   ensureSpace(doc, tenantName, tenantLogo, requiredHeight);
 
   const sectionTop = doc.y;
@@ -464,6 +512,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
     });
 
   doc.y = chartY + CHART_HEIGHT + 6;
+
+  drawComments(doc, PAGE_MARGIN, CONTENT_WIDTH, monoCommentLines);
 
   if (isImportBased) {
     const auditLine =

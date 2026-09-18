@@ -119,8 +119,20 @@ describe('GET /api/kpis/report — filtrage par dossier, cohérent avec GET /api
     // Insertion directe des relevés (bypass du pipeline d'import, hors périmètre ici) : seule
     // la présence de records avec un config_id distinct par série importe pour exercer
     // buildSeriesInfo/drawMultiSeriesChart dans kpiReportPdf.js.
+    // comment sur un relevé : exerce collectMultiComments/measureComments/drawComments
+    // (kpiReportPdf.js) — un texte de commentaire assez long pour déclencher un retour à la
+    // ligne dans le bloc mesuré à l'avance, le cas qui casserait la mise en page s'il était mal
+    // pris en compte dans requiredHeight.
     await admin.from('kpi_records').insert([
-      { tenant_id: tenant.tenantId, kpi_id: kpi.body.id, config_id: seriesA.body.id, period_date: '2026-01-01', value: 5, source: 'import' },
+      {
+        tenant_id: tenant.tenantId,
+        kpi_id: kpi.body.id,
+        config_id: seriesA.body.id,
+        period_date: '2026-01-01',
+        value: 5,
+        source: 'import',
+        comment: 'Commentaire assez long pour vérifier que le retour à la ligne automatique ne casse pas la mise en page du rapport.',
+      },
       { tenant_id: tenant.tenantId, kpi_id: kpi.body.id, config_id: seriesA.body.id, period_date: '2026-02-01', value: 7, source: 'import' },
       { tenant_id: tenant.tenantId, kpi_id: kpi.body.id, config_id: seriesB.body.id, period_date: '2026-01-01', value: 3, source: 'import' },
       { tenant_id: tenant.tenantId, kpi_id: kpi.body.id, config_id: seriesB.body.id, period_date: '2026-02-01', value: 9, source: 'import' },
@@ -132,6 +144,54 @@ describe('GET /api/kpis/report — filtrage par dossier, cohérent avec GET /api
       .responseType('blob');
     expect(res.status).toBe(200);
     expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('200 et PDF valide pour un KPI mono-série avec un commentaire sur un relevé', async () => {
+    tenant = await createTenant();
+
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI avec commentaire', target: 10, target_direction: 'max' });
+
+    await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 8, comment: 'Relevé commenté pour vérifier le rendu du rapport.' });
+
+    const res = await request(app)
+      .get('/api/kpis/report')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+    expect(res.status).toBe(200);
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+});
+
+describe('GET /api/kpis/report?format=xlsx — classeur Excel équivalent', () => {
+  it('200 avec un classeur Excel valide (signature ZIP), incluant les commentaires', async () => {
+    tenant = await createTenant();
+
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI Excel', target: 10, target_direction: 'max' });
+
+    await request(app)
+      .post(`/api/kpis/${kpi.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_date: '2026-01-01', value: 8, comment: 'Commentaire à retrouver dans le classeur.' });
+
+    const res = await request(app)
+      .get('/api/kpis/report')
+      .query({ format: 'xlsx' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    // Signature de fichier ZIP (PK\x03\x04) : un .xlsx est un conteneur ZIP.
+    expect(Buffer.from(res.body).subarray(0, 2).toString()).toBe('PK');
   });
 });
 

@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
+import { buildKpiReportXlsx } from '../services/kpiReportXlsx.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -74,7 +75,7 @@ router.get('/', async (req, res) => {
 // frontend) pour que le PDF corresponde toujours à ce que l'utilisateur regarde, plutôt que de
 // toujours tout exporter en vrac quel que soit le dossier ouvert.
 router.get('/report', async (req, res) => {
-  const { folder_id: folderId } = req.query;
+  const { folder_id: folderId, format } = req.query;
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
@@ -121,6 +122,13 @@ router.get('/report', async (req, res) => {
         detailStatsByKpi[importRow.kpi_id].lastImportedAt = importRow.imported_at;
       }
     }
+  }
+
+  if (format === 'xlsx') {
+    const xlsxBuffer = await buildKpiReportXlsx({ kpis });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    return res.send(Buffer.from(xlsxBuffer));
   }
 
   const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, tenantLogo, kpis, detailStatsByKpi, scoped: Boolean(folderId) });
