@@ -7,6 +7,7 @@ import 'express-async-errors';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import { authLimiter, apiLimiter } from './middleware/rateLimit.js';
 import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
@@ -85,6 +86,11 @@ app.use(
   })
 );
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+// Compresse les réponses JSON (gzip) — les listes (CAPA, documents, risques...) peuvent
+// dépasser plusieurs centaines de Ko décompressées ; sur une connexion mobile, réduire le
+// volume transféré compte au moins autant que le nombre d'allers-retours réseau déjà réduit
+// ailleurs (voir CurrentUserProvider.jsx/TenantProvider.jsx/UsersProvider.jsx côté frontend).
+app.use(compression());
 app.use(apiLimiter);
 // Limite par défaut (100kb) trop juste pour POST /api/reports/table-pdf : un export de
 // plusieurs centaines d'enregistrements formatés dépasse vite ce seuil.
