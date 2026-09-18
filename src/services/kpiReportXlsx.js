@@ -42,9 +42,9 @@ function titleRow(sheet, rowNumber, columnCount, text) {
 // moyenne unique mélangerait des séries sans rapport entre elles (voir buildSeriesInfo).
 function addSummarySheet(workbook, kpis) {
   const sheet = workbook.addWorksheet('Synthèse');
-  sheet.columns = [{ width: 40 }, { width: 18 }, { width: 18 }, { width: 22 }];
-  titleRow(sheet, 1, 4, 'Synthèse des indicateurs qualité (KPI)');
-  headerRow(sheet, 2, ['KPI', 'Moyenne', 'Objectif', 'Statut']);
+  sheet.columns = [{ width: 36 }, { width: 24 }, { width: 18 }, { width: 18 }, { width: 22 }];
+  titleRow(sheet, 1, 5, 'Synthèse des indicateurs qualité (KPI)');
+  headerRow(sheet, 2, ['KPI', 'Dossier', 'Moyenne', 'Objectif', 'Statut']);
 
   kpis.forEach((kpi, i) => {
     const rowNumber = 3 + i;
@@ -57,10 +57,11 @@ function addSummarySheet(workbook, kpis) {
 
     const row = sheet.getRow(rowNumber);
     row.getCell(1).value = kpi.name;
-    row.getCell(2).value = showMultiSeries ? 'Plusieurs séries' : averageValue !== null ? `${averageValue} ${kpi.unit || ''}`.trim() : null;
-    row.getCell(3).value = hasTarget ? `${targetDirection === 'max' ? '<=' : '>='} ${kpi.target} ${kpi.unit || ''}`.trim() : null;
-    row.getCell(4).value = status ? STATUS_LABELS[status] : null;
-    if (status) row.getCell(4).font = { color: { argb: STATUS_ARGB[status] }, bold: true };
+    row.getCell(2).value = kpi.folder?.name || 'Sans dossier';
+    row.getCell(3).value = showMultiSeries ? 'Plusieurs séries' : averageValue !== null ? `${averageValue} ${kpi.unit || ''}`.trim() : null;
+    row.getCell(4).value = hasTarget ? `${targetDirection === 'max' ? '<=' : '>='} ${kpi.target} ${kpi.unit || ''}`.trim() : null;
+    row.getCell(5).value = status ? STATUS_LABELS[status] : null;
+    if (status) row.getCell(5).font = { color: { argb: STATUS_ARGB[status] }, bold: true };
     row.eachCell((cell) => {
       cell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
     });
@@ -68,7 +69,7 @@ function addSummarySheet(workbook, kpis) {
   });
 
   sheet.views = [{ state: 'frozen', ySplit: 2 }];
-  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2 + kpis.length, column: 4 } };
+  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: 2 + kpis.length, column: 5 } };
 }
 
 // Feuille "Détail" — une ligne par relevé, tous KPI confondus (contrairement au PDF, qui ne
@@ -77,9 +78,9 @@ function addSummarySheet(workbook, kpis) {
 // Colonne Série vide pour un KPI mono-série (pas de libellé de série à afficher).
 function addDetailSheet(workbook, kpis) {
   const sheet = workbook.addWorksheet('Détail');
-  sheet.columns = [{ width: 32 }, { width: 20 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 50 }];
-  titleRow(sheet, 1, 6, 'Détail des relevés');
-  headerRow(sheet, 2, ['KPI', 'Série', 'Période', 'Valeur', 'Source', 'Commentaire']);
+  sheet.columns = [{ width: 32 }, { width: 24 }, { width: 20 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 50 }];
+  titleRow(sheet, 1, 7, 'Détail des relevés');
+  headerRow(sheet, 2, ['KPI', 'Dossier', 'Série', 'Période', 'Valeur', 'Source', 'Commentaire']);
 
   let rowNumber = 3;
   kpis.forEach((kpi) => {
@@ -91,11 +92,12 @@ function addDetailSheet(workbook, kpis) {
     entries.forEach(({ record, seriesLabel }) => {
       const row = sheet.getRow(rowNumber);
       row.getCell(1).value = kpi.name;
-      row.getCell(2).value = seriesLabel;
-      row.getCell(3).value = record.period_date;
-      row.getCell(4).value = record.value;
-      row.getCell(5).value = record.source === 'import' ? 'Import' : 'Manuelle';
-      row.getCell(6).value = record.comment || null;
+      row.getCell(2).value = kpi.folder?.name || 'Sans dossier';
+      row.getCell(3).value = seriesLabel;
+      row.getCell(4).value = record.period_date;
+      row.getCell(5).value = record.value;
+      row.getCell(6).value = record.source === 'import' ? 'Import' : 'Manuelle';
+      row.getCell(7).value = record.comment || null;
       row.eachCell((cell) => {
         cell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
       });
@@ -105,12 +107,29 @@ function addDetailSheet(workbook, kpis) {
   });
 
   sheet.views = [{ state: 'frozen', ySplit: 2 }];
-  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: rowNumber - 1, column: 6 } };
+  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: rowNumber - 1, column: 7 } };
+}
+
+// Trié par dossier (racine d'abord, puis alphabétique) puis par nom de KPI — même ordre que
+// le regroupement du PDF (groupKpisByFolder, kpiReportPdf.js), pour que les deux versions du
+// même rapport se lisent dans le même ordre.
+function sortByFolderThenName(kpis) {
+  return [...kpis].sort((a, b) => {
+    const folderA = a.folder?.name || '';
+    const folderB = b.folder?.name || '';
+    if (folderA !== folderB) {
+      if (!folderA) return -1;
+      if (!folderB) return 1;
+      return folderA.localeCompare(folderB, 'fr');
+    }
+    return a.name.localeCompare(b.name, 'fr');
+  });
 }
 
 export async function buildKpiReportXlsx({ kpis }) {
+  const sortedKpis = sortByFolderThenName(kpis);
   const workbook = new ExcelJS.Workbook();
-  addSummarySheet(workbook, kpis);
-  addDetailSheet(workbook, kpis);
+  addSummarySheet(workbook, sortedKpis);
+  addDetailSheet(workbook, sortedKpis);
   return workbook.xlsx.writeBuffer();
 }

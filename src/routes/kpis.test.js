@@ -55,13 +55,15 @@ describe('POST /api/kpi-folders — création réservée à admin/manager', () =
   });
 });
 
-// Régression : le rapport PDF n'était jamais filtré par dossier (toujours tout le tenant),
-// contrairement à la page KPI qui navigue par dossier — "pas conforme à la page" signalé par
-// l'utilisateur. Pas d'extraction de texte du PDF généré (aucune dépendance de ce genre dans
-// le projet, voir la convention établie pour les autres routes génératrices de PDF) : on
-// vérifie que la requête respecte bien ?folder_id sans jamais planter, y compris pour un
-// dossier vide ou un KPI multi-séries (nouveau chemin de dessin dans kpiReportPdf.js).
-describe('GET /api/kpis/report — filtrage par dossier, cohérent avec GET /api/kpis', () => {
+// Toujours TOUT le tenant sans folder_id (comportement par défaut, voir GET /kpis/report côté
+// backend) — un rapport d'audit doit couvrir l'ensemble des KPI, organisés par dossier
+// (groupKpisByFolder dans kpiReportPdf.js), pas seulement le dossier ouvert à l'écran au
+// moment du clic. ?folder_id reste accepté pour un appel externe qui voudrait un sous-ensemble.
+// Pas d'extraction de texte du PDF généré (aucune dépendance de ce genre dans le projet, voir
+// la convention établie pour les autres routes génératrices de PDF) : on vérifie que la requête
+// ne plante jamais, y compris pour un dossier vide ou un KPI multi-séries (nouveau chemin de
+// dessin dans kpiReportPdf.js).
+describe('GET /api/kpis/report — toujours tout le tenant, organisé par dossier', () => {
   it('200 et PDF valide sans folder_id (tout le tenant), avec folder_id=root, et pour un dossier vide', async () => {
     // Timeout par défaut (5s) trop juste pour 3 générations de PDF séquentielles sous la
     // charge de la suite complète (passe en isolation, plus flaky une fois combiné aux ~20
@@ -192,6 +194,33 @@ describe('GET /api/kpis/report?format=xlsx — classeur Excel équivalent', () =
     expect(res.headers['content-type']).toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     // Signature de fichier ZIP (PK\x03\x04) : un .xlsx est un conteneur ZIP.
     expect(Buffer.from(res.body).subarray(0, 2).toString()).toBe('PK');
+  });
+
+  it('200 pour un tenant avec des KPI répartis entre la racine et un dossier nommé (embed folder:kpi_folders)', async () => {
+    tenant = await createTenant();
+
+    await request(app).post('/api/kpis').set('Authorization', `Bearer ${tenant.admin.token}`).send({ name: 'KPI racine' });
+
+    const folder = await request(app)
+      .post('/api/kpi-folders')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Dossier nommé' });
+    await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI dans un dossier', folder_id: folder.body.id });
+
+    const pdf = await request(app).get('/api/kpis/report').set('Authorization', `Bearer ${tenant.admin.token}`).responseType('blob');
+    expect(pdf.status).toBe(200);
+    expect(Buffer.from(pdf.body).subarray(0, 4).toString()).toBe('%PDF');
+
+    const xlsx = await request(app)
+      .get('/api/kpis/report')
+      .query({ format: 'xlsx' })
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+    expect(xlsx.status).toBe(200);
+    expect(Buffer.from(xlsx.body).subarray(0, 2).toString()).toBe('PK');
   });
 });
 

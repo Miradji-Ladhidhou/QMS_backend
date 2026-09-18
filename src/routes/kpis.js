@@ -66,14 +66,15 @@ router.get('/', async (req, res) => {
   res.json(visible.map((kpi) => ({ ...kpi, is_private_to_me: kpi.category?.owner_user_id === req.user.id })));
 });
 
-// GET /api/kpis/report — rapport PDF de synthèse (audit / revue de direction). Placée
+// GET /api/kpis/report — rapport PDF/Excel de synthèse (audit / revue de direction). Placée
 // avant GET /:id : sinon "report" serait capturé comme un id et renverrait 404.
-// ?folder_id= optionnel, mêmes valeurs que GET / ('root' ou un uuid) : sans lui, le rapport
-// couvre tout le tenant (comportement historique, conservé pour un appel externe éventuel) ;
-// avec lui, le rapport se limite exactement aux KPI du dossier actuellement affiché à l'écran
-// — la page KPI le fournit désormais systématiquement (voir handleGenerateReport côté
-// frontend) pour que le PDF corresponde toujours à ce que l'utilisateur regarde, plutôt que de
-// toujours tout exporter en vrac quel que soit le dossier ouvert.
+// Toujours TOUT le tenant, organisé par dossier (voir folder:kpi_folders ci-dessous et le
+// regroupement dans kpiReportPdf.js/kpiReportXlsx.js) — un auditeur qui demande "la liste des
+// KPI" doit obtenir l'ensemble, jamais juste le dossier ouvert à l'écran au moment du clic
+// (bug de compréhension corrigé : le filtrage par dossier avait été ajouté pour que le PDF
+// corresponde à ce qui est affiché, mais un rapport d'audit doit au contraire couvrir tout,
+// avec le dossier de chaque KPI indiqué). ?folder_id= reste accepté pour un appel externe qui
+// voudrait un sous-ensemble précis, mais n'est plus envoyé par la page KPI elle-même.
 router.get('/report', async (req, res) => {
   const { folder_id: folderId, format } = req.query;
 
@@ -83,9 +84,10 @@ router.get('/report', async (req, res) => {
   let query = supabase
     .from('kpis')
     // calculation_configs nécessaire pour reconnaître un KPI multi-séries dans le PDF (voir
-    // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /.
+    // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /. folder : nom du dossier de
+    // chaque KPI, pour le regroupement du rapport (null = à la racine).
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), folder:kpi_folders(id, name), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 

@@ -355,6 +355,33 @@ function drawComments(doc, x, width, lines) {
   doc.y += 4;
 }
 
+// Regroupe les KPI par dossier direct (kpi.folder.name, jamais le chemin complet des
+// dossiers imbriqués — suffisant pour situer un KPI dans le rapport sans ajouter la
+// complexité d'une arborescence complète). "Sans dossier" (racine) toujours en premier,
+// puis les dossiers nommés par ordre alphabétique.
+function groupKpisByFolder(kpis) {
+  const groups = new Map();
+  kpis.forEach((kpi) => {
+    const name = kpi.folder?.name || 'Sans dossier';
+    if (!groups.has(name)) groups.set(name, []);
+    groups.get(name).push(kpi);
+  });
+  const names = [...groups.keys()].sort((a, b) => {
+    if (a === 'Sans dossier') return -1;
+    if (b === 'Sans dossier') return 1;
+    return a.localeCompare(b, 'fr');
+  });
+  return names.map((name) => ({ name, kpis: groups.get(name) }));
+}
+
+function drawFolderHeading(doc, tenantName, tenantLogo, folderName) {
+  ensureSpace(doc, tenantName, tenantLogo, 26);
+  doc.font('Body-Bold').fontSize(13).fillColor(INK).text(`Dossier : ${folderName}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.moveDown(0.3);
+  doc.moveTo(PAGE_MARGIN, doc.y).lineTo(PAGE_MARGIN + CONTENT_WIDTH, doc.y).strokeColor(INK).lineWidth(1).stroke();
+  doc.moveDown(0.6);
+}
+
 // Enveloppe locale de drawLetterheadHeader (pdfTheme.js) qui garde la même signature
 // (doc, tenantName, tenantLogo) que l'ancien drawPageHeader — évite de faire remonter un objet
 // headerArgs à travers ensureSpace/drawKpiSection/drawSummaryPage, déjà tous paramétrés sur
@@ -541,19 +568,25 @@ function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
   doc.font('Body');
   doc.moveDown(0.8);
 
-  const columns = { name: 0.42, value: 0.2, target: 0.23, status: 0.15 };
+  const columns = { name: 0.3, folder: 0.19, value: 0.18, target: 0.2, status: 0.13 };
   let rowY = doc.y;
 
   function drawHeaderRow() {
     doc.fontSize(8).fillColor(MUTED);
     doc.text('KPI', PAGE_MARGIN, rowY, { width: CONTENT_WIDTH * columns.name });
-    doc.text('Moyenne', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, { width: CONTENT_WIDTH * columns.value });
-    doc.text('Objectif', PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.value), rowY, {
+    doc.text('Dossier', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, { width: CONTENT_WIDTH * columns.folder });
+    doc.text('Moyenne', PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder), rowY, {
+      width: CONTENT_WIDTH * columns.value,
+    });
+    doc.text('Objectif', PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder + columns.value), rowY, {
       width: CONTENT_WIDTH * columns.target,
     });
-    doc.text('Statut', PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.value + columns.target), rowY, {
-      width: CONTENT_WIDTH * columns.status,
-    });
+    doc.text(
+      'Statut',
+      PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder + columns.value + columns.target),
+      rowY,
+      { width: CONTENT_WIDTH * columns.status }
+    );
     rowY += 12;
     doc
       .moveTo(PAGE_MARGIN, rowY)
@@ -586,20 +619,30 @@ function drawSummaryPage(doc, tenantName, tenantLogo, kpis) {
 
     doc.fontSize(9).fillColor(INK);
     doc.text(kpi.name, PAGE_MARGIN, rowY, { width: CONTENT_WIDTH * columns.name });
+    doc.fontSize(9).fillColor(MUTED);
+    doc.text(kpi.folder?.name || 'Sans dossier', PAGE_MARGIN + CONTENT_WIDTH * columns.name, rowY, {
+      width: CONTENT_WIDTH * columns.folder,
+    });
+    doc.fillColor(INK);
     doc.text(
       showMultiSeries ? 'Plusieurs séries' : averageValue !== null ? `${averageValue} ${kpi.unit || ''}` : '—',
-      PAGE_MARGIN + CONTENT_WIDTH * columns.name,
+      PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder),
       rowY,
       { width: CONTENT_WIDTH * columns.value }
     );
     doc.text(
       hasTarget ? `${targetDirection === 'max' ? '<=' : '>='} ${kpi.target} ${kpi.unit || ''}` : '—',
-      PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.value),
+      PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder + columns.value),
       rowY,
       { width: CONTENT_WIDTH * columns.target }
     );
     if (status) {
-      drawStatusDot(doc, PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.value + columns.target) + 6, rowY + 4, status);
+      drawStatusDot(
+        doc,
+        PAGE_MARGIN + CONTENT_WIDTH * (columns.name + columns.folder + columns.value + columns.target) + 6,
+        rowY + 4,
+        status
+      );
     }
 
     rowY += 16;
@@ -620,13 +663,20 @@ export function buildKpiReportPdf({ tenantName, tenantLogo, kpis, detailStatsByK
     drawPageHeader(doc, tenantName, tenantLogo);
 
     if (kpis.length === 0) {
-      // scoped : le rapport porte sur un dossier précis (voir GET /kpis/report ?folder_id=) —
-      // "aucun KPI pour ce tenant" serait faux si d'autres dossiers en contiennent.
+      // scoped : le rapport porte sur un dossier précis (voir GET /kpis/report ?folder_id=,
+      // toujours tout le tenant sauf appel externe explicite) — "aucun KPI pour ce tenant"
+      // serait faux si d'autres dossiers en contiennent.
       const emptyMessage = scoped ? 'Aucun KPI dans ce dossier.' : 'Aucun KPI configuré pour ce tenant.';
       doc.fontSize(10).fillColor(MUTED).text(emptyMessage, PAGE_MARGIN, doc.y);
     } else {
-      kpis.forEach((kpi) => {
-        drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStatsByKpi[kpi.id]);
+      // Regroupé par dossier (voir groupKpisByFolder) : un auditeur qui demande "la liste des
+      // KPI" doit voir l'organisation complète du tenant, pas un vrac dans l'ordre alphabétique
+      // pur qui mélangerait des KPI de dossiers différents.
+      groupKpisByFolder(kpis).forEach(({ name, kpis: folderKpis }) => {
+        drawFolderHeading(doc, tenantName, tenantLogo, name);
+        folderKpis.forEach((kpi) => {
+          drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStatsByKpi[kpi.id]);
+        });
       });
       drawSummaryPage(doc, tenantName, tenantLogo, kpis);
     }
