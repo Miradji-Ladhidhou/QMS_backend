@@ -222,6 +222,32 @@ describe('GET /api/kpis/report?format=xlsx — classeur Excel équivalent', () =
     expect(xlsx.status).toBe(200);
     expect(Buffer.from(xlsx.body).subarray(0, 2).toString()).toBe('PK');
   });
+
+  it('?ids= restreint le rapport à la sélection (barre de sélection multiple de Kpis.jsx)', async () => {
+    tenant = await createTenant();
+
+    const kept = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'KPI gardé' });
+    await request(app).post('/api/kpis').set('Authorization', `Bearer ${tenant.admin.token}`).send({ name: 'KPI exclu' });
+
+    const xlsx = await request(app)
+      .get('/api/kpis/report')
+      .query({ format: 'xlsx', ids: kept.body.id })
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+    expect(xlsx.status).toBe(200);
+    expect(Buffer.from(xlsx.body).subarray(0, 2).toString()).toBe('PK');
+
+    const pdf = await request(app)
+      .get('/api/kpis/report')
+      .query({ ids: kept.body.id })
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+    expect(pdf.status).toBe(200);
+    expect(Buffer.from(pdf.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
 });
 
 // calc_type = 'manual' (migration 26) : une série sans recette de calcul, servant à regrouper

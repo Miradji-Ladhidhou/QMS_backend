@@ -75,8 +75,10 @@ router.get('/', async (req, res) => {
 // corresponde à ce qui est affiché, mais un rapport d'audit doit au contraire couvrir tout,
 // avec le dossier de chaque KPI indiqué). ?folder_id= reste accepté pour un appel externe qui
 // voudrait un sous-ensemble précis, mais n'est plus envoyé par la page KPI elle-même.
+// ?ids= (liste d'UUID séparés par des virgules) restreint le rapport à une sélection précise
+// de KPI — utilisé par la barre de sélection multiple de Kpis.jsx, distincte de ?folder_id=.
 router.get('/report', async (req, res) => {
-  const { folder_id: folderId, format } = req.query;
+  const { folder_id: folderId, ids, format } = req.query;
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
@@ -93,6 +95,10 @@ router.get('/report', async (req, res) => {
 
   if (folderId) {
     query = folderId === 'root' ? query.is('folder_id', null) : query.eq('folder_id', folderId);
+  }
+  const idList = typeof ids === 'string' ? ids.split(',').filter(Boolean) : [];
+  if (idList.length > 0) {
+    query = query.in('id', idList);
   }
 
   const { data: rawKpis, error } = await query.order('name', { ascending: true });
@@ -133,7 +139,13 @@ router.get('/report', async (req, res) => {
     return res.send(Buffer.from(xlsxBuffer));
   }
 
-  const pdfBuffer = await buildKpiReportPdf({ tenantName: tenant?.name, tenantLogo, kpis, detailStatsByKpi, scoped: Boolean(folderId) });
+  const pdfBuffer = await buildKpiReportPdf({
+    tenantName: tenant?.name,
+    tenantLogo,
+    kpis,
+    detailStatsByKpi,
+    scoped: Boolean(folderId) || idList.length > 0,
+  });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="rapport-kpis-${new Date().toISOString().slice(0, 10)}.pdf"`);
