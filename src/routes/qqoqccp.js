@@ -22,13 +22,20 @@ const MANAGER_ROLES = ['admin', 'manager'];
 router.use(requireAuth);
 router.use(requireMenuVisible('qqoqccp'));
 
-// GET /api/qqoqccp — liste légère (sans les 7 champs longs), la plus récente en premier.
-// Visible par tout le tenant par défaut (même modèle que les Documents) — seule une catégorie
-// explicitement restreinte (Paramètres > Catégories) limite l'accès.
+// GET /api/qqoqccp — liste légère par défaut (sans les 7 champs longs), la plus récente en
+// premier. Visible par tout le tenant par défaut (même modèle que les Documents) — seule une
+// catégorie explicitement restreinte (Paramètres > Catégories) limite l'accès.
+// ?full=true bascule sur '*' (7 champs QQOQCCP + ai_synthesis/closure_reason inclus) — réservé
+// aux exports PDF/Excel/Word de la liste (voir Qqoqccp.jsx), jamais chargé par la page en
+// affichage normal pour ne pas alourdir son GET initial.
 router.get('/', async (req, res) => {
   const query = supabase
     .from('qqoqccp_analyses')
-    .select('id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted, owner_user_id)')
+    .select(
+      req.query.full === 'true'
+        ? '*, capa:capas!qqoqccp_analyses_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)'
+        : 'id, title, status, created_at, created_by, category_id, category:categories(id, name, color, is_restricted, owner_user_id)'
+    )
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
