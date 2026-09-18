@@ -1,24 +1,5 @@
-import jwt from 'jsonwebtoken';
 import { supabase } from '../services/supabase.js';
 import { runWithRequestContext } from '../services/requestContext.js';
-
-// Diagnostic temporaire, best-effort, jamais bloquant (voir la tentative de vérification
-// locale du jeton, annulée : ça vérifiait correctement un jeton auto-signé avec
-// SUPABASE_JWT_SECRET, mais rejetait les vrais jetons Supabase — signe que ce projet utilise
-// peut-être des clés de signature asymétriques plutôt que le secret partagé HS256 "legacy").
-// N'affecte RIEN du comportement de connexion : getUser() reste la seule vérification réelle
-// juste en dessous, ceci ne fait que journaliser l'algorithme du jeton une fois par requête.
-let jwtAlgLogged = false;
-function logJwtAlgOnce(token) {
-  if (jwtAlgLogged) return;
-  try {
-    const decoded = jwt.decode(token, { complete: true });
-    console.log('[diag] en-tête du jeton reçu :', JSON.stringify(decoded?.header));
-    jwtAlgLogged = true;
-  } catch {
-    // best-effort, jamais bloquant
-  }
-}
 
 export async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -28,7 +9,6 @@ export async function requireAuth(req, res, next) {
   }
 
   const token = authHeader.slice('Bearer '.length);
-  logJwtAlgOnce(token);
 
   const {
     data: { user },
