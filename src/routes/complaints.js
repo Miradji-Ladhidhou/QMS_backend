@@ -6,6 +6,8 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
+import { buildComplaintPdf } from '../services/complaintPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -76,6 +78,42 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+});
+
+// GET /api/complaints/:id/pdf — fiche imprimable d'une réclamation (voir
+// services/complaintPdf.js). Chemin à deux segments : ne rentre jamais en conflit avec GET /:id
+// ci-dessus, même principe que /:id/pdf dans capas.js/pdca.js/procedures.js. Même règle de
+// visibilité que GET /:id.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: complaint, error } = await supabase
+    .from('complaints')
+    .select(COMPLAINT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !complaint) {
+    return res.status(404).json({ error: 'Réclamation introuvable.' });
+  }
+
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'complaint',
+    item: complaint,
+  });
+  if (!canAccess) {
+    return res.status(404).json({ error: 'Réclamation introuvable.' });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildComplaintPdf({ tenantName: tenant?.name, tenantLogo, complaint });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="reclamation-${complaint.id}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/complaints — tous les rôles (comme CAPA : n'importe qui peut enregistrer une

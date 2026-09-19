@@ -84,6 +84,44 @@ describe('GET /api/complaints — visibilité cloisonnée par propriétaire', ()
   });
 });
 
+describe('GET /api/complaints/:id/pdf', () => {
+  it('génère un PDF valide avec le contenu de la réclamation', async () => {
+    tenant = await createTenant();
+    const created = await makeComplaint(tenant.admin.token, { description: 'Livraison endommagée, description de test' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/complaints/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('404 pour un member qui n’a pas accès à cette réclamation (visibilité cloisonnée)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const created = await makeComplaint(tenant.admin.token, { customer_name: 'Pas pour ce member' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/complaints/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .responseType('blob');
+    expect(res.status).toBe(404);
+  });
+
+  it('404 sur un id inexistant', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .get('/api/complaints/00000000-0000-0000-0000-000000000000/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('PATCH /api/complaints/:id — réservé à admin/manager, comme CAPA', () => {
   it('403 pour un member même sur sa propre réclamation assignée', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
