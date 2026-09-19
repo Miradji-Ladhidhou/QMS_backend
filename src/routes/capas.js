@@ -14,6 +14,8 @@ const router = Router();
 const CAPA_STATUSES = ['open', 'in_progress', 'pending_verification', 'closed', 'overdue'];
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 const PATCHABLE_FIELDS = [
+  'title',
+  'origin',
   'status',
   'priority',
   'severity',
@@ -404,8 +406,9 @@ router.patch(
   }
 );
 
-// PATCH /api/capas/:id — mise à jour des champs de suivi (statut, priorité, gravité,
-// assignation, échéance, description, analyse des causes, actions, vérification d'efficacité...)
+// PATCH /api/capas/:id — mise à jour des champs d'identité (titre, origine) et de suivi
+// (statut, priorité, gravité, assignation, échéance, description, analyse des causes, actions,
+// vérification d'efficacité...)
 // Réservé à admin/manager : un member peut ouvrir une CAPA mais ne peut plus la modifier une
 // fois créée, même si elle lui est assignée — seul le commentaire de suivi lui reste ouvert
 // (POST /:id/comments, non restreint).
@@ -420,6 +423,12 @@ router.patch(
     next();
   },
   [
+    // Pas de { values: 'falsy' } ici, volontairement : title est le seul champ patchable non
+    // nullable en base (not null) — un titre explicitement vidé ('') doit être rejeté, pas
+    // silencieusement traité comme absent (voir les autres champs ci-dessous, tous nullable,
+    // où vider = effacer la valeur est le comportement voulu).
+    body('title').optional().trim().notEmpty().withMessage('Le titre est requis.'),
+    body('origin').optional({ values: 'falsy' }).trim(),
     body('status').optional({ values: 'falsy' }).isIn(CAPA_STATUSES).withMessage('Statut invalide.'),
     body('priority').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Priorité invalide.'),
     body('severity').optional({ values: 'falsy' }).isIn(CAPA_LEVELS).withMessage('Gravité invalide.'),

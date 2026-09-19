@@ -302,6 +302,50 @@ describe('PATCH /api/capas/:id', () => {
     expect(assignedRes.body.description).toBe('modifiée par l’assigné');
   });
 
+  it('titre/origine/priorité/échéance/assignation sont modifiables après création (severity reste miroir de priority)', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const [assignee] = tenant.users;
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Titre initial', origin: 'Audit interne', priority: 'low' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        title: 'Titre corrigé',
+        origin: 'Réclamation client',
+        priority: 'critical',
+        severity: 'critical',
+        due_date: '2027-01-15',
+        assigned_to: assignee.id,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.title).toBe('Titre corrigé');
+    expect(res.body.origin).toBe('Réclamation client');
+    expect(res.body.priority).toBe('critical');
+    expect(res.body.severity).toBe('critical');
+    expect(res.body.due_date).toBe('2027-01-15');
+    expect(res.body.assigned_to).toBe(assignee.id);
+  });
+
+  it('refuse un titre vidé (chaîne vide) en modification', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/capas')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'CAPA à ne pas vider' });
+
+    const res = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: '' });
+
+    expect(res.status).toBe(400);
+  });
+
   it('refuse de clôturer une CAPA sans action corrective renseignée', async () => {
     tenant = await createTenant();
     const created = await request(app)
