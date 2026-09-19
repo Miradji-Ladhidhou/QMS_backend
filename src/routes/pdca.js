@@ -6,6 +6,8 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { generatePdcaPhaseSuggestion } from '../services/groq.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
+import { buildPdcaPdf } from '../services/pdcaPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -64,6 +66,41 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+});
+
+// GET /api/pdca/:id/pdf — fiche imprimable d'un projet PDCA (voir services/pdcaPdf.js). Chemin
+// à deux segments : ne rentre jamais en conflit avec GET /:id ci-dessus, même principe que
+// /:id/pdf dans capas.js/procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: pdca, error } = await supabase
+    .from('pdca_projects')
+    .select(PDCA_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !pdca) {
+    return res.status(404).json({ error: 'Projet PDCA introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: pdca.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
+    return res.status(404).json({ error: 'Projet PDCA introuvable.' });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildPdcaPdf({ tenantName: tenant?.name, tenantLogo, pdca });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="pdca-${pdca.id}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/pdca — ouvert à tous les rôles : démarrer une démarche d'amélioration continue ne

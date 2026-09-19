@@ -29,6 +29,45 @@ async function createRestrictedCategory(token, name = 'Restreinte') {
   return res.body;
 }
 
+describe('GET /api/pdca/:id/pdf', () => {
+  it('génère un PDF valide avec le contenu du projet', async () => {
+    tenant = await createTenant();
+    const created = await makePdca(tenant.admin.token, { description: 'Description de test', plan_content: 'Contenu du plan' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/pdca/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('404 sur un projet PDCA dans une catégorie restreinte sans permission', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const category = await createRestrictedCategory(tenant.admin.token);
+    const created = await makePdca(tenant.admin.token, { category_id: category.id });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/pdca/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .responseType('blob');
+    expect(res.status).toBe(404);
+  });
+
+  it('404 sur un id inexistant', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .get('/api/pdca/00000000-0000-0000-0000-000000000000/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('POST /api/pdca — ouvert à tous les rôles', () => {
   it('un member crée un projet avec juste un titre ; owner/target_date/plan_content restent optionnels', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
