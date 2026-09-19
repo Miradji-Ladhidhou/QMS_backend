@@ -113,6 +113,29 @@ describe('POST /api/pdca — ouvert à tous les rôles', () => {
 });
 
 describe('PATCH /api/pdca/:id — admin/manager ou créateur', () => {
+  it('accepte les 4 échéances de phase (distinctes de target_date), rejette une date invalide', async () => {
+    tenant = await createTenant();
+    const pdca = await makePdca(tenant.admin.token, { target_date: '2026-09-01' });
+
+    const res = await request(app)
+      .patch(`/api/pdca/${pdca.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ plan_due_date: '2026-08-01', do_due_date: '2026-08-08', check_due_date: '2026-08-15', act_due_date: '2026-08-22' });
+    expect(res.status).toBe(200);
+    expect(res.body.plan_due_date).toBe('2026-08-01');
+    expect(res.body.do_due_date).toBe('2026-08-08');
+    expect(res.body.check_due_date).toBe('2026-08-15');
+    expect(res.body.act_due_date).toBe('2026-08-22');
+    expect(res.body.target_date).toBe('2026-09-01');
+
+    const invalid = await request(app)
+      .patch(`/api/pdca/${pdca.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ plan_due_date: 'pas-une-date' });
+    expect(invalid.status).toBe(400);
+  });
+
+
   it("le créateur (member) peut modifier son propre plan_content ; un autre member ne peut pas", async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [creator, other] = tenant.users;

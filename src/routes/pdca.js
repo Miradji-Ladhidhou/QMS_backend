@@ -208,6 +208,12 @@ router.patch(
     body('do_content').optional({ nullable: true, values: 'falsy' }).trim(),
     body('check_content').optional({ nullable: true, values: 'falsy' }).trim(),
     body('act_content').optional({ nullable: true, values: 'falsy' }).trim(),
+    // Échéance propre à chaque phase (distincte de target_date, l'échéance globale du projet) —
+    // voir scripts/add-pdca-phase-due-dates.sql et services/planningItems.js#fetchPdcaItems.
+    body('plan_due_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Échéance du Plan invalide.'),
+    body('do_due_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Échéance du Do invalide.'),
+    body('check_due_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Échéance du Check invalide.'),
+    body('act_due_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Échéance du Act invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
   ],
   requireValidCategoryId('pdca'),
@@ -234,7 +240,18 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'description', 'plan_content', 'do_content', 'check_content', 'act_content']) {
+    for (const field of [
+      'title',
+      'description',
+      'plan_content',
+      'do_content',
+      'check_content',
+      'act_content',
+      'plan_due_date',
+      'do_due_date',
+      'check_due_date',
+      'act_due_date',
+    ]) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;

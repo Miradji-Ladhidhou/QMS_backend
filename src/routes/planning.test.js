@@ -50,6 +50,61 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     expect(dates).toEqual([...dates].sort());
   });
 
+  it('un projet PDCA avec target_date ET une échéance de la phase en cours produit deux entrées distinctes', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/pdca')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'PDCA planning', target_date: '2026-09-01' });
+    expect(created.status).toBe(201);
+
+    await request(app)
+      .patch(`/api/pdca/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ plan_due_date: '2026-08-15' });
+
+    const res = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+
+    const pdcaItems = res.body.items.filter((item) => item.type === 'pdca');
+    expect(pdcaItems).toHaveLength(2);
+    const dates = pdcaItems.map((item) => item.date).sort();
+    expect(dates).toEqual(['2026-08-15', '2026-09-01']);
+    // Ids distincts : la sélection/l'export du planning (Planning.jsx) indexe par item.id, une
+    // collision entre les deux entrées d'un même projet romprait le scoping.
+    expect(new Set(pdcaItems.map((item) => item.id)).size).toBe(2);
+  });
+
+  it('un projet PDCA sans target_date NI échéance de phase n’apparaît pas dans le planning', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/pdca')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'PDCA sans échéance' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.items.some((item) => item.type === 'pdca')).toBe(false);
+  });
+
+  it('un projet PDCA clôturé n’apparaît pas dans le planning, même avec des échéances renseignées', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/pdca')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'PDCA à clôturer', target_date: '2026-09-01' });
+    for (const phase of ['plan', 'do', 'check', 'act']) {
+      await request(app)
+        .patch(`/api/pdca/${created.body.id}`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send({ [`${phase}_content`]: `Contenu ${phase}` });
+      await request(app).post(`/api/pdca/${created.body.id}/advance`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    }
+
+    const res = await request(app).get('/api/planning').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.body.items.some((item) => item.type === 'pdca')).toBe(false);
+  });
+
   it('un CAPA clôturé n’apparaît pas dans le planning', async () => {
     tenant = await createTenant();
     const capa = await request(app)

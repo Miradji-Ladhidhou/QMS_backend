@@ -295,13 +295,19 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, use
 // (member), par service, ou tout le tenant selon le mode. Même principe de transparence que les
 // risques (voir pdca.js) : la lecture reste ouverte à tous les rôles, seule la SÉLECTION des
 // items du planning personnel d'un member change ici.
+// Libellés courts — mêmes que frontend/src/lib/pdcaStatus.js#PDCA_STATUS_LABELS (dupliqués,
+// même convention que les libellés de statut dans les générateurs PDF de ce projet).
+const PDCA_PHASE_LABELS = { plan: 'Plan', do: 'Do', check: 'Check', act: 'Act' };
+
 export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, userRole }) {
   let query = supabase
     .from('pdca_projects')
-    .select('id, title, target_date, category_id, category:categories(id, is_restricted)')
+    .select(
+      'id, title, status, target_date, plan_due_date, do_due_date, check_due_date, act_due_date, category_id, category:categories(id, is_restricted)'
+    )
     .eq('tenant_id', tenantId)
-    .not('target_date', 'is', null)
-    .neq('status', 'closed');
+    .neq('status', 'closed')
+    .or('target_date.not.is.null,plan_due_date.not.is.null,do_due_date.not.is.null,check_due_date.not.is.null,act_due_date.not.is.null');
 
   if (ownerId) {
     query = query.eq('owner', ownerId);
@@ -315,15 +321,38 @@ export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, us
 
   const visible = await filterViewableByCategory({ userId, userRole, items: data });
 
-  return visible.map((pdca) =>
-    withOverdue({
-      type: 'pdca',
-      id: pdca.id,
-      title: pdca.title,
-      date: pdca.target_date,
-      link: `/pdca/${pdca.id}`,
-    })
-  );
+  // Deux entrées possibles par projet, jamais plus : l'échéance globale (target_date, comme
+  // avant) ET l'échéance de la SEULE phase en cours (pdca.status) si elle est renseignée — pas
+  // les 4 phases, dont 3 sont forcément passées ou pas encore d'actualité. Id distinct
+  // (`${id}:phase`) pour ne jamais entrer en collision avec l'entrée target_date du même projet
+  // dans la sélection/l'export du planning (Planning.jsx), qui indexe par item.id.
+  const items = [];
+  for (const pdca of visible) {
+    if (pdca.target_date) {
+      items.push(
+        withOverdue({
+          type: 'pdca',
+          id: pdca.id,
+          title: pdca.title,
+          date: pdca.target_date,
+          link: `/pdca/${pdca.id}`,
+        })
+      );
+    }
+    const phaseDueDate = pdca[`${pdca.status}_due_date`];
+    if (phaseDueDate) {
+      items.push(
+        withOverdue({
+          type: 'pdca',
+          id: `${pdca.id}:phase`,
+          title: `${pdca.title} — Échéance ${PDCA_PHASE_LABELS[pdca.status] || pdca.status}`,
+          date: phaseDueDate,
+          link: `/pdca/${pdca.id}`,
+        })
+      );
+    }
+  }
+  return items;
 }
 
 // Tâches manuelles non terminées — personnelles (créées ou assignées à moi) pour member,

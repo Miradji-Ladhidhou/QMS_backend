@@ -290,12 +290,20 @@ create table pdca_projects (
   status             text not null default 'plan' check (status in ('plan', 'do', 'check', 'act', 'closed')),
   plan_content       text,
   plan_completed_at  date,
+  plan_due_date      date,
   do_content         text,
   do_completed_at    date,
+  do_due_date        date,
   check_content      text,
   check_completed_at date,
+  check_due_date     date,
   act_content        text,
   act_completed_at   date,
+  -- Échéance PROPRE à chaque phase (à ne pas confondre avec *_completed_at ci-dessus, une date
+  -- déjà passée) — permet au planning (services/planningItems.js#fetchPdcaItems) d'afficher
+  -- l'échéance de la phase en cours, en plus de target_date qui reste l'échéance globale du
+  -- projet. Voir scripts/add-pdca-phase-due-dates.sql.
+  act_due_date       date,
   category_id        uuid references categories (id) on delete set null,
   linked_capa_id     uuid references capas (id) on delete set null,
   closed_at          timestamptz,

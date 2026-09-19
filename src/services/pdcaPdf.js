@@ -30,8 +30,14 @@ function drawImportantBox(doc, { color, background, label, text }) {
   doc.y = boxTop + height + 10;
 }
 
-function drawSection(doc, number, title, body, completedAt) {
-  const heading = completedAt ? `${number}. ${title} (terminé le ${formatDate(completedAt)})` : `${number}. ${title}`;
+function drawSection(doc, number, title, body, completedAt, dueDate) {
+  // Terminé le / Échéance sont mutuellement exclusifs à l'écran (PdcaDetail.jsx) : une fois la
+  // phase terminée, son échéance n'a plus d'intérêt à être répétée à côté de la date réelle.
+  const heading = completedAt
+    ? `${number}. ${title} (terminé le ${formatDate(completedAt)})`
+    : dueDate
+      ? `${number}. ${title} (échéance : ${formatDate(dueDate)})`
+      : `${number}. ${title}`;
   doc.font('Body-Bold').fontSize(11).fillColor(INK).text(heading, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.font('Body');
   doc.moveDown(0.2);
@@ -123,10 +129,10 @@ export function buildPdcaPdf({ tenantName, tenantLogo, pdca }) {
       drawSection(doc, 1, 'Description', pdca.description);
     }
     const offset = pdca.description ? 1 : 0;
-    drawSection(doc, offset + 1, 'Plan', pdca.plan_content, pdca.plan_completed_at);
-    drawSection(doc, offset + 2, 'Do', pdca.do_content, pdca.do_completed_at);
-    drawSection(doc, offset + 3, 'Check', pdca.check_content, pdca.check_completed_at);
-    drawSection(doc, offset + 4, 'Act', pdca.act_content, pdca.act_completed_at);
+    drawSection(doc, offset + 1, 'Plan', pdca.plan_content, pdca.plan_completed_at, pdca.plan_due_date);
+    drawSection(doc, offset + 2, 'Do', pdca.do_content, pdca.do_completed_at, pdca.do_due_date);
+    drawSection(doc, offset + 3, 'Check', pdca.check_content, pdca.check_completed_at, pdca.check_due_date);
+    drawSection(doc, offset + 4, 'Act', pdca.act_content, pdca.act_completed_at, pdca.act_due_date);
 
     // Pied de page numéroté — même construction que capaPdf.js/procedurePdf.js.
     const range = doc.bufferedPageRange();
