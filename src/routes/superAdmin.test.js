@@ -377,7 +377,7 @@ describe('GET /api/super-admin/backup-status', () => {
 });
 
 describe('POST /api/super-admin/tenants — création', () => {
-  it('crée un tenant vide et journalise l’action', async () => {
+  it('crée un tenant vide (sans admin) et journalise l’action', async () => {
     tenant = await createTenant();
     await makeSuperAdmin(tenant);
 
@@ -390,6 +390,7 @@ describe('POST /api/super-admin/tenants — création', () => {
     expect(res.body.name).toBe('CRUD Test Co');
     expect(res.body.plan).toBe('pro');
     expect(res.body.user_count).toBe(0);
+    expect(res.body.admin).toBeNull();
 
     await admin.from('tenants').delete().eq('id', res.body.id);
   });
@@ -403,6 +404,61 @@ describe('POST /api/super-admin/tenants — création', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ name: '' });
     expect(res.status).toBe(400);
+  });
+
+  it('avec un admin fourni : crée le tenant ET l’administrateur en un seul appel, journalise les deux actions', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+    const adminEmail = `founder-${Date.now()}@example.com`;
+
+    const res = await request(app)
+      .post('/api/super-admin/tenants')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Entreprise avec fondateur', admin: { email: adminEmail, full_name: 'Fondateur Test' } });
+
+    expect(res.status).toBe(201);
+    expect(res.body.user_count).toBe(1);
+    expect(res.body.admin.email).toBe(adminEmail);
+    expect(res.body.admin.role).toBe('admin');
+
+    const { data: profile } = await admin
+      .from('users')
+      .select('role, tenant_id, full_name')
+      .eq('id', res.body.admin.id)
+      .single();
+    expect(profile.role).toBe('admin');
+    expect(profile.tenant_id).toBe(res.body.id);
+    expect(profile.full_name).toBe('Fondateur Test');
+
+    const { data: authUser } = await admin.auth.admin.getUserById(res.body.admin.id);
+    expect(authUser.user.email).toBe(adminEmail);
+
+    const { data: auditRows } = await admin
+      .from('super_admin_audit_log')
+      .select('action, target_type, target_id')
+      .eq('actor_id', tenant.admin.id)
+      .in('target_id', [res.body.id, res.body.admin.id]);
+    expect(auditRows.some((row) => row.action === 'tenant_created' && row.target_id === res.body.id)).toBe(true);
+    expect(auditRows.some((row) => row.action === 'user_created' && row.target_id === res.body.admin.id)).toBe(true);
+
+    await admin.from('tenants').delete().eq('id', res.body.id);
+    await admin.auth.admin.deleteUser(res.body.admin.id).catch(() => {});
+  });
+
+  it('avec un email d’admin déjà enregistré : 409, et le tenant nouvellement créé n’est pas laissé orphelin', async () => {
+    tenant = await createTenant();
+    await makeSuperAdmin(tenant);
+    const tenantName = `Tenant rollback ${Date.now()}`;
+
+    const res = await request(app)
+      .post('/api/super-admin/tenants')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: tenantName, admin: { email: tenant.admin.email, full_name: 'Déjà pris' } });
+
+    expect(res.status).toBe(409);
+
+    const { data: orphan } = await admin.from('tenants').select('id').eq('name', tenantName).maybeSingle();
+    expect(orphan).toBeNull();
   });
 });
 

@@ -1,14 +1,17 @@
 import rateLimit from 'express-rate-limit';
 
-// La suite de tests (vitest, NODE_ENV=test — voir test-utils/tenant.js) crée un tenant par
-// test via POST /auth/register, largement au-dessus de tout seuil réaliste pour un vrai
-// utilisateur — désactivé uniquement dans cet environnement, actif en développement/production.
+// La suite de tests (vitest, NODE_ENV=test) provisionne ses tenants directement via le client
+// Supabase service-role (voir test-utils/tenant.js), jamais via une route HTTP de ce routeur —
+// mais un test peut encore appeler POST /auth/activity, désactivé ici pour rester au-dessus de
+// tout seuil réaliste, actif en développement/production.
 const skipInTests = () => process.env.NODE_ENV === 'test';
 
-// POST /api/auth/register est la seule route non authentifiée qui écrit en base (création
-// tenant + compte Supabase Auth) — sans limite, un script peut la spammer pour créer des
-// tenants/comptes en masse. Le reste de l'authentification (login, mot de passe oublié) passe
-// directement par le SDK Supabase côté client, hors du périmètre de ce backend.
+// POST /api/auth/activity (le seul point d'entrée restant sur ce routeur depuis que
+// l'inscription publique /register a été retirée — la création de compte passe désormais
+// exclusivement par POST /super-admin/tenants, réservée au super admin) est la seule route
+// non authentifiée qui écrit en base (journal d'activité) — sans limite, un script pourrait la
+// spammer. Le reste de l'authentification (login, mot de passe oublié) passe directement par
+// le SDK Supabase côté client, hors du périmètre de ce backend.
 export const authLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: 10,

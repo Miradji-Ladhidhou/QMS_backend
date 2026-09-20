@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import request from 'supertest';
 import { createClient } from '@supabase/supabase-js';
 import app from '../app.js';
+import { slugify } from '../routes/auth.js';
 
 // Garde-fou : ces helpers créent et suppriment de vrais tenants/utilisateurs. On refuse de
 // tourner si SUPABASE_URL ne pointe pas vers une instance locale, pour ne jamais risquer de
@@ -50,27 +51,73 @@ function unique(label) {
   return `${label}-${Date.now()}-${counter}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-// Crée un tenant réel via POST /api/auth/register (fondateur = admin), puis invite un
-// utilisateur par entrée de `extraUsers` (ex. [{ role: 'manager' }, { role: 'member' }]).
-// Retourne les tokens prêts à l'emploi et un cleanup() qui supprime tout (le cascade
-// ON DELETE de tenant_id efface les tables métier ; les comptes auth.users, qui ne
-// cascadent pas depuis public.users, sont supprimés explicitement).
+// Crée un tenant réel (fondateur = admin), puis invite un utilisateur par entrée de
+// `extraUsers` (ex. [{ role: 'manager' }, { role: 'member' }]). Retourne les tokens prêts à
+// l'emploi et un cleanup() qui supprime tout (le cascade ON DELETE de tenant_id efface les
+// tables métier ; les comptes auth.users, qui ne cascadent pas depuis public.users, sont
+// supprimés explicitement).
+//
+// Écrit directement via le client service-role `admin` (ci-dessus) plutôt que via une route
+// HTTP : POST /api/auth/register (l'ancien point d'entrée) a été retiré — la création de
+// compte en production passe désormais exclusivement par POST /super-admin/tenants, réservée
+// au super admin. Reproduit ici la même séquence (créer le compte Auth, créer le tenant avec
+// repli de slug en cas de collision, créer le profil public.users) que cette route effectuait
+// autrefois, avec le même nettoyage en cas d'échec à une étape.
 export async function createTenant({ extraUsers = [] } = {}) {
   const stamp = unique('tenant');
   const adminEmail = `${stamp}-admin@example.com`;
   const adminPassword = 'TestPassword123';
   const companyName = `Test Co ${stamp}`;
 
-  const registerRes = await request(app)
-    .post('/api/auth/register')
-    .send({ email: adminEmail, password: adminPassword, fullName: 'Test Admin', companyName });
+  // email_confirm: true (contrairement à la production, qui laisse false + un lien de
+  // confirmation) : les tests n'ont pas besoin d'exercer ce parcours, et requireAuth ne
+  // vérifie jamais email_confirmed_at (seulement que le jeton est valide et qu'un profil
+  // public.users existe) — tokenFor() ci-dessus signe de toute façon un JWT valide localement.
+  const { data: authData, error: authError } = await admin.auth.admin.createUser({
+    email: adminEmail,
+    password: adminPassword,
+    email_confirm: true,
+  });
 
-  if (registerRes.status !== 201) {
-    throw new Error(`createTenant: /auth/register a échoué (${registerRes.status}): ${JSON.stringify(registerRes.body)}`);
+  if (authError) {
+    throw new Error(`createTenant: création du compte Auth a échoué : ${authError.message}`);
   }
 
-  const tenantId = registerRes.body.tenant.id;
-  const adminId = registerRes.body.user.id;
+  const adminId = authData.user.id;
+  const baseSlug = slugify(companyName);
+
+  let tenant = null;
+  let tenantError = null;
+  for (let attempt = 0; attempt < 5 && !tenant; attempt += 1) {
+    const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
+    const { data, error } = await admin.from('tenants').insert({ name: companyName, slug }).select().single();
+    if (!error) {
+      tenant = data;
+    } else if (error.code === '23505') {
+      tenantError = error;
+    } else {
+      tenantError = error;
+      break;
+    }
+  }
+
+  if (!tenant) {
+    await admin.auth.admin.deleteUser(adminId);
+    throw new Error(`createTenant: création du tenant a échoué : ${tenantError?.message}`);
+  }
+
+  const tenantId = tenant.id;
+
+  const { error: profileError } = await admin
+    .from('users')
+    .insert({ id: adminId, tenant_id: tenantId, full_name: 'Test Admin', role: 'admin' });
+
+  if (profileError) {
+    await admin.from('tenants').delete().eq('id', tenantId);
+    await admin.auth.admin.deleteUser(adminId);
+    throw new Error(`createTenant: création du profil admin a échoué : ${profileError.message}`);
+  }
+
   const adminToken = tokenFor(adminId, adminEmail);
   const authUserIds = [adminId];
 

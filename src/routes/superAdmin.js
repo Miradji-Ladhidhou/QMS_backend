@@ -154,13 +154,21 @@ router.get('/tenants/:id', async (req, res) => {
   res.json({ tenant, users, module_counts: moduleCounts, recent_actions: recentActions, drive_connection: driveConnection || null });
 });
 
-// POST /api/super-admin/tenants — crée un tenant vide (aucun utilisateur). Repli sur un slug
-// suffixé en cas de collision, même logique que POST /auth/register.
+// POST /api/super-admin/tenants — crée un tenant, avec repli sur un slug suffixé en cas de
+// collision. Seul point d'entrée pour créer un compte QMS SaaS (l'inscription publique
+// /auth/register a été retirée) : ?admin= (optionnel côté validation, mais toujours envoyé
+// par CreateTenantModal côté frontend) crée ET invite dans la foulée le fondateur du tenant,
+// par le même mécanisme que POST /tenants/:id/users (sendInviteEmail, voir users.js) — un seul
+// geste super admin au lieu de deux routes séparées.
 router.post(
   '/tenants',
   [
     body('name').trim().notEmpty().withMessage('Le nom est requis.'),
     body('plan').optional({ values: 'falsy' }).isIn(PLANS).withMessage('Plan invalide.'),
+    body('admin').optional().isObject().withMessage('Administrateur invalide.'),
+    body('admin.email').if(body('admin').exists()).isEmail().withMessage('Adresse email invalide.'),
+    body('admin.full_name').if(body('admin').exists()).trim().notEmpty().withMessage("Le nom complet de l'administrateur est requis."),
+    body('admin.role').optional({ values: 'falsy' }).isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -168,7 +176,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, plan } = req.body;
+    const { name, plan, admin: adminInput } = req.body;
     const baseSlug = slugify(name);
 
     let tenant = null;
@@ -200,12 +208,76 @@ router.post(
       return res.status(tenantError?.code === '23505' ? 409 : 500).json({ error: message });
     }
 
+    let createdAdmin = null;
+
+    if (adminInput) {
+      let inviteResult;
+      try {
+        inviteResult = await sendInviteEmail({ email: adminInput.email, fullName: adminInput.full_name, tenantId: tenant.id });
+      } catch (err) {
+        console.error("[super-admin] échec de l'envoi de l'invitation :", err);
+        await supabase.from('tenants').delete().eq('id', tenant.id);
+        return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+      }
+
+      if (inviteResult.error) {
+        // Le tenant vient d'être créé DANS cette même requête (contrairement à
+        // POST /tenants/:id/users, qui opère sur un tenant préexistant à ne jamais toucher) :
+        // sur échec de l'invitation, on ne laisse pas un tenant orphelin sans administrateur.
+        await supabase.from('tenants').delete().eq('id', tenant.id);
+        // Le message réel de Supabase est "has already been registered" ("been" au milieu) —
+        // pas juste "already registered" (voir l'ancienne route /auth/register, seule à avoir
+        // couvert ce cas correctement jusqu'ici). .code === 'email_exists' est le contrôle le
+        // plus fiable, le pattern texte reste en repli.
+        if (inviteResult.error.code === 'email_exists' || /already (been )?registered|already exists/i.test(inviteResult.error.message)) {
+          return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
+        }
+        return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+      }
+
+      const userId = inviteResult.userId;
+
+      // Défaut 'admin' ici (pas 'member' comme sur /tenants/:id/users) : c'est le fondateur du
+      // tenant, pas un collègue ajouté après coup.
+      const { data: profile, error: profileError } = await supabase
+        .from('users')
+        .insert({ id: userId, tenant_id: tenant.id, full_name: adminInput.full_name, role: adminInput.role || 'admin' })
+        .select('id, full_name, role, is_active, created_at')
+        .single();
+
+      if (profileError) {
+        await supabase.auth.admin.deleteUser(userId);
+        await supabase.from('tenants').delete().eq('id', tenant.id);
+        return res.status(500).json({ error: 'Erreur lors de la création du profil utilisateur.' });
+      }
+
+      createdAdmin = { ...profile, email: adminInput.email };
+
+      await logSuperAdminAction({
+        actorId: req.user.id,
+        action: 'user_created',
+        targetType: 'user',
+        targetId: userId,
+        details: { email: adminInput.email, tenant_name: tenant.name },
+      });
+      await logActivity({
+        tenantId: tenant.id,
+        actorId: req.user.id,
+        actorEmail: req.user.email,
+        action: 'USER_CREATED',
+        entityType: 'user',
+        entityId: userId,
+        metadata: { label: adminInput.full_name },
+        req,
+      });
+    }
+
     await logSuperAdminAction({
       actorId: req.user.id,
       action: 'tenant_created',
       targetType: 'tenant',
       targetId: tenant.id,
-      details: { tenant_name: tenant.name },
+      details: adminInput ? { tenant_name: tenant.name, admin_email: adminInput.email } : { tenant_name: tenant.name },
     });
     await logActivity({
       tenantId: tenant.id,
@@ -218,7 +290,7 @@ router.post(
       req,
     });
 
-    res.status(201).json({ ...tenant, user_count: 0 });
+    res.status(201).json({ ...tenant, user_count: createdAdmin ? 1 : 0, admin: createdAdmin });
   }
 );
 
@@ -376,7 +448,9 @@ router.post(
     }
 
     if (inviteResult.error) {
-      if (/already registered|already exists/i.test(inviteResult.error.message)) {
+      // Voir POST /tenants ci-dessus : le message réel de Supabase contient "been"
+      // ("has already been registered"), .code === 'email_exists' est le contrôle le plus fiable.
+      if (inviteResult.error.code === 'email_exists' || /already (been )?registered|already exists/i.test(inviteResult.error.message)) {
         return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
       }
       return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });

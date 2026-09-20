@@ -216,7 +216,9 @@ router.post(
     }
 
     if (inviteResult.error) {
-      if (/already registered|already exists/i.test(inviteResult.error.message)) {
+      // Le message réel de Supabase contient "been" ("has already been registered") —
+      // .code === 'email_exists' est le contrôle le plus fiable, le pattern texte reste en repli.
+      if (inviteResult.error.code === 'email_exists' || /already (been )?registered|already exists/i.test(inviteResult.error.message)) {
         return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
       }
       return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
