@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { gradeQuiz, validateQuestions, toPublicQuestions, hashQuizToken, generateQuizToken, formatDateTimeInZone, formatDeadline, MAX_QUESTIONS } from './trainingQuiz.js';
+import { gradeQuiz, validateQuestions, toPublicQuestions, hashQuizToken, generateQuizToken, formatDateTimeInZone, formatDeadline, numberAttempts, summarizeAttempts, describeAttemptsSummary, quizNoteLine, MAX_QUESTIONS } from './trainingQuiz.js';
 
 const QUESTIONS = [
   { id: 'q1', text: 'Une seule', options: [{ id: 'a', label: 'A', is_correct: true }, { id: 'b', label: 'B', is_correct: false }] },
@@ -120,5 +120,39 @@ describe('fuseau horaire de l\'entreprise', () => {
       expect(formatDeadline('2026-09-22T10:03:00Z', zone)).toBe('22 septembre 2026 à 10:03 UTC');
     }
     expect(formatDateTimeInZone('2026-09-22T10:03:00Z', 'Indian/Reunion', { hour: '2-digit', minute: '2-digit' })).toBe('14:03');
+  });
+});
+
+describe('numérotation et bilan des essais', () => {
+  const at = (id, sentH, doneH, passed) => ({
+    id,
+    sent_at: `2026-05-04T${String(sentH).padStart(2, '0')}:00:00Z`,
+    completed_at: doneH === null ? null : `2026-05-04T${String(doneH).padStart(2, '0')}:30:00Z`,
+    passed,
+  });
+
+  it('numérote seulement les passages TERMINÉS, dans l\'ordre où ils ont été passés', () => {
+    // Envoyés dans l'ordre 1,2,3,4 ; le 2 n'a jamais été utilisé ; le 4 a été passé avant le 3.
+    const numbered = numberAttempts([at('d', 4, 5, true), at('a', 1, 1, false), at('b', 2, null, null), at('c', 3, 8, false)]);
+    expect(numbered.map((entry) => entry.id)).toEqual(['a', 'b', 'c', 'd']); // trié par envoi
+    expect(Object.fromEntries(numbered.map((entry) => [entry.id, entry.attempt_number]))).toEqual({ a: 1, b: null, c: 3, d: 2 });
+  });
+
+  it('bilan : essais, réussites et échecs (un lien non utilisé n\'est pas un essai)', () => {
+    const summary = summarizeAttempts([at('a', 1, 1, false), at('b', 2, null, null), at('c', 3, 4, false), at('d', 5, 6, true)]);
+    expect(summary).toEqual({ total: 3, successes: 1, failures: 2 });
+    expect(describeAttemptsSummary(summary)).toBe('3 essais : 1 réussite, 2 échecs');
+  });
+
+  it('accords singulier/pluriel et aucun essai', () => {
+    expect(describeAttemptsSummary({ total: 1, successes: 1, failures: 0 })).toBe('1 essai : 1 réussite, 0 échec');
+    expect(describeAttemptsSummary({ total: 0, successes: 0, failures: 0 })).toBe('Aucun essai passé');
+    expect(describeAttemptsSummary(summarizeAttempts([]))).toBe('Aucun essai passé');
+  });
+
+  it('la ligne de note porte le numéro d\'essai', () => {
+    expect(quizNoteLine({ attemptNumber: 2, correctCount: 1, totalCount: 2, scorePercent: 50, passThreshold: 80, passed: false })).toBe(
+      'QCM en ligne — essai n°2 : 1/2 (50 %) — seuil 80 % — non réussi'
+    );
   });
 });

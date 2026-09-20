@@ -16,7 +16,7 @@ import {
   TabStopType,
 } from 'docx';
 import { logoImageRun, dataUrlImageRun } from './wordLogo.js';
-import { formatDateTimeInZone } from './trainingQuiz.js';
+import { describeAttemptsSummary, formatDateTimeInZone, summarizeAttempts } from './trainingQuiz.js';
 
 // Mêmes teintes neutres que les autres exports Word (voir listReportWord.js).
 const INK = '1E293B';
@@ -113,6 +113,55 @@ function descriptionParagraphs(description) {
   return text.split(/\r?\n/).map((line) => new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: line, size: 20 })] }));
 }
 
+// Statut lisible d'un passage dans l'historique.
+function attemptStatus(entry) {
+  if (entry.completed_at) return entry.passed === true ? 'Réussi' : 'Non réussi';
+  return new Date(entry.expires_at) > new Date() ? 'Lien envoyé, non passé' : 'Lien non utilisé (expiré ou remplacé)';
+}
+
+// Trace de tous les passages de la personne pour cette réalisation : les essais réellement passés
+// portent un numéro ; les liens jamais utilisés figurent sans numéro. Le passage décrit par ce
+// document est repéré (« ◄ ce document »).
+function historyBlock({ history, currentId, timeZone }) {
+  if (history.length === 0) return [];
+  const headerCell = (text, widthPct) => cell(text, { header: true, widthPct });
+
+  const rows = history.map((entry) => {
+    const isCurrent = entry.id === currentId;
+    const done = Boolean(entry.completed_at);
+    const color = done ? (entry.passed === true ? GOOD : BAD) : MUTED;
+    return new TableRow({
+      cantSplit: true,
+      children: [
+        cell(entry.attempt_number ? `${entry.attempt_number}` : '—', { widthPct: 10, align: AlignmentType.CENTER, bold: isCurrent }),
+        cell(formatDateTime(entry.sent_at, timeZone), { widthPct: 24, bold: isCurrent }),
+        cell(done ? formatDateTime(entry.completed_at, timeZone) : '—', { widthPct: 24, bold: isCurrent }),
+        cell(done ? `${entry.correct_count}/${entry.total_count} — ${entry.score_percent} %` : '—', { widthPct: 20, bold: isCurrent }),
+        cell(`${attemptStatus(entry)}${isCurrent ? '  ◄ ce document' : ''}`, { widthPct: 22, bold: true, color }),
+      ],
+    });
+  });
+
+  return [
+    new Paragraph({ spacing: { before: 320, after: 40 }, keepNext: true, children: [new TextRun({ text: 'Historique des essais', bold: true, size: 26, color: INK })] }),
+    new Paragraph({
+      spacing: { after: 80 },
+      keepNext: true,
+      children: [new TextRun({ text: describeAttemptsSummary(summarizeAttempts(history)), size: 20, color: INK })],
+    }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [
+        new TableRow({
+          tableHeader: true,
+          children: [headerCell('Essai n°', 10), headerCell('Envoyé le', 24), headerCell('Passé le', 24), headerCell('Score', 20), headerCell('Résultat', 22)],
+        }),
+        ...rows,
+      ],
+    }),
+  ];
+}
+
 const SIGNATURE_BOX = { maxWidth: 200, maxHeight: 80 };
 
 function signatureCell({ title, name, image, caption, emptyText }) {
@@ -181,6 +230,7 @@ function signaturesBlock({ attempt, trainingInfo, employeeSignature, instructorS
 // était à l'envoi (quiz_snapshot), les réponses de la personne, la correction question par
 // question et le taux de réussite. attempt : ligne de training_quiz_attempts terminée.
 export async function buildTrainingQuizWord({
+  history = [],
   tenantName,
   tenantLogo,
   tenantTimezone,
@@ -194,6 +244,8 @@ export async function buildTrainingQuizWord({
   const questions = attempt.quiz_snapshot || [];
   const detailByQuestion = new Map((attempt.answers || []).map((entry) => [entry.question_id, entry]));
   const passed = attempt.passed === true;
+  const currentEntry = history.find((entry) => entry.id === attempt.id);
+  const summary = summarizeAttempts(history);
 
   const logo = logoImageRun(tenantLogo);
   const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — QCM ${trainingTitle}`, size: 16, color: MUTED });
@@ -222,6 +274,12 @@ export async function buildTrainingQuizWord({
       ['Session', sessionDate ? formatDate(sessionDate, tenantTimezone) : '—'],
       ['QCM envoyé le', formatDateTime(attempt.sent_at, tenantTimezone)],
       ['QCM passé le', formatDateTime(attempt.completed_at, tenantTimezone)],
+      ...(currentEntry?.attempt_number
+        ? [
+            ['Essai', `n°${currentEntry.attempt_number} sur ${summary.total}`],
+            ['Bilan des essais', describeAttemptsSummary(summary)],
+          ]
+        : []),
       ['Résultat', `${attempt.correct_count} / ${attempt.total_count} bonnes réponses — ${attempt.score_percent} %`],
       ['Seuil de réussite', `${attempt.pass_threshold} %`],
       ['Conclusion', passed ? 'RÉUSSI' : 'NON RÉUSSI', passed ? GOOD : BAD],
@@ -231,6 +289,7 @@ export async function buildTrainingQuizWord({
     ...descriptionParagraphs(trainingInfo?.description),
     new Paragraph({ spacing: { before: 320, after: 40 }, children: [new TextRun({ text: 'Détail des questions', bold: true, size: 26, color: INK })] }),
     ...questions.flatMap((question, index) => questionBlock(question, index, detailByQuestion.get(question.id))),
+    ...historyBlock({ history, currentId: attempt.id, timeZone: tenantTimezone }),
     ...signaturesBlock({ attempt, trainingInfo, employeeSignature, instructorSignature, timeZone: tenantTimezone }),
   ];
 

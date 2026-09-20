@@ -191,11 +191,20 @@ router.post('/:token/submit', async (req, res) => {
   if (error) return res.status(500).json({ error: "Impossible d'enregistrer votre résultat. Réessayez." });
   if (!saved) return res.status(409).json({ error: STATUS_MESSAGES.completed, state: 'completed' });
 
-  // Met à jour la réalisation : evaluation_result (réussi / non réussi) et une ligne de synthèse
-  // dans evaluation_notes, sans écraser une note saisie à la main par le responsable.
+  // Numéro de cet essai : nombre de passages terminés de cette réalisation, celui-ci compris.
+  const { data: completedAttempts } = await supabase
+    .from('training_quiz_attempts')
+    .select('id')
+    .eq('record_id', attempt.record_id)
+    .not('completed_at', 'is', null);
+  const attemptNumber = completedAttempts?.length || 1;
+
+  // Met à jour la réalisation : evaluation_result (réussi / non réussi, dernier essai) et une ligne de
+  // synthèse AJOUTÉE aux notes pour chaque essai — la trace de tous les passages, sans écraser une note
+  // saisie à la main par le responsable.
   const { data: record } = await supabase.from('training_records').select('evaluation_notes').eq('id', attempt.record_id).maybeSingle();
-  const line = quizNoteLine({ ...graded, passThreshold: attempt.pass_threshold });
-  const existingNotes = (record?.evaluation_notes || '').split('\n').filter((row) => row && !row.startsWith('QCM en ligne :'));
+  const line = quizNoteLine({ ...graded, passThreshold: attempt.pass_threshold, attemptNumber });
+  const existingNotes = record?.evaluation_notes ? [record.evaluation_notes] : [];
   const { error: recordError } = await supabase
     .from('training_records')
     .update({ evaluation_result: graded.passed, evaluation_notes: [...existingNotes, line].join('\n') })
@@ -211,6 +220,7 @@ router.post('/:token/submit', async (req, res) => {
     score_percent: graded.scorePercent,
     pass_threshold: attempt.pass_threshold,
     passed: graded.passed,
+    attempt_number: attemptNumber,
   });
 });
 

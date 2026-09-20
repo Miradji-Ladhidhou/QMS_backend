@@ -242,7 +242,7 @@ describe('Renvoi, deuxième passage et audit', () => {
     expect(rows).toHaveLength(2);
   });
 
-  it('échec puis nouveau passage réussi : la réalisation passe à « réussi », les deux passages restent exportables', async () => {
+  it('échec puis nouveau passage réussi : la réalisation passe à « réussi », les deux essais sont tracés et exportables', async () => {
     const tenant = await newTenant();
     const training = await setupTraining(tenant);
     const rec = await record(tenant, training, { user_id: tenant.admin.id });
@@ -258,8 +258,13 @@ describe('Renvoi, deuxième passage et audit', () => {
     await request(app).post(`/api/public/quiz/${second}/submit`).send({ email: tenant.admin.email, signature: SIGNATURE, answers: { q1: ['a'], q2: ['a', 'b'] } });
     const { data: after } = await admin.from('training_records').select('evaluation_result, evaluation_notes').eq('id', rec.id).single();
     expect(after.evaluation_result).toBe(true);
-    // Une seule ligne de synthèse QCM (la plus récente), pas un cumul.
-    expect(after.evaluation_notes.split('\n').filter((l) => l.startsWith('QCM en ligne'))).toHaveLength(1);
+    // Une ligne de synthèse PAR ESSAI (trace de tous les passages) : l'échec puis la réussite.
+    const noteLines = after.evaluation_notes.split('\n').filter((l) => l.startsWith('QCM en ligne'));
+    expect(noteLines).toHaveLength(2);
+    expect(noteLines[0]).toContain('essai n°1');
+    expect(noteLines[0]).toContain('non réussi');
+    expect(noteLines[1]).toContain('essai n°2');
+    expect(noteLines[1]).toMatch(/— réussi$/);
 
     const attempts = await request(app).get(`/api/trainings/${training.id}/quiz/attempts`).set(auth(tenant.admin.token));
     expect(attempts.body.filter((a) => a.completed_at)).toHaveLength(2);

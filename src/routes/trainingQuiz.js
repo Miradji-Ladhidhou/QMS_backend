@@ -10,6 +10,8 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildTrainingQuizWord } from '../services/trainingQuizWord.js';
 import {
   formatDeadline,
+  numberAttempts,
+  summarizeAttempts,
   generateQuizToken,
   hashQuizToken,
   normalizeEmail,
@@ -346,7 +348,17 @@ router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
     }
   }
 
+  // Historique de TOUS les passages de cette réalisation (échecs comme réussites), pour tracer le
+  // nombre d'essais de la personne dans cette session.
+  const { data: historyRows } = await supabase
+    .from('training_quiz_attempts')
+    .select('id, sent_at, expires_at, completed_at, correct_count, total_count, score_percent, passed, pass_threshold')
+    .eq('tenant_id', req.tenantId)
+    .eq('record_id', attempt.record_id);
+  const history = numberAttempts(historyRows || [attempt]);
+
   const buffer = await buildTrainingQuizWord({
+    history,
     trainingInfo,
     employeeSignature: attempt.employee_signature,
     instructorSignature,

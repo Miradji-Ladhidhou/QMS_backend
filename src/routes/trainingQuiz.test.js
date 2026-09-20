@@ -279,7 +279,7 @@ describe('QCM de formation — page publique', () => {
 
     const { data: updated } = await admin.from('training_records').select('evaluation_result, evaluation_notes').eq('id', record.id).single();
     expect(updated.evaluation_result).toBe(true);
-    expect(updated.evaluation_notes).toContain('QCM en ligne : 1/2 (50 %)');
+    expect(updated.evaluation_notes).toContain('QCM en ligne — essai n°1 : 1/2 (50 %)');
 
     const again = await request(app)
       .post(`/api/public/quiz/${token}/submit`)

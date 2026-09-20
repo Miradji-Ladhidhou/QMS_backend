@@ -146,7 +146,39 @@ export function gradeQuiz(questions, answers, passThreshold) {
   return { detail, correctCount, totalCount, scorePercent, passed: scorePercent >= passThreshold };
 }
 
-// Ligne ajoutée aux notes d'évaluation de la réalisation une fois le QCM passé.
-export function quizNoteLine({ correctCount, totalCount, scorePercent, passThreshold, passed }) {
-  return `QCM en ligne : ${correctCount}/${totalCount} (${scorePercent} %) — seuil ${passThreshold} % — ${passed ? 'réussi' : 'non réussi'}`;
+// Un « essai » = un QCM effectivement PASSÉ (passage terminé). Un lien envoyé mais jamais utilisé,
+// expiré ou remplacé n'est pas un essai : il figure dans l'historique, sans numéro.
+// attempts : les passages d'UNE réalisation (une personne dans une session), dans n'importe quel
+// ordre. Retourne la liste triée par date d'envoi, chaque passage terminé portant son numéro d'essai
+// (1, 2, 3… dans l'ordre où ils ont été passés).
+export function numberAttempts(attempts) {
+  const byCompletion = attempts
+    .filter((attempt) => attempt.completed_at)
+    .sort((a, b) => new Date(a.completed_at) - new Date(b.completed_at) || String(a.id).localeCompare(String(b.id)));
+  const numberById = new Map(byCompletion.map((attempt, index) => [attempt.id, index + 1]));
+
+  return [...attempts]
+    .sort((a, b) => new Date(a.sent_at) - new Date(b.sent_at) || String(a.id).localeCompare(String(b.id)))
+    .map((attempt) => ({ ...attempt, attempt_number: numberById.get(attempt.id) || null }));
+}
+
+// Bilan chiffré : essais passés, réussites, échecs.
+export function summarizeAttempts(attempts) {
+  const completed = attempts.filter((attempt) => attempt.completed_at);
+  const successes = completed.filter((attempt) => attempt.passed === true).length;
+  return { total: completed.length, successes, failures: completed.length - successes };
+}
+
+const plural = (count, word) => `${count} ${word}${count > 1 ? 's' : ''}`;
+
+// « 3 essais : 1 réussite, 2 échecs »
+export function describeAttemptsSummary({ total, successes, failures }) {
+  if (total === 0) return 'Aucun essai passé';
+  return `${plural(total, 'essai')} : ${plural(successes, 'réussite')}, ${plural(failures, 'échec')}`;
+}
+
+// Ligne ajoutée aux notes d'évaluation de la réalisation à CHAQUE essai (une ligne par essai, jamais
+// remplacées : c'est la trace de tous les passages, réussis ou non).
+export function quizNoteLine({ attemptNumber, correctCount, totalCount, scorePercent, passThreshold, passed }) {
+  return `QCM en ligne — essai n°${attemptNumber} : ${correctCount}/${totalCount} (${scorePercent} %) — seuil ${passThreshold} % — ${passed ? 'réussi' : 'non réussi'}`;
 }
