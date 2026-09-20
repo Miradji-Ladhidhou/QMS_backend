@@ -474,6 +474,7 @@ describe('Isolation entre entreprises et droits', () => {
     expect((await request(app).put(`/api/trainings/${training.id}/quiz`).set(as(intruder)).send({ pass_threshold: 1, questions: QUESTIONS })).status).toBe(404);
     expect((await request(app).get(`/api/trainings/${training.id}/quiz/attempts`).set(as(intruder))).status).toBe(404);
     expect((await request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/word`).set(as(intruder))).status).toBe(404);
+    expect((await request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/pdf`).set(as(intruder))).status).toBe(404);
     sendEmail.mockClear();
     expect((await invite(intruder, training, [{ record_id: rec.id }])).status).toBe(404);
     expect(sendEmail).not.toHaveBeenCalled();
@@ -496,6 +497,7 @@ describe('Isolation entre entreprises et droits', () => {
     expect((await asMember(request(app).post(`/api/trainings/${training.id}/quiz/invites`)).send({ items: [{ record_id: rec.id }] })).status).toBe(403);
     expect((await asMember(request(app).get(`/api/trainings/${training.id}/quiz/attempts`))).status).toBe(403);
     expect((await asMember(request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/word`))).status).toBe(403);
+    expect((await asMember(request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/pdf`))).status).toBe(403);
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
@@ -525,6 +527,7 @@ describe('Isolation entre entreprises et droits', () => {
     expect((await asManager(request(app).put(`/api/trainings/${training.id}/quiz`)).send({ pass_threshold: 1, questions: QUESTIONS })).status).toBe(404);
     expect((await asManager(request(app).get(`/api/trainings/${training.id}/quiz/attempts`))).status).toBe(404);
     expect((await asManager(request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/word`))).status).toBe(404);
+    expect((await asManager(request(app).get(`/api/trainings/${training.id}/quiz/attempts/${attempt.id}/pdf`))).status).toBe(404);
     expect((await asManager(request(app).post(`/api/trainings/${training.id}/quiz/invites`)).send({ items: [{ record_id: rec.id }] })).status).toBe(404);
     expect(sendEmail).not.toHaveBeenCalled();
 

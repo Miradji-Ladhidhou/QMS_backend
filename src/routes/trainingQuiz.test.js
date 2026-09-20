@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
 import mammoth from 'mammoth';
+import pdfParse from 'pdf-parse';
 import app from '../app.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
 import { generateQuizToken, hashQuizToken } from '../services/trainingQuiz.js';
@@ -353,6 +354,40 @@ describe('QCM de formation — export Word d\'audit', () => {
     expect(value).toContain('Incorrecte');
 
     // Sans authentification : refusé.
+    expect((await request(app).get(url)).status).toBe(401);
+  });
+});
+
+describe('QCM de formation — export PDF d\'audit', () => {
+  it('409 avant le passage, puis un PDF avec questions, réponses, résultat, historique et signatures', async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token);
+    await saveQuiz(tenant.admin.token, training.id);
+    const record = await createRecord(tenant.admin.token, training.id, { user_id: tenant.admin.id });
+    const { token, attemptId } = await seedAttempt({ trainingId: training.id, recordId: record.id });
+    const url = `/api/trainings/${training.id}/quiz/attempts/${attemptId}/pdf`;
+
+    expect((await request(app).get(url).set(auth(tenant.admin.token))).status).toBe(409);
+
+    await request(app).post(`/api/public/quiz/${token}/submit`).send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1a'], q2: ['q2a'] } });
+
+    const res = await request(app).get(url).set(auth(tenant.admin.token)).responseType('blob');
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toContain('.pdf');
+    const buffer = Buffer.from(res.body);
+    expect(buffer.subarray(0, 5).toString()).toBe('%PDF-');
+
+    const { text } = await pdfParse(buffer);
+    expect(text).toContain('Quelle température maximale pour la chambre froide ?');
+    expect(text).toContain('Charlotte');
+    expect(text).toContain('1 / 2 bonnes réponses — 50 %');
+    expect(text).toContain('Marie Dupont');
+    expect(text).toContain('Incorrecte');
+    expect(text).toContain('Historique des essais');
+    expect(text).toContain('Signatures');
+
+    // Même contrôle d'accès que le Word : sans authentification, refusé.
     expect((await request(app).get(url)).status).toBe(401);
   });
 });

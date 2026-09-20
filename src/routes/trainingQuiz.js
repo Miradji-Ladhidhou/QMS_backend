@@ -8,6 +8,7 @@ import { renderTemplate } from '../services/renderTemplate.js';
 import { getUserEmail } from '../services/notificationHelpers.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildTrainingQuizWord } from '../services/trainingQuizWord.js';
+import { buildTrainingQuizPdf } from '../services/trainingQuizPdf.js';
 import {
   formatDeadline,
   numberAttempts,
@@ -309,11 +310,12 @@ router.post(
   }
 );
 
-// GET /api/trainings/:id/quiz/attempts/:attemptId/word — compte rendu d'audit d'un passage terminé :
-// questions, réponses de la personne, bonnes réponses, taux de réussite.
-router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
+// Données du compte rendu d'audit d'un passage terminé (communes aux exports Word et PDF) :
+// questions, réponses de la personne, bonnes réponses, taux de réussite. Renvoie { status, error }
+// quand l'export est impossible, sinon { data } à passer au générateur.
+async function loadAttemptExportData(req) {
   const visibleTraining = await findTraining(req, req.params.id);
-  if (!visibleTraining) return res.status(404).json({ error: 'Formation introuvable.' });
+  if (!visibleTraining) return { status: 404, error: 'Formation introuvable.' };
 
   const { data: attempt, error } = await supabase
     .from('training_quiz_attempts')
@@ -323,8 +325,8 @@ router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
     .eq('id', req.params.attemptId)
     .maybeSingle();
 
-  if (error || !attempt) return res.status(404).json({ error: 'Passage introuvable.' });
-  if (!attempt.completed_at) return res.status(409).json({ error: "Ce QCM n'a pas encore été passé." });
+  if (error || !attempt) return { status: 404, error: 'Passage introuvable.' };
+  if (!attempt.completed_at) return { status: 409, error: "Ce QCM n'a pas encore été passé." };
 
   const [{ data: training }, { data: tenant }, { data: record }] = await Promise.all([
     supabase.from('trainings').select('title').eq('id', attempt.training_id).single(),
@@ -357,22 +359,46 @@ router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
     .eq('record_id', attempt.record_id);
   const history = numberAttempts(historyRows || [attempt]);
 
-  const buffer = await buildTrainingQuizWord({
-    history,
-    trainingInfo,
-    employeeSignature: attempt.employee_signature,
-    instructorSignature,
-    tenantName: tenant?.name,
-    tenantLogo,
-    tenantTimezone: tenant?.timezone,
-    trainingTitle: training?.title || 'Formation',
-    sessionDate: record?.session?.session_date || null,
+  return {
     attempt,
-  });
+    data: {
+      history,
+      trainingInfo,
+      employeeSignature: attempt.employee_signature,
+      instructorSignature,
+      tenantName: tenant?.name,
+      tenantLogo,
+      tenantTimezone: tenant?.timezone,
+      trainingTitle: training?.title || 'Formation',
+      sessionDate: record?.session?.session_date || null,
+      attempt,
+    },
+  };
+}
 
-  const safeName = `QCM-${(attempt.person_name || 'participant').replace(/[^A-Za-z0-9À-ÿ_-]+/g, '_')}.docx`;
+function quizFileName(attempt, extension) {
+  return `QCM-${(attempt.person_name || 'participant').replace(/[^A-Za-z0-9À-ÿ_-]+/g, '_')}.${extension}`;
+}
+
+// GET /api/trainings/:id/quiz/attempts/:attemptId/word — compte rendu d'audit au format Word.
+router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
+  const loaded = await loadAttemptExportData(req);
+  if (loaded.error) return res.status(loaded.status).json({ error: loaded.error });
+
+  const buffer = await buildTrainingQuizWord(loaded.data);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(safeName)}"`);
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(quizFileName(loaded.attempt, 'docx'))}"`);
+  res.send(buffer);
+});
+
+// GET /api/trainings/:id/quiz/attempts/:attemptId/pdf — même compte rendu au format PDF.
+router.get('/:id/quiz/attempts/:attemptId/pdf', guards, async (req, res) => {
+  const loaded = await loadAttemptExportData(req);
+  if (loaded.error) return res.status(loaded.status).json({ error: loaded.error });
+
+  const buffer = await buildTrainingQuizPdf(loaded.data);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(quizFileName(loaded.attempt, 'pdf'))}"`);
   res.send(buffer);
 });
 
