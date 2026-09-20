@@ -845,3 +845,30 @@ Rédige exactement ${count} nouvelles questions.`;
 export async function generateAuditChecklist(context) {
   return callGroq(AUDIT_CHECKLIST_SYSTEM_PROMPT, buildAuditChecklistUserPrompt(context), 'audit_checklist');
 }
+
+const MANAGEMENT_REVIEW_SYSTEM_PROMPT = `Tu es un consultant qualité expérimenté (ISO 9001:2015 §9.3) qui aide la direction à préparer les conclusions de sa revue de direction.
+
+À partir des ÉLÉMENTS D'ENTRÉE fournis (indicateurs, audits, réclamations, CAPA, risques, état du système) et du suivi des actions de la revue précédente, rédige :
+- conclusions : la synthèse de la revue en 2 à 3 courts paragraphes — la performance du système par rapport aux objectifs, les points de vigilance chiffrés (KPI hors objectif ou en baisse, CAPA en retard, non-conformités des audits, réclamations ouvertes), l'avancement des actions précédentes, et si le système reste adapté, adéquat et efficace.
+- improvement_opportunities : les opportunités d'amélioration qui découlent de ces éléments, une par ligne, commençant par un tiret.
+- decisions : 3 à 6 actions CONCRÈTES à décider (chacune commence par un verbe d'action, vise un seul résultat vérifiable, jamais un vœu général du type « améliorer la qualité »).
+
+Règles impératives :
+- Appuie-toi UNIQUEMENT sur les données fournies. N'invente aucun chiffre, aucun nom, aucun événement. Si un élément n'est pas renseigné (aucun KPI, aucune donnée sur la période…), dis-le et recommande de le compléter plutôt que de supposer.
+- Ne réécris pas les rubriques « évolutions du contexte » et « adéquation des ressources » : tu n'as aucune donnée dessus.
+- Ne mentionne AUCUNE date ni échéance dans les décisions : le responsable et l'échéance de chaque action sont fixés ensuite par la direction.
+- Tout en français, ton professionnel et factuel.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "conclusions": "string",
+  "improvement_opportunities": "string",
+  "decisions": ["string", "string"]
+}`;
+
+// context : texte assemblé côté route (voir POST /management-reviews/:id/ai-draft) — éléments d'entrée,
+// suivi des actions précédentes, rubriques déjà rédigées et actions déjà décidées. Rien n'est persisté ici :
+// le frontend affiche la proposition, la direction choisit ce qu'elle retient.
+export async function generateManagementReviewDraft(context) {
+  return callGroq(MANAGEMENT_REVIEW_SYSTEM_PROMPT, context, 'management_review_draft');
+}

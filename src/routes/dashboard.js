@@ -13,6 +13,7 @@ import {
   fetchRiskItems,
   fetchSupplierItems,
   fetchPdcaItems,
+  fetchReviewActionItems,
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
@@ -246,7 +247,7 @@ async function computeTenantMetrics(tenantId) {
   const haccpActivePlans = await countActiveHaccpPlans(tenantId, null);
   const accidentsOpen = await countAccidentsOpen(tenantId, scopeUser);
 
-  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems] =
+  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems] =
     await Promise.all([
       fetchCapaItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchDocumentItems(tenantId),
@@ -258,6 +259,7 @@ async function computeTenantMetrics(tenantId) {
       fetchRiskItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchSupplierItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchPdcaItems(tenantId, { serviceIds: null, ...scopeUser }),
+      fetchReviewActionItems(tenantId, { ownerIds: null, ...scopeUser }),
     ]);
   const overdueTotal = countOverdueItems([
     capaItems,
@@ -270,6 +272,7 @@ async function computeTenantMetrics(tenantId) {
     riskItems,
     supplierItems,
     pdcaItems,
+    reviewActionItems,
   ]);
 
   return {
@@ -349,7 +352,7 @@ router.get('/stats', async (req, res) => {
 
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, [req.user.id]);
 
-    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems, reviewActionItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id, userId: req.user.id, userRole: req.userRole }),
@@ -357,8 +360,9 @@ router.get('/stats', async (req, res) => {
       fetchComplaintItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchRiskItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchPdcaItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchReviewActionItems(req.tenantId, { ownerIds: [req.user.id], userId: req.user.id, userRole: req.userRole }),
     ]);
-    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems]);
+    const overdueTotal = countOverdueItems([capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems, reviewActionItems]);
 
     return res.json({
       capas: countCapasByStatus(capas),
@@ -439,7 +443,7 @@ router.get('/stats', async (req, res) => {
     const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
     const accidentsOpen = await countAccidentsOpen(req.tenantId, { userId: req.user.id, userRole: req.userRole }, serviceIds);
 
-    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems] =
+    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems] =
       await Promise.all([
         fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchDocumentItems(req.tenantId),
@@ -451,6 +455,7 @@ router.get('/stats', async (req, res) => {
         fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+        fetchReviewActionItems(req.tenantId, { ownerIds: trainingUserIds, userId: req.user.id, userRole: req.userRole }),
       ]);
     const overdueTotal = countOverdueItems([
       capaItems,
@@ -463,6 +468,7 @@ router.get('/stats', async (req, res) => {
       riskItems,
       supplierItems,
       pdcaItems,
+      reviewActionItems,
     ]);
 
     metrics = {

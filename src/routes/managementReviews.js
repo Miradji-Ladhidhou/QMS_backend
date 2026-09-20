@@ -5,6 +5,12 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQmsSnapshot } from '../services/qmsSnapshot.js';
+import { ACTION_STATUSES, describeAction, enrichActions, buildInputBlocks, formatReviewDate } from '../services/managementReviewContent.js';
+import { generateManagementReviewDraft } from '../services/groq.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { buildManagementReviewPdf } from '../services/managementReviewPdf.js';
+import { buildManagementReviewWord } from '../services/managementReviewWord.js';
+import { buildManagementReviewXlsx } from '../services/managementReviewXlsx.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -26,6 +32,52 @@ const REVIEW_TEXT_FIELDS = [
   'improvement_opportunities',
   'conclusions',
 ];
+
+// Colonnes d'une action, avec la CAPA liée et le responsable résolus.
+const ACTION_SELECT =
+  '*, linked_capa:capas!management_review_actions_linked_capa_id_fkey(id, number, title, status), owner_user:users!management_review_actions_owner_fkey(id, full_name)';
+
+// Le responsable d'une action doit être un utilisateur de CE tenant (jamais l'id d'un autre).
+async function isTenantUser(tenantId, userId) {
+  const { data } = await supabase.from('users').select('id').eq('tenant_id', tenantId).eq('id', userId).maybeSingle();
+  return Boolean(data);
+}
+
+// Revue précédente = la revue CLÔTURÉE la plus récente antérieure à celle-ci (§9.3.2 a : le statut des
+// actions de la revue précédente est un élément d'entrée), avec ses actions et leur statut actuel.
+// null s'il n'y en a pas, ou si sa catégorie est inaccessible à l'appelant.
+async function fetchPreviousReview(req, review) {
+  const { data: previous } = await supabase
+    .from('management_reviews')
+    .select('id, title, review_date, status, category_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('status', 'completed')
+    .neq('id', review.id)
+    .lt('review_date', review.review_date)
+    .order('review_date', { ascending: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!previous) return null;
+
+  const allowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: previous.category_id,
+    permission: 'view',
+  });
+  if (!allowed) return null;
+
+  const { data: actions } = await supabase
+    .from('management_review_actions')
+    .select(ACTION_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('review_id', previous.id)
+    .order('created_at', { ascending: true });
+
+  return { id: previous.id, title: previous.title, review_date: previous.review_date, actions: enrichActions(actions || []) };
+}
 
 // GET /api/management-reviews — liste tenant-wide, tous les rôles (même transparence que les
 // audits : une revue de direction concerne le SMQ dans son ensemble).
@@ -78,7 +130,7 @@ router.get('/:id', async (req, res) => {
 
   const { data: actions, error: actionsError } = await supabase
     .from('management_review_actions')
-    .select('*, linked_capa:capas!management_review_actions_linked_capa_id_fkey(id, number, title, status)')
+    .select(ACTION_SELECT)
     .eq('tenant_id', req.tenantId)
     .eq('review_id', review.id)
     .order('created_at', { ascending: true });
@@ -87,7 +139,127 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les actions de cette revue.' });
   }
 
-  res.json({ ...review, actions, is_private_to_me: review.category?.owner_user_id === req.user.id });
+  res.json({
+    ...review,
+    actions: enrichActions(actions),
+    previous_review: await fetchPreviousReview(req, review),
+    is_private_to_me: review.category?.owner_user_id === req.user.id,
+  });
+});
+
+// Données d'une revue pour ses exports (PDF, Word, Excel) : la revue et ses actions, la revue précédente et
+// ses actions, le nom/logo de l'entreprise. Répond 404 lui-même et retourne null si la revue est
+// introuvable ou inaccessible (catégorie restreinte).
+async function loadReviewForExport(req, res) {
+  const { data: review, error } = await supabase
+    .from('management_reviews')
+    .select('*, category:categories(id, name, color, is_restricted, owner_user_id)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+  if (error || !review) {
+    res.status(404).json({ error: 'Revue de direction introuvable.' });
+    return null;
+  }
+  if (req.userRole !== 'admin') {
+    const allowed = await hasGenericCategoryPermission({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, categoryId: review.category_id, permission: 'view' });
+    if (!allowed) {
+      res.status(404).json({ error: 'Revue de direction introuvable.' });
+      return null;
+    }
+  }
+
+  const [{ data: actions }, previousReview, { data: tenant }, { data: me }] = await Promise.all([
+    supabase.from('management_review_actions').select(ACTION_SELECT).eq('tenant_id', req.tenantId).eq('review_id', review.id).order('created_at', { ascending: true }),
+    fetchPreviousReview(req, review),
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+  ]);
+
+  return {
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    review: { ...review, actions: enrichActions(actions || []) },
+    previousReview,
+    generatedBy: me?.full_name,
+  };
+}
+
+// GET /api/management-reviews/:id/pdf | /word | /xlsx — le compte rendu de la revue : éléments d'entrée, suivi des
+// actions de la revue précédente, rubriques rédigées, actions décidées (responsable, échéance, statut).
+router.get('/:id/pdf', async (req, res) => {
+  const data = await loadReviewForExport(req, res);
+  if (!data) return;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="revue-de-direction.pdf"');
+  res.send(await buildManagementReviewPdf(data));
+});
+
+router.get('/:id/word', async (req, res) => {
+  const data = await loadReviewForExport(req, res);
+  if (!data) return;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', 'attachment; filename="revue-de-direction.docx"');
+  res.send(await buildManagementReviewWord(data));
+});
+
+router.get('/:id/xlsx', async (req, res) => {
+  const data = await loadReviewForExport(req, res);
+  if (!data) return;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="revue-de-direction.xlsx"');
+  res.send(Buffer.from(await buildManagementReviewXlsx(data)));
+});
+
+// POST /api/management-reviews/:id/ai-draft — brouillon IA des conclusions, des opportunités d'amélioration et
+// des décisions, d'après les éléments d'entrée de la revue et le suivi des actions précédentes. RIEN n'est
+// enregistré : le frontend présente la proposition, la direction retient et corrige ; les décisions retenues
+// deviennent des actions (source « ai »).
+router.post('/:id/ai-draft', requireRole('admin', 'manager'), async (req, res) => {
+  const data = await loadReviewForExport(req, res);
+  if (!data) return;
+  const { review, previousReview } = data;
+
+  const blocks = buildInputBlocks(review);
+  if (blocks.length === 0) {
+    return res.status(400).json({ error: "Aucune donnée d'entrée pour cette revue : définissez une période (Modifier la revue) pour que l'IA puisse s'appuyer sur des chiffres." });
+  }
+
+  const context = [
+    `Revue de direction : ${review.title} (${formatReviewDate(review.review_date)})`,
+    `Participants : ${review.participants || 'non renseignés'}`,
+    '',
+    "ÉLÉMENTS D'ENTRÉE",
+    ...blocks.flatMap((block) => [block.title, ...block.lines.map((line) => `- ${line}`)]),
+    '',
+    previousReview
+      ? `ACTIONS DE LA REVUE PRÉCÉDENTE (${previousReview.title}, ${formatReviewDate(previousReview.review_date)})\n${
+          previousReview.actions.length > 0 ? previousReview.actions.map((action) => `- ${describeAction(action)}`).join('\n') : '- aucune action décidée'
+        }`
+      : 'ACTIONS DE LA REVUE PRÉCÉDENTE : aucune revue précédente clôturée.',
+    '',
+    `Évolutions du contexte (déjà rédigé) : ${review.context_changes || 'non renseigné'}`,
+    `Adéquation des ressources (déjà rédigé) : ${review.resource_adequacy || 'non renseigné'}`,
+    `Actions déjà décidées : ${review.actions.length > 0 ? review.actions.map((action) => action.description).join(' ; ') : 'aucune'}`,
+  ].join('\n');
+
+  try {
+    const result = await generateManagementReviewDraft(context);
+    const text = (value) => (typeof value === 'string' ? value.trim() : '');
+    const existingActions = new Set(review.actions.map((action) => action.description.trim().toLowerCase()));
+    const decisions = (Array.isArray(result?.decisions) ? result.decisions : [])
+      .filter((decision) => typeof decision === 'string')
+      .map((decision) => decision.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim())
+      .filter((decision, index, all) => decision && decision.length <= 500 && !existingActions.has(decision.toLowerCase()) && all.findIndex((d) => d.toLowerCase() === decision.toLowerCase()) === index)
+      .slice(0, 8);
+    const draft = { conclusions: text(result?.conclusions), improvement_opportunities: text(result?.improvement_opportunities), decisions };
+    if (!draft.conclusions && !draft.improvement_opportunities && decisions.length === 0) {
+      return res.status(503).json({ error: "L'IA n'a rien proposé d'exploitable. Réessayez." });
+    }
+    res.json(draft);
+  } catch (err) {
+    res.status(503).json({ error: `Impossible de générer le brouillon : ${err.message}` });
+  }
 });
 
 // POST /api/management-reviews — admin/manager uniquement, comme pour les audits : une revue
@@ -410,11 +582,22 @@ async function resolveReview(req, res) {
   return review;
 }
 
+// Champs de suivi d'une action, communs à la création et à la modification.
+const ACTION_TRACKING_VALIDATORS = [
+  body('owner').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
+  body('due_date').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Échéance invalide.'),
+  body('status').optional().isIn(ACTION_STATUSES).withMessage('Statut invalide.'),
+];
+
 // POST /api/management-reviews/:reviewId/actions — admin/manager uniquement.
 router.post(
   '/:reviewId/actions',
   requireRole('admin', 'manager'),
-  [body('description').trim().notEmpty().withMessage('La description est requise.')],
+  [
+    body('description').trim().notEmpty().withMessage('La description est requise.'),
+    body('source').optional().isIn(['manual', 'ai']).withMessage('Source invalide.'),
+    ...ACTION_TRACKING_VALIDATORS,
+  ],
   async (req, res) => {
     const review = await resolveReview(req, res);
     if (!review) return;
@@ -423,51 +606,78 @@ router.post(
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
+    if (req.body.owner && !(await isTenantUser(req.tenantId, req.body.owner))) {
+      return res.status(400).json({ error: 'Responsable invalide.' });
+    }
 
+    const status = req.body.status || 'open';
     const { data, error } = await supabase
       .from('management_review_actions')
       .insert({
         tenant_id: req.tenantId,
         review_id: review.id,
         description: req.body.description,
+        owner: req.body.owner || null,
+        due_date: req.body.due_date || null,
+        status,
+        completed_at: status === 'done' ? new Date().toISOString() : null,
+        source: req.body.source || 'manual',
         created_by: req.user.id,
       })
-      .select('*, linked_capa:capas!management_review_actions_linked_capa_id_fkey(id, number, title, status)')
+      .select(ACTION_SELECT)
       .single();
 
     if (error) {
       return res.status(500).json({ error: "Erreur lors de la création de l'action." });
     }
 
-    res.status(201).json(data);
+    res.status(201).json(enrichActions([data])[0]);
   }
 );
 
-// PATCH /api/management-reviews/:reviewId/actions/:id — admin/manager uniquement.
+// PATCH /api/management-reviews/:reviewId/actions/:id — admin/manager uniquement. Tous les champs sont
+// optionnels (le responsable, l'échéance et le statut se modifient un par un depuis la page) ; passer au
+// statut « réalisée » date l'action, en sortir efface cette date.
 router.patch(
   '/:reviewId/actions/:id',
   requireRole('admin', 'manager'),
-  [body('description').trim().notEmpty().withMessage('La description ne peut pas être vide.')],
+  [body('description').optional().trim().notEmpty().withMessage('La description ne peut pas être vide.'), ...ACTION_TRACKING_VALIDATORS],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
+    if (req.body.owner && !(await isTenantUser(req.tenantId, req.body.owner))) {
+      return res.status(400).json({ error: 'Responsable invalide.' });
+    }
+
+    const update = {};
+    if ('description' in req.body) update.description = req.body.description;
+    if ('owner' in req.body) update.owner = req.body.owner || null;
+    if ('due_date' in req.body) update.due_date = req.body.due_date || null;
+    if ('status' in req.body) {
+      update.status = req.body.status;
+      update.completed_at = req.body.status === 'done' ? new Date().toISOString() : null;
+    }
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+    update.updated_at = new Date().toISOString();
 
     const { data, error } = await supabase
       .from('management_review_actions')
-      .update({ description: req.body.description })
+      .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('review_id', req.params.reviewId)
       .eq('id', req.params.id)
-      .select('*, linked_capa:capas!management_review_actions_linked_capa_id_fkey(id, number, title, status)')
+      .select(ACTION_SELECT)
       .single();
 
     if (error || !data) {
       return res.status(404).json({ error: 'Action introuvable.' });
     }
 
-    res.json(data);
+    res.json(enrichActions([data])[0]);
   }
 );
 

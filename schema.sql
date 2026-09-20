@@ -464,10 +464,20 @@ create table management_review_actions (
   review_id      uuid not null references management_reviews (id) on delete cascade,
   description    text not null,
   linked_capa_id uuid references capas (id) on delete set null,
+  -- Suivi de l'action décidée (§9.3.3) : responsable, échéance (alimente le planning), statut, et
+  -- origine (saisie à la main ou proposée par l'IA puis validée). completed_at : posé quand le statut
+  -- passe à « done », effacé s'il en sort.
+  owner          uuid references users (id) on delete set null,
+  due_date       date,
+  status         text not null default 'open' check (status in ('open', 'in_progress', 'done', 'cancelled')),
+  completed_at   timestamptz,
+  source         text not null default 'manual' check (source in ('manual', 'ai')),
   created_by     uuid references users (id) on delete set null,
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now()
 );
+create index idx_management_review_actions_owner on management_review_actions (owner);
+create index idx_management_review_actions_due_date on management_review_actions (due_date);
 
 -- Action de revue de direction à l'origine de cette CAPA (voir aussi
 -- management_review_actions.linked_capa_id, l'inverse) — même raisonnement que

@@ -393,3 +393,40 @@ export async function fetchTaskItems(tenantId, { personalUserId, userId, userRol
     })
   );
 }
+
+// Actions décidées en revue de direction, non réalisées ni abandonnées, avec une échéance — scope :
+// celles dont je suis responsable (member), celles des personnes des services choisis (manager), ou tout
+// le tenant. ownerIds : null = tout le tenant ; tableau = seulement ces responsables (jamais d'action sans
+// responsable dans une vue restreinte : elle n'a personne à qui l'attribuer). Une revue en catégorie
+// restreinte inaccessible n'apparaît pas, comme les autres modules.
+export async function fetchReviewActionItems(tenantId, { ownerIds, userId, userRole }) {
+  if (Array.isArray(ownerIds) && ownerIds.length === 0) return [];
+
+  let query = supabase
+    .from('management_review_actions')
+    .select('id, description, due_date, review:management_reviews!management_review_actions_review_id_fkey(id, title, category_id, category:categories(id, is_restricted))')
+    .eq('tenant_id', tenantId)
+    .in('status', ['open', 'in_progress'])
+    .not('due_date', 'is', null);
+  if (Array.isArray(ownerIds)) query = query.in('owner', ownerIds);
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  const withReview = data.filter((action) => action.review);
+  const visibleReviews = await filterViewableByCategory({
+    userId,
+    userRole,
+    items: withReview.map((action) => ({ ...action.review, __action: action })),
+  });
+
+  return visibleReviews.map((review) =>
+    withOverdue({
+      type: 'review_action',
+      id: review.__action.id,
+      title: `${review.title} — ${review.__action.description.length > 90 ? `${review.__action.description.slice(0, 89)}…` : review.__action.description}`,
+      date: review.__action.due_date,
+      link: `/management-reviews/${review.id}`,
+    })
+  );
+}

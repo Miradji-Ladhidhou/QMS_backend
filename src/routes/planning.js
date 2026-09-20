@@ -11,6 +11,7 @@ import {
   fetchAuditItems,
   fetchComplaintItems,
   fetchRiskItems,
+  fetchReviewActionItems,
   fetchSupplierItems,
   fetchPdcaItems,
 } from '../services/planningItems.js';
@@ -37,7 +38,7 @@ router.get('/', async (req, res) => {
   let items;
 
   if (req.userRole === 'member') {
-    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems] = await Promise.all([
+    const [capaItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, pdcaItems, reviewActionItems] = await Promise.all([
       fetchCapaItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchTrainingItems(req.tenantId, { userId: req.user.id }),
       fetchTaskItems(req.tenantId, { personalUserId: req.user.id, userId: req.user.id, userRole: req.userRole }),
@@ -45,8 +46,9 @@ router.get('/', async (req, res) => {
       fetchComplaintItems(req.tenantId, { assignedTo: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchRiskItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
       fetchPdcaItems(req.tenantId, { ownerId: req.user.id, userId: req.user.id, userRole: req.userRole }),
+      fetchReviewActionItems(req.tenantId, { ownerIds: [req.user.id], userId: req.user.id, userRole: req.userRole }),
     ]);
-    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems, ...pdcaItems];
+    items = [...capaItems, ...trainingItems, ...taskItems, ...auditItems, ...complaintItems, ...riskItems, ...pdcaItems, ...reviewActionItems];
   } else {
     const serviceIds = await resolveServiceScope({
       tenantId: req.tenantId,
@@ -68,6 +70,7 @@ router.get('/', async (req, res) => {
       riskItems,
       supplierItems,
       pdcaItems,
+      reviewActionItems,
     ] = await Promise.all([
       fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchDocumentItems(req.tenantId),
@@ -79,6 +82,8 @@ router.get('/', async (req, res) => {
       fetchRiskItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
+      // trainingUserIds : les personnes des services choisis (null = tout le tenant), comme pour les formations.
+      fetchReviewActionItems(req.tenantId, { ownerIds: trainingUserIds, userId: req.user.id, userRole: req.userRole }),
     ]);
     items = [
       ...capaItems,
@@ -91,6 +96,7 @@ router.get('/', async (req, res) => {
       ...riskItems,
       ...supplierItems,
       ...pdcaItems,
+      ...reviewActionItems,
     ];
   }
 
