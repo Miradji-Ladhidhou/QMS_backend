@@ -13,7 +13,9 @@ import {
   WidthType,
   ShadingType,
   VerticalAlign,
+  TabStopType,
 } from 'docx';
+import { logoImageRun } from './wordLogo.js';
 
 // Mêmes teintes neutres que listReportPdf.js/listReportXlsx.js (fond clair + encre foncée
 // plutôt qu'un bandeau bleu marine) pour une identité visuelle cohérente entre les 3 formats
@@ -23,6 +25,10 @@ const INK = '1E293B';
 const HEADER_FILL = 'F1F5F9';
 const MUTED = '64748B';
 const BORDER = 'D9D9D9';
+
+// Largeur utile d'une page A4 portrait avec marges Word par défaut (1 pouce) — position de la
+// tabulation droite de l'en-tête.
+const HEADER_WIDTH_DXA = 9026;
 
 const CELL_BORDER = { style: 'single', size: 2, color: BORDER };
 const CELL_BORDERS = { top: CELL_BORDER, bottom: CELL_BORDER, left: CELL_BORDER, right: CELL_BORDER };
@@ -48,6 +54,20 @@ function titleRow(title, columnCount) {
 function metaParagraph(tenantName, generatedBy) {
   const line = `${tenantName || 'Entreprise'} · Généré par ${generatedBy || 'Utilisateur inconnu'} le ${new Date().toLocaleString('fr-FR')}`;
   return new Paragraph({ spacing: { before: 120, after: 60 }, children: [new TextRun({ text: line, italics: true, color: MUTED, size: 18 })] });
+}
+
+// En-tête de section (répété sur chaque page) : logo à gauche, titre du document à droite —
+// un seul paragraphe avec tabulation droite, même principe que procedureWord.js. Sans logo (ou
+// logo illisible), on retombe sur le titre seul aligné à droite, comme avant.
+function headerParagraph(tenantLogo, title) {
+  const titleRun = new TextRun({ text: title, size: 16, color: MUTED });
+  const logo = logoImageRun(tenantLogo);
+  if (!logo) return new Paragraph({ alignment: AlignmentType.RIGHT, children: [titleRun] });
+  return new Paragraph({
+    spacing: { after: 120 },
+    tabStops: [{ type: TabStopType.RIGHT, position: HEADER_WIDTH_DXA }],
+    children: [logo, new TextRun({ text: '\t', size: 16 }), titleRun],
+  });
 }
 
 function dataCellText(text, { header } = {}) {
@@ -79,7 +99,7 @@ function dataTable(columns, rows) {
 // procedureWord.js (pas de système de thèmes : ici une seule identité visuelle, cohérente avec
 // le PDF/Excel du même export) — et contrairement au PDF, une cellule Word s'ajuste en hauteur
 // nativement, pas besoin de logique de troncature/plafond.
-export async function buildListReportWord({ tenantName, title, subtitle, generatedBy, columns, rows }) {
+export async function buildListReportWord({ tenantName, tenantLogo, title, subtitle, generatedBy, columns, rows }) {
   const body = [titleRow(title, columns.length), metaParagraph(tenantName, generatedBy)];
 
   if (subtitle) {
@@ -95,11 +115,7 @@ export async function buildListReportWord({ tenantName, title, subtitle, generat
   const doc = new Document({
     sections: [
       {
-        headers: {
-          default: new Header({
-            children: [new Paragraph({ alignment: AlignmentType.RIGHT, children: [new TextRun({ text: title, size: 16, color: MUTED })] })],
-          }),
-        },
+        headers: { default: new Header({ children: [headerParagraph(tenantLogo, title)] }) },
         footers: {
           default: new Footer({
             children: [

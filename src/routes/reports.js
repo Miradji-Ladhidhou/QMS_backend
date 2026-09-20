@@ -142,8 +142,9 @@ router.post(
     const { title, subtitle, generatedBy, columns, rows } = req.body;
 
     try {
-      const { data: tenant } = await supabase.from('tenants').select('name').eq('id', req.tenantId).single();
-      const wordBuffer = await buildListReportWord({ tenantName: tenant?.name, title, subtitle, generatedBy, columns, rows });
+      const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+      const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+      const wordBuffer = await buildListReportWord({ tenantName: tenant?.name, tenantLogo, title, subtitle, generatedBy, columns, rows });
 
       await logActivity({
         tenantId: req.tenantId,
