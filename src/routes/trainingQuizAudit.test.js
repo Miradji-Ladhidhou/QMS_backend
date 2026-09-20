@@ -350,6 +350,109 @@ describe('Robustesse de la page publique', () => {
   });
 });
 
+describe('Lien bricolé : modifier l\'URL ne donne accès à rien', () => {
+  async function ready() {
+    const tenant = await newTenant();
+    const training = await setupTraining(tenant);
+    const rec = await record(tenant, training, { user_id: tenant.admin.id });
+    await invite(tenant, training, [{ record_id: rec.id }]);
+    return { tenant, token: tokenFromEmail() };
+  }
+
+  const flip = (token, index) => token.slice(0, index) + (token[index] === 'A' ? 'B' : 'A') + token.slice(index + 1);
+
+  it('un caractère modifié, ajouté, retiré, ou la casse changée : même réponse 404 « Lien invalide », sans rien révéler', async () => {
+    const { tenant, token } = await ready();
+    const variants = [flip(token, 0), flip(token, 20), flip(token, token.length - 1), `${token}x`, token.slice(0, -1), token.toUpperCase(), token.toLowerCase(), token.split('').reverse().join('')]
+      .filter((variant) => variant !== token);
+
+    const bodies = new Set();
+    for (const variant of variants) {
+      for (const res of [
+        await request(app).get(`/api/public/quiz/${variant}`),
+        await request(app).post(`/api/public/quiz/${variant}/start`).send({ email: tenant.admin.email }),
+        await request(app).post(`/api/public/quiz/${variant}/submit`).send({ email: tenant.admin.email, signature: SIGNATURE, answers: {} }),
+      ]) {
+        expect(res.status).toBe(404);
+        bodies.add(JSON.stringify(res.body));
+      }
+    }
+    // Toujours exactement la même réponse : impossible de « chauffer/froid » vers un vrai jeton.
+    expect(bodies.size).toBe(1);
+    expect([...bodies][0]).toBe(JSON.stringify({ error: 'Lien invalide.' }));
+
+    // Et le vrai lien n'a pas été affecté (aucun essai compté, aucun passage consommé).
+    const ok = await request(app).post(`/api/public/quiz/${token}/start`).send({ email: tenant.admin.email });
+    expect(ok.status).toBe(200);
+  });
+
+  it('jetons pathologiques (injection SQL, traversée de chemin, très long, caractères spéciaux) : jamais de 500, jamais d\'accès', async () => {
+    await ready();
+    const evil = ["' OR '1'='1", '1; DROP TABLE training_quiz_attempts;--', '../../../etc/passwd', '..%2f..%2fadmin', '%00', '<script>alert(1)</script>', 'a'.repeat(5000), '*', '%', '_', 'null', 'undefined', '{}', '[]'];
+    for (const value of evil) {
+      const res = await request(app).get(`/api/public/quiz/${encodeURIComponent(value)}`);
+      expect(res.status).toBe(404);
+    }
+    // Le point d'entrée ne sait rien faire d'autre que ces trois routes : pas de liste, pas d'identifiant.
+    for (const path of ['/api/public/quiz', '/api/public/quiz/', '/api/public/', '/api/public/trainings', '/api/public/quiz/x/attempts']) {
+      const res = await request(app).get(path);
+      expect([401, 404]).toContain(res.status);
+    }
+  });
+
+  it('un jeton valide d\'un AUTRE passage ne donne accès qu\'à SON propre contenu (jamais à celui d\'un autre salarié)', async () => {
+    const tenant = await newTenant({ extraUsers: [{ role: 'manager' }] });
+    const training = await setupTraining(tenant);
+    const recA = await record(tenant, training, { user_id: tenant.admin.id });
+    const recB = await record(tenant, training, { user_id: tenant.users[0].id });
+    // Vide les emails d'invitation de compte envoyés par createTenant : ne garder que ceux du QCM.
+    sendEmail.mockClear();
+    await invite(tenant, training, [{ record_id: recA.id }, { record_id: recB.id }]);
+    const tokenOf = (to) => tokenFromEmail(sendEmail.mock.calls.find((call) => call[0] === to));
+    const tokenA = tokenOf(tenant.admin.email);
+    const tokenB = tokenOf(tenant.users[0].email);
+
+    // Le jeton de B avec l'email de A : refusé (chaque lien est lié à SON destinataire).
+    expect((await request(app).post(`/api/public/quiz/${tokenB}/start`).send({ email: tenant.admin.email })).status).toBe(403);
+    // Et un passage soumis avec le jeton de A n'écrit que sur la réalisation de A.
+    await request(app).post(`/api/public/quiz/${tokenA}/submit`).send({ email: tenant.admin.email, signature: SIGNATURE, answers: { q1: ['a'], q2: ['a', 'b'] } });
+    expect((await admin.from('training_records').select('evaluation_result').eq('id', recA.id).single()).data.evaluation_result).toBe(true);
+    expect((await admin.from('training_records').select('evaluation_result').eq('id', recB.id).single()).data.evaluation_result).toBeNull();
+  });
+
+  it('le corps de la requête ne peut pas désigner une autre réalisation, un autre tenant ou un autre passage', async () => {
+    const { tenant, token } = await ready();
+    const other = await newTenant();
+    const otherTraining = await setupTraining(other);
+    const otherRecord = await record(other, otherTraining, { user_id: other.admin.id });
+
+    const res = await request(app)
+      .post(`/api/public/quiz/${token}/submit`)
+      .send({
+        email: tenant.admin.email,
+        signature: SIGNATURE,
+        answers: { q1: ['a'], q2: ['a', 'b'] },
+        record_id: otherRecord.id,
+        tenant_id: other.tenantId,
+        training_id: otherTraining.id,
+        passed: true,
+        score_percent: 100,
+        attempt_id: '00000000-0000-4000-8000-000000000000',
+      });
+    expect(res.status).toBe(200);
+    // Rien n'a bougé chez l'autre entreprise.
+    expect((await admin.from('training_records').select('evaluation_result').eq('id', otherRecord.id).single()).data.evaluation_result).toBeNull();
+  });
+
+  it('un résultat « réussi » envoyé par le client est ignoré : la note est calculée par le serveur', async () => {
+    const { tenant, token } = await ready();
+    const res = await request(app)
+      .post(`/api/public/quiz/${token}/submit`)
+      .send({ email: tenant.admin.email, signature: SIGNATURE, answers: { q1: ['b'], q2: ['c'] }, passed: true, score_percent: 100, correct_count: 2 });
+    expect(res.body).toMatchObject({ passed: false, correct_count: 0, score_percent: 0 });
+  });
+});
+
 describe('Isolation entre entreprises et droits', () => {
   it('une autre entreprise ne voit ni ne modifie le QCM, les passages, les exports ni ne peut envoyer', async () => {
     const owner = await newTenant();
