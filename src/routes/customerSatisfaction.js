@@ -5,6 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { buildCustomerSatisfactionPdf } from '../services/customerSatisfactionPdf.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -62,6 +64,42 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+});
+
+// GET /api/customer-satisfaction/:id/pdf — fiche imprimable d'une enquête (voir
+// services/customerSatisfactionPdf.js). Chemin à deux segments : ne rentre jamais en conflit
+// avec GET /:id ci-dessus, même principe que /:id/pdf dans capas.js/pdca.js/complaints.js. Même
+// règle de visibilité que GET /:id.
+router.get('/:id/pdf', async (req, res) => {
+  const { data: survey, error } = await supabase
+    .from('customer_satisfaction_surveys')
+    .select(SURVEY_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !survey) {
+    return res.status(404).json({ error: 'Enquête introuvable.' });
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: survey.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
+    return res.status(404).json({ error: 'Enquête introuvable.' });
+  }
+
+  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
+  const pdfBuffer = await buildCustomerSatisfactionPdf({ tenantName: tenant?.name, tenantLogo, survey });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="satisfaction-${survey.id}.pdf"`);
+  res.send(pdfBuffer);
 });
 
 // POST /api/customer-satisfaction — ouvert à tous les rôles : n'importe qui en contact avec

@@ -76,6 +76,48 @@ describe('POST /api/customer-satisfaction — création ouverte à tous les rôl
   });
 });
 
+describe('GET /api/customer-satisfaction/:id/pdf', () => {
+  it('génère un PDF valide avec le contenu de l’enquête', async () => {
+    tenant = await createTenant();
+    const created = await makeSurvey(tenant.admin.token, { comments: 'Commentaire de test' });
+    expect(created.status).toBe(201);
+
+    const res = await request(app)
+      .get(`/api/customer-satisfaction/${created.body.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('404 pour un member sans permission sur une catégorie restreinte', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const categoryRes = await request(app)
+      .post('/api/module-categories')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ resource_type: 'customer_satisfaction', name: 'Confidentiel PDF', is_restricted: true });
+    expect(categoryRes.status).toBe(201);
+    const survey = await makeSurvey(tenant.admin.token, { category_id: categoryRes.body.id });
+
+    const res = await request(app)
+      .get(`/api/customer-satisfaction/${survey.body.id}/pdf`)
+      .set('Authorization', `Bearer ${member.token}`)
+      .responseType('blob');
+    expect(res.status).toBe(404);
+  });
+
+  it('404 sur un id inexistant', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .get('/api/customer-satisfaction/00000000-0000-0000-0000-000000000000/pdf')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
 describe('PATCH /api/customer-satisfaction/:id — réservé admin/manager', () => {
   it('403 pour un member, 200 pour un manager', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'manager' }] });
