@@ -1,16 +1,12 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
-import { INK, MUTED, RULE_LIGHT, HEADER_FILL, drawLetterheadHeader } from './pdfTheme.js';
+import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
+import { CONTENT_WIDTH, PAGE_MARGIN, PAGE_WIDTH, drawTable, ensureSpace } from './pdfSimpleTable.js';
 import { describeAttemptsSummary, formatDateTimeInZone, summarizeAttempts } from './trainingQuiz.js';
 
-const PAGE_MARGIN = 50;
-const PAGE_WIDTH = 595.28; // A4
-const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
-const BOTTOM_LIMIT = 60; // au-dessus du pied de page
 // Couleurs sémantiques (réussi / non réussi), pas des couleurs de marque.
 const GOOD = '#047857';
 const BAD = '#b91c1c';
-const CELL_PADDING = 5;
 const SIGNATURE_BOX_HEIGHT = 180;
 
 function formatDate(value, timeZone) {
@@ -27,57 +23,12 @@ function decodeDataUrl(dataUrl) {
   return match ? Buffer.from(match[1], 'base64') : null;
 }
 
-function ensureSpace(doc, height) {
-  if (doc.y + height > doc.page.height - BOTTOM_LIMIT) doc.addPage();
-}
-
 function drawSectionTitle(doc, title) {
   ensureSpace(doc, 70);
   doc.moveDown(0.6);
   doc.font('Body-Bold').fontSize(12).fillColor(INK).text(title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
   doc.font('Body');
   doc.moveDown(0.3);
-}
-
-// Tableau simple : colonnes { width (part de CONTENT_WIDTH), align }, lignes de cellules { text, bold, color }.
-// Hauteur de ligne calculée depuis le texte réel ; une ligne n'est jamais coupée entre deux pages.
-function drawTable(doc, columns, header, rows) {
-  const widths = columns.map((column) => CONTENT_WIDTH * column.width);
-
-  function rowHeight(cells) {
-    return (
-      Math.max(
-        ...cells.map((cell, i) => {
-          doc.font(cell.bold ? 'Body-Bold' : 'Body').fontSize(9);
-          return doc.heightOfString(cell.text || ' ', { width: widths[i] - CELL_PADDING * 2 });
-        })
-      ) +
-      CELL_PADDING * 2
-    );
-  }
-
-  function drawRow(cells, { fill } = {}) {
-    const height = rowHeight(cells);
-    ensureSpace(doc, height);
-    const y = doc.y;
-    let x = PAGE_MARGIN;
-    if (fill) doc.rect(PAGE_MARGIN, y, CONTENT_WIDTH, height).fill(fill);
-    cells.forEach((cell, i) => {
-      doc
-        .font(cell.bold ? 'Body-Bold' : 'Body')
-        .fontSize(9)
-        .fillColor(cell.color || INK)
-        .text(cell.text || '', x + CELL_PADDING, y + CELL_PADDING, { width: widths[i] - CELL_PADDING * 2, align: columns[i].align || 'left' });
-      x += widths[i];
-    });
-    doc.moveTo(PAGE_MARGIN, y + height).lineTo(PAGE_MARGIN + CONTENT_WIDTH, y + height).strokeColor(RULE_LIGHT).lineWidth(0.5).stroke();
-    doc.y = y + height;
-    doc.x = PAGE_MARGIN;
-  }
-
-  drawRow(header.map((text) => ({ text, bold: true })), { fill: HEADER_FILL });
-  rows.forEach((cells) => drawRow(cells));
-  doc.font('Body');
 }
 
 // Paires libellé / valeur sur toute la largeur (une par ligne).

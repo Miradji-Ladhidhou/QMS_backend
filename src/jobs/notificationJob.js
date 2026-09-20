@@ -3,6 +3,7 @@ import { supabase } from '../services/supabase.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
 import { withJobRunTracking } from '../services/jobRunTracker.js';
+import { CLOSED_RISK_STATUSES, RISK_REVIEW_REMINDER_LEAD_DAYS, currentScore, daysUntil, isReminderMilestone } from '../services/riskAssessments.js';
 import {
   getUserEmail,
   getUserFullName,
@@ -166,6 +167,31 @@ export async function getProcedureReviewAlerts(tenantId) {
   }));
 }
 
+// Risques non clos dont la revue tombe sur un jalon : 7 jours avant, le jour même, puis chaque semaine de
+// retard. Prévenu : le responsable du risque, à défaut son créateur. Un jalon = un jour précis, jamais
+// répété le lendemain (voir isReminderMilestone).
+export async function getRiskReviewAlerts(tenantId) {
+  const { data, error } = await supabase
+    .from('risks')
+    .select('id, title, review_date, owner, created_by, risk_score, residual_score')
+    .eq('tenant_id', tenantId)
+    .not('review_date', 'is', null)
+    .not('status', 'in', `(${CLOSED_RISK_STATUSES.join(',')})`)
+    .lte('review_date', addDaysIso(RISK_REVIEW_REMINDER_LEAD_DAYS));
+
+  if (error) throw new Error(`Alertes revue des risques : ${error.message}`);
+
+  return data
+    .map((risk) => ({ ...risk, days_remaining: daysUntil(risk.review_date), user_id: risk.owner || risk.created_by }))
+    .filter((risk) => risk.user_id && isReminderMilestone(risk.days_remaining));
+}
+
+function describeReviewTiming(daysRemaining) {
+  if (daysRemaining > 0) return `dans ${daysRemaining} jour${daysRemaining > 1 ? 's' : ''}`;
+  if (daysRemaining === 0) return "aujourd'hui";
+  return `en retard de ${-daysRemaining} jour${-daysRemaining > 1 ? 's' : ''}`;
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -216,7 +242,7 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts] =
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts, riskReviewAlerts] =
     await Promise.all([
       getDocumentAlerts(tenantId),
       getCapaAlerts(tenantId),
@@ -224,6 +250,7 @@ async function processTenant(tenantId) {
       getTaskAlerts(tenantId),
       getStaleApprovalAlerts(tenantId),
       getProcedureReviewAlerts(tenantId),
+      getRiskReviewAlerts(tenantId),
     ]);
 
   for (const doc of documentAlerts) {
@@ -358,6 +385,30 @@ async function processTenant(tenantId) {
       notificationTitle: 'Procédure à réviser',
       notificationMessage: `${procedure.number} — ${procedure.title} (dans ${procedure.days_remaining} jours)`,
       notificationLink: `/procedures/${procedure.id}`,
+    });
+  }
+
+  // Même principe (jalon = un envoi, hors résumé quotidien/hebdomadaire) pour la revue des risques.
+  for (const risk of riskReviewAlerts) {
+    const whenText = describeReviewTiming(risk.days_remaining);
+    await sendImmediateNotification({
+      tenantId,
+      userId: risk.user_id,
+      prefField: 'email_risk_review',
+      notificationType: 'risk_review_due',
+      referenceId: risk.id,
+      templateName: 'riskReviewDue',
+      subject: `Risque à revoir ${whenText} : ${risk.title}`,
+      variables: {
+        riskTitle: risk.title,
+        score: currentScore(risk),
+        whenText,
+        reviewDate: risk.review_date,
+        riskUrl: `${frontendUrl}/risks/${risk.id}`,
+      },
+      notificationTitle: 'Risque à revoir',
+      notificationMessage: `${risk.title} (${whenText})`,
+      notificationLink: `/risks/${risk.id}`,
     });
   }
 }

@@ -8,6 +8,7 @@ const DEFAULT_PREFERENCES = {
   email_training_renewal: true,
   email_approval_requests: true,
   email_procedure_review: true,
+  email_risk_review: true,
   digest_frequency: 'daily',
 };
 
