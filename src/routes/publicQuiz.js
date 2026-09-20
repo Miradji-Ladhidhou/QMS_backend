@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { supabase } from '../services/supabase.js';
+import { validateSignatureImage } from '../services/signatureImage.js';
 import {
   gradeQuiz,
   hashQuizToken,
@@ -16,6 +17,13 @@ import {
 // Monté avec son propre limiteur de débit (voir app.js).
 const router = Router();
 
+// Jamais mis en cache (navigateur, proxy) : la réponse contient le résumé et les questions d'une
+// personne précise, derrière un lien à usage unique.
+router.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
 const ATTEMPT_COLUMNS =
   'id, tenant_id, training_id, record_id, email, person_name, quiz_snapshot, pass_threshold, expires_at, completed_at, failed_email_attempts';
 
@@ -26,7 +34,10 @@ function isPlausibleToken(token) {
 
 async function loadAttempt(token) {
   if (!isPlausibleToken(token)) return null;
-  const { data } = await supabase.from('training_quiz_attempts').select(ATTEMPT_COLUMNS).eq('token_hash', hashQuizToken(token)).maybeSingle();
+  const { data, error } = await supabase.from('training_quiz_attempts').select(ATTEMPT_COLUMNS).eq('token_hash', hashQuizToken(token)).maybeSingle();
+  // Une erreur base n'est PAS « lien inconnu » : la lever (500 via le gestionnaire global) plutôt
+  // que d'afficher « Lien invalide » à quelqu'un dont le lien est bon, lors d'un incident passager.
+  if (error) throw new Error(`Lecture du passage de QCM impossible : ${error.message}`);
   return data;
 }
 
@@ -44,6 +55,28 @@ const STATUS_MESSAGES = {
   locked: 'Ce lien est verrouillé après trop de tentatives. Demandez un nouveau lien à votre responsable formation.',
 };
 
+// Incrémente le compteur d'emails erronés SANS perdre de comptage quand plusieurs requêtes arrivent
+// en même temps : la mise à jour n'a lieu que si la valeur lue n'a pas bougé (verrouillage
+// optimiste), sinon on relit et on recommence. Un simple « lire puis écrire n+1 » laisserait un
+// script lancer 100 essais en parallèle en ne faisant avancer le compteur que de 1.
+async function recordFailedEmailAttempt(attempt) {
+  let current = attempt.failed_email_attempts;
+  for (let retry = 0; retry < 8; retry += 1) {
+    const { data } = await supabase
+      .from('training_quiz_attempts')
+      .update({ failed_email_attempts: current + 1 })
+      .eq('id', attempt.id)
+      .eq('failed_email_attempts', current)
+      .select('failed_email_attempts')
+      .maybeSingle();
+    if (data) return data.failed_email_attempts;
+
+    const { data: fresh } = await supabase.from('training_quiz_attempts').select('failed_email_attempts').eq('id', attempt.id).single();
+    current = fresh?.failed_email_attempts ?? current + 1;
+  }
+  return current + 1;
+}
+
 // Contrôle commun à /start et /submit : lien inconnu, terminé, expiré, verrouillé ou email erroné.
 // Retourne { attempt } quand tout est bon, sinon { status, body } à renvoyer tel quel.
 async function authorizeAttempt(token, email) {
@@ -54,8 +87,7 @@ async function authorizeAttempt(token, email) {
   if (state !== 'valid') return { status: STATUS_CODES[state], body: { error: STATUS_MESSAGES[state], state } };
 
   if (normalizeEmail(email) !== attempt.email) {
-    const failed = attempt.failed_email_attempts + 1;
-    await supabase.from('training_quiz_attempts').update({ failed_email_attempts: failed }).eq('id', attempt.id);
+    const failed = await recordFailedEmailAttempt(attempt);
     const remaining = MAX_FAILED_EMAIL_ATTEMPTS - failed;
     return {
       status: 403,
@@ -116,7 +148,26 @@ router.post('/:token/submit', async (req, res) => {
   if (!result.attempt) return res.status(result.status).json(result.body);
   const { attempt } = result;
 
+  // Signature manuscrite obligatoire : refusée AVANT de consommer l'unique tentative du lien, pour
+  // que la personne puisse signer et revalider sans perdre son passage.
+  const signature = validateSignatureImage(req.body?.signature);
+  if (signature.error) {
+    return res.status(400).json({ error: req.body?.signature ? signature.error : 'Signez dans le cadre avant de valider vos réponses.' });
+  }
+
   const graded = gradeQuiz(attempt.quiz_snapshot, req.body?.answers, attempt.pass_threshold);
+
+  // Réussite : la signature du formateur est copiée sur le passage à cet instant (jamais réécrite si
+  // le formateur change ensuite de signature).
+  let instructorSignature = null;
+  if (graded.passed) {
+    const { data: trainerSignature } = await supabase
+      .from('training_instructor_signatures')
+      .select('image')
+      .eq('training_id', attempt.training_id)
+      .maybeSingle();
+    instructorSignature = trainerSignature?.image || null;
+  }
 
   // completed_at IS NULL dans le filtre : deux envois simultanés ne peuvent pas tous deux
   // enregistrer un résultat, le second ne trouve plus rien à mettre à jour.
@@ -129,6 +180,8 @@ router.post('/:token/submit', async (req, res) => {
       total_count: graded.totalCount,
       score_percent: graded.scorePercent,
       passed: graded.passed,
+      employee_signature: signature.dataUrl,
+      instructor_signature: instructorSignature,
     })
     .eq('id', attempt.id)
     .is('completed_at', null)
@@ -143,11 +196,14 @@ router.post('/:token/submit', async (req, res) => {
   const { data: record } = await supabase.from('training_records').select('evaluation_notes').eq('id', attempt.record_id).maybeSingle();
   const line = quizNoteLine({ ...graded, passThreshold: attempt.pass_threshold });
   const existingNotes = (record?.evaluation_notes || '').split('\n').filter((row) => row && !row.startsWith('QCM en ligne :'));
-  await supabase
+  const { error: recordError } = await supabase
     .from('training_records')
     .update({ evaluation_result: graded.passed, evaluation_notes: [...existingNotes, line].join('\n') })
     .eq('tenant_id', attempt.tenant_id)
     .eq('id', attempt.record_id);
+  // Le résultat est déjà enregistré sur le passage (source de vérité de l'audit) : on ne fait pas
+  // échouer la réponse à la personne, mais on trace l'incohérence pour qu'elle soit corrigeable.
+  if (recordError) console.error(`QCM ${attempt.id} : réalisation ${attempt.record_id} non mise à jour :`, recordError.message);
 
   res.json({
     correct_count: graded.correctCount,

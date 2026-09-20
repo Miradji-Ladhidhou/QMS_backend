@@ -25,3 +25,24 @@ export function logoImageRun(tenantLogo) {
     return null;
   }
 }
+
+// Image PNG (data URL, ex. une signature manuscrite validée par services/signatureImage.js) en
+// ImageRun, ramenée dans une boîte maxWidth × maxHeight (en points) sans jamais la déformer ni
+// l'agrandir. Retourne null si l'image est absente ou illisible : le document se génère alors sans
+// elle plutôt que d'échouer.
+export function dataUrlImageRun(dataUrl, { maxWidth, maxHeight }) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/png;base64,')) return null;
+  try {
+    const buffer = Buffer.from(dataUrl.slice('data:image/png;base64,'.length), 'base64');
+    const { width, height } = imageSize(buffer);
+    if (!width || !height) return null;
+    const ratio = Math.min(maxWidth / width, maxHeight / height, 1);
+    return new ImageRun({
+      type: 'png',
+      data: buffer,
+      transformation: { width: Math.max(1, Math.round(width * ratio)), height: Math.max(1, Math.round(height * ratio)) },
+    });
+  } catch {
+    return null;
+  }
+}

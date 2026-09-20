@@ -8,7 +8,16 @@ import { renderTemplate } from '../services/renderTemplate.js';
 import { getUserEmail } from '../services/notificationHelpers.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildTrainingQuizWord } from '../services/trainingQuizWord.js';
-import { generateQuizToken, hashQuizToken, normalizeEmail, validateQuestions, QUIZ_LINK_TTL_HOURS } from '../services/trainingQuiz.js';
+import {
+  formatDeadline,
+  generateQuizToken,
+  hashQuizToken,
+  normalizeEmail,
+  validateQuestions,
+  QUIZ_LINK_TTL_HOURS,
+} from '../services/trainingQuiz.js';
+import { hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
+import { validateSignatureImage } from '../services/signatureImage.js';
 
 // Monté sur /api/trainings à côté de routes/trainings.js (voir app.js) : le QCM d'une formation,
 // l'envoi des liens de passage et l'export d'audit. La page publique que la personne ouvre depuis
@@ -23,20 +32,39 @@ const router = Router();
 const guards = [requireAuth, requireMenuVisible('trainings'), requireRole('admin', 'manager')];
 
 const MAX_INVITES_PER_CALL = 200;
+const SEND_CONCURRENCY = 5;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
 
-async function findTraining(tenantId, trainingId) {
-  const { data } = await supabase.from('trainings').select('id, title').eq('tenant_id', tenantId).eq('id', trainingId).maybeSingle();
-  return data;
+// Formation du tenant, ou null si elle n'existe pas OU si sa catégorie est restreinte et que
+// l'appelant n'y a pas accès (un manager ne doit pas lire le QCM d'une formation qu'il ne peut pas
+// voir dans la liste — voir GET /api/trainings). Même 404 dans les deux cas : on ne révèle pas
+// l'existence d'une formation restreinte.
+async function findTraining(req, trainingId) {
+  const { data } = await supabase
+    .from('trainings')
+    .select('id, title, description, instructor, category_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', trainingId)
+    .maybeSingle();
+  if (!data) return null;
+
+  const allowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: data.category_id,
+    permission: 'view',
+  });
+  return allowed ? data : null;
 }
 
 // GET /api/trainings/:id/quiz — le QCM (avec les bonnes réponses) ou null s'il n'existe pas encore.
 router.get('/:id/quiz', guards, async (req, res) => {
-  const training = await findTraining(req.tenantId, req.params.id);
+  const training = await findTraining(req, req.params.id);
   if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
 
   const { data, error } = await supabase
@@ -63,7 +91,7 @@ router.put(
       return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() });
     }
 
-    const training = await findTraining(req.tenantId, req.params.id);
+    const training = await findTraining(req, req.params.id);
     if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
 
     const parsed = validateQuestions(req.body.questions);
@@ -90,14 +118,58 @@ router.put(
   }
 );
 
+// Signature du formateur : image PNG enregistrée une fois par formation, ajoutée automatiquement sur
+// le compte rendu Word de chaque QCM RÉUSSI (voir GET .../attempts/:attemptId/word). Réservée
+// admin/manager, comme le reste du QCM ; jamais renvoyée par la liste des formations (seulement un
+// booléen has_instructor_signature, voir routes/trainings.js).
+router.get('/:id/instructor-signature', guards, async (req, res) => {
+  const training = await findTraining(req, req.params.id);
+  if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
+
+  const { data } = await supabase
+    .from('training_instructor_signatures')
+    .select('image, updated_at')
+    .eq('tenant_id', req.tenantId)
+    .eq('training_id', training.id)
+    .maybeSingle();
+  res.json(data ? { image: data.image, updated_at: data.updated_at } : null);
+});
+
+router.put('/:id/instructor-signature', guards, async (req, res) => {
+  const training = await findTraining(req, req.params.id);
+  if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
+
+  const parsed = validateSignatureImage(req.body?.image);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+
+  const { error } = await supabase.from('training_instructor_signatures').upsert(
+    { training_id: training.id, tenant_id: req.tenantId, image: parsed.dataUrl, updated_by: req.user.id, updated_at: new Date().toISOString() },
+    { onConflict: 'training_id' }
+  );
+  if (error) return res.status(500).json({ error: "Impossible d'enregistrer la signature." });
+  res.json({ has_instructor_signature: true });
+});
+
+router.delete('/:id/instructor-signature', guards, async (req, res) => {
+  const training = await findTraining(req, req.params.id);
+  if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
+
+  const { error } = await supabase.from('training_instructor_signatures').delete().eq('tenant_id', req.tenantId).eq('training_id', training.id);
+  if (error) return res.status(500).json({ error: 'Impossible de supprimer la signature.' });
+  res.json({ has_instructor_signature: false });
+});
+
 // GET /api/trainings/:id/quiz/attempts — tous les passages (envoyés, en attente, terminés) de
 // cette formation, sans le contenu du QCM ni les réponses (voir l'export Word pour le détail).
 router.get('/:id/quiz/attempts', guards, async (req, res) => {
+  const training = await findTraining(req, req.params.id);
+  if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
+
   const { data, error } = await supabase
     .from('training_quiz_attempts')
     .select('id, record_id, email, sent_at, expires_at, completed_at, correct_count, total_count, score_percent, passed, pass_threshold')
     .eq('tenant_id', req.tenantId)
-    .eq('training_id', req.params.id)
+    .eq('training_id', training.id)
     .order('sent_at', { ascending: false });
 
   if (error) return res.status(500).json({ error: 'Impossible de récupérer les passages du QCM.' });
@@ -123,7 +195,7 @@ router.post(
       return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() });
     }
 
-    const training = await findTraining(req.tenantId, req.params.id);
+    const training = await findTraining(req, req.params.id);
     if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
 
     const { data: quiz } = await supabase
@@ -136,8 +208,10 @@ router.post(
       return res.status(400).json({ error: "Créez d'abord le QCM de cette formation (au moins une question)." });
     }
 
-    const items = req.body.items;
-    const recordIds = [...new Set(items.map((item) => item.record_id))];
+    // Une seule entrée par réalisation : un doublon enverrait deux emails et le second lien
+    // invaliderait aussitôt le premier.
+    const items = [...new Map(req.body.items.map((item) => [item.record_id, item])).values()];
+    const recordIds = items.map((item) => item.record_id);
     const [{ data: records }, { data: tenant }] = await Promise.all([
       supabase
         .from('training_records')
@@ -145,19 +219,15 @@ router.post(
         .eq('tenant_id', req.tenantId)
         .eq('training_id', training.id)
         .in('id', recordIds),
-      supabase.from('tenants').select('name').eq('id', req.tenantId).single(),
+      supabase.from('tenants').select('name, timezone').eq('id', req.tenantId).single(),
     ]);
     const recordById = new Map((records || []).map((record) => [record.id, record]));
 
     const expiresAt = new Date(Date.now() + QUIZ_LINK_TTL_HOURS * 60 * 60 * 1000);
-    const results = [];
 
-    for (const item of items) {
+    async function inviteOne(item) {
       const record = recordById.get(item.record_id);
-      if (!record) {
-        results.push({ record_id: item.record_id, status: 'not_found' });
-        continue;
-      }
+      if (!record) return { record_id: item.record_id, status: 'not_found' };
 
       const personName = record.user?.full_name || record.employee?.full_name || 'Participant';
       let email;
@@ -172,10 +242,7 @@ router.post(
         }
       }
 
-      if (!email) {
-        results.push({ record_id: record.id, status: 'no_email', person_name: personName });
-        continue;
-      }
+      if (!email) return { record_id: record.id, status: 'no_email', person_name: personName };
 
       // Un seul lien actif par réalisation : renvoyer invalide le précédent (jamais supprimé —
       // un passage envoyé reste conservé).
@@ -201,14 +268,13 @@ router.post(
           pass_threshold: quiz.pass_threshold,
           sent_by: req.user.id,
           expires_at: expiresAt.toISOString(),
+          // Objet/contenu et formateur figés à l'envoi (pièce d'audit, comme quiz_snapshot).
+          training_info: { title: training.title, description: training.description || null, instructor: training.instructor || null },
         })
         .select('id')
         .single();
 
-      if (insertError || !attempt) {
-        results.push({ record_id: record.id, status: 'failed', person_name: personName });
-        continue;
-      }
+      if (insertError || !attempt) return { record_id: record.id, status: 'failed', person_name: personName };
 
       try {
         const html = renderTemplate('trainingQuizInvite', {
@@ -217,16 +283,24 @@ router.post(
           tenantName: escapeHtml(tenant?.name || 'QMS SaaS'),
           email: escapeHtml(normalizeEmail(email)),
           quizUrl: `${process.env.FRONTEND_URL}/quiz/${token}`,
-          expiresAt: escapeHtml(expiresAt.toLocaleString('fr-FR', { dateStyle: 'long', timeStyle: 'short' })),
+          expiresAt: escapeHtml(formatDeadline(expiresAt, tenant?.timezone)),
         });
-        await sendEmail(email, `QCM de la formation « ${training.title} »`, html);
-        results.push({ record_id: record.id, status: 'sent', person_name: personName, email: normalizeEmail(email), attempt_id: attempt.id });
+        await sendEmail(email, `QCM de la formation « ${training.title.replace(/[\r\n]+/g, ' ')} »`, html);
+        return { record_id: record.id, status: 'sent', person_name: personName, email: normalizeEmail(email), attempt_id: attempt.id };
       } catch {
         // Email non parti : on retire le passage pour ne pas laisser un lien valide que personne
         // n'a reçu.
         await supabase.from('training_quiz_attempts').delete().eq('id', attempt.id);
-        results.push({ record_id: record.id, status: 'failed', person_name: personName });
+        return { record_id: record.id, status: 'failed', person_name: personName };
       }
+    }
+
+    // Par paquets de SEND_CONCURRENCY : un envoi d'email prend ~1 s, et une session peut compter des
+    // dizaines de personnes — en série, la requête dépasserait le délai de l'hébergeur. L'ordre des
+    // résultats suit celui des personnes envoyées.
+    const results = [];
+    for (let start = 0; start < items.length; start += SEND_CONCURRENCY) {
+      results.push(...(await Promise.all(items.slice(start, start + SEND_CONCURRENCY).map(inviteOne))));
     }
 
     res.json({ results, expires_at: expiresAt.toISOString() });
@@ -236,11 +310,14 @@ router.post(
 // GET /api/trainings/:id/quiz/attempts/:attemptId/word — compte rendu d'audit d'un passage terminé :
 // questions, réponses de la personne, bonnes réponses, taux de réussite.
 router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
+  const visibleTraining = await findTraining(req, req.params.id);
+  if (!visibleTraining) return res.status(404).json({ error: 'Formation introuvable.' });
+
   const { data: attempt, error } = await supabase
     .from('training_quiz_attempts')
     .select('*')
     .eq('tenant_id', req.tenantId)
-    .eq('training_id', req.params.id)
+    .eq('training_id', visibleTraining.id)
     .eq('id', req.params.attemptId)
     .maybeSingle();
 
@@ -249,14 +326,33 @@ router.get('/:id/quiz/attempts/:attemptId/word', guards, async (req, res) => {
 
   const [{ data: training }, { data: tenant }, { data: record }] = await Promise.all([
     supabase.from('trainings').select('title').eq('id', attempt.training_id).single(),
-    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('tenants').select('name, logo_url, timezone').eq('id', req.tenantId).single(),
     supabase.from('training_records').select('session:training_sessions(session_date)').eq('id', attempt.record_id).maybeSingle(),
   ]);
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
 
+  // Objet/contenu et formateur tels qu'à l'envoi ; les passages plus anciens (sans copie) retombent
+  // sur les valeurs actuelles de la formation.
+  const trainingInfo = attempt.training_info || { title: training?.title, description: visibleTraining.description || null, instructor: visibleTraining.instructor || null };
+
+  // Signature du formateur : uniquement si le QCM est réussi. La copie figée à la réussite fait foi ;
+  // un passage réussi avant l'enregistrement de la signature retombe sur la signature actuelle.
+  let instructorSignature = null;
+  if (attempt.passed === true) {
+    instructorSignature = attempt.instructor_signature;
+    if (!instructorSignature) {
+      const { data: current } = await supabase.from('training_instructor_signatures').select('image').eq('training_id', attempt.training_id).maybeSingle();
+      instructorSignature = current?.image || null;
+    }
+  }
+
   const buffer = await buildTrainingQuizWord({
+    trainingInfo,
+    employeeSignature: attempt.employee_signature,
+    instructorSignature,
     tenantName: tenant?.name,
     tenantLogo,
+    tenantTimezone: tenant?.timezone,
     trainingTitle: training?.title || 'Formation',
     sessionDate: record?.session?.session_date || null,
     attempt,

@@ -34,6 +34,8 @@ const QUESTIONS = [
   },
 ];
 
+// PNG 1×1 valide : la signature manuscrite est obligatoire pour valider un QCM.
+const SIGNATURE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
 const auth = (token) => ({ Authorization: `Bearer ${token}` });
 
 async function createTraining(token, extra = {}) {
@@ -266,7 +268,7 @@ describe('QCM de formation — page publique', () => {
 
     const res = await request(app)
       .post(`/api/public/quiz/${token}/submit`)
-      .send({ email: 'marie@example.com', answers: { q1: ['q1a'], q2: ['q2a'] } });
+      .send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1a'], q2: ['q2a'] } });
     expect(res.status).toBe(200);
     // q1 juste ; q2 incomplète (il fallait Charlotte ET Gants) → fausse : pas de point partiel.
     expect(res.body).toMatchObject({ correct_count: 1, total_count: 2, score_percent: 50, passed: true });
@@ -281,7 +283,7 @@ describe('QCM de formation — page publique', () => {
 
     const again = await request(app)
       .post(`/api/public/quiz/${token}/submit`)
-      .send({ email: 'marie@example.com', answers: { q1: ['q1a'], q2: ['q2a', 'q2b'] } });
+      .send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1a'], q2: ['q2a', 'q2b'] } });
     expect(again.status).toBe(409);
     expect((await request(app).post(`/api/public/quiz/${token}/start`).send({ email: 'marie@example.com' })).status).toBe(409);
   });
@@ -293,7 +295,7 @@ describe('QCM de formation — page publique', () => {
 
     const res = await request(app)
       .post(`/api/public/quiz/${token}/submit`)
-      .send({ email: 'marie@example.com', answers: { q1: ['q1b'], q2: ['q2c'] } });
+      .send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1b'], q2: ['q2c'] } });
     expect(res.body).toMatchObject({ correct_count: 0, passed: false, pass_threshold: 80 });
 
     const { data: updated } = await admin.from('training_records').select('evaluation_result, evaluation_notes').eq('id', record.id).single();
@@ -308,7 +310,7 @@ describe('QCM de formation — page publique', () => {
 
     expect((await request(app).get(`/api/public/quiz/${token}`)).body.state).toBe('expired');
     expect((await request(app).post(`/api/public/quiz/${token}/start`).send({ email: 'marie@example.com' })).status).toBe(410);
-    expect((await request(app).post(`/api/public/quiz/${token}/submit`).send({ email: 'marie@example.com', answers: {} })).status).toBe(410);
+    expect((await request(app).post(`/api/public/quiz/${token}/submit`).send({ email: 'marie@example.com', signature: SIGNATURE, answers: {} })).status).toBe(410);
   });
 
   it('le passage est corrigé sur le QCM figé à l\'envoi, pas sur le QCM modifié depuis', async () => {
@@ -322,7 +324,7 @@ describe('QCM de formation — page publique', () => {
 
     const res = await request(app)
       .post(`/api/public/quiz/${token}/submit`)
-      .send({ email: 'marie@example.com', answers: { q1: ['q1a'], q2: ['q2a', 'q2b'] } });
+      .send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1a'], q2: ['q2a', 'q2b'] } });
     expect(res.body).toMatchObject({ correct_count: 2, total_count: 2, score_percent: 100 });
   });
 });
@@ -338,7 +340,7 @@ describe('QCM de formation — export Word d\'audit', () => {
 
     expect((await request(app).get(url).set(auth(tenant.admin.token))).status).toBe(409);
 
-    await request(app).post(`/api/public/quiz/${token}/submit`).send({ email: 'marie@example.com', answers: { q1: ['q1a'], q2: ['q2a'] } });
+    await request(app).post(`/api/public/quiz/${token}/submit`).send({ email: 'marie@example.com', signature: SIGNATURE, answers: { q1: ['q1a'], q2: ['q2a'] } });
 
     const res = await request(app).get(url).set(auth(tenant.admin.token)).responseType('blob');
     expect(res.status).toBe(200);

@@ -15,7 +15,8 @@ import {
   VerticalAlign,
   TabStopType,
 } from 'docx';
-import { logoImageRun } from './wordLogo.js';
+import { logoImageRun, dataUrlImageRun } from './wordLogo.js';
+import { formatDateTimeInZone } from './trainingQuiz.js';
 
 // Mêmes teintes neutres que les autres exports Word (voir listReportWord.js).
 const INK = '1E293B';
@@ -29,12 +30,14 @@ const HEADER_WIDTH_DXA = 9026;
 const CELL_BORDER = { style: 'single', size: 2, color: BORDER };
 const CELL_BORDERS = { top: CELL_BORDER, bottom: CELL_BORDER, left: CELL_BORDER, right: CELL_BORDER };
 
-function formatDate(value) {
-  return value ? new Date(value).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '—';
+function formatDate(value, timeZone) {
+  // Une date de session (« 2026-05-04 ») n'a pas d'heure : on la lit à midi UTC pour que le fuseau
+  // n'en décale jamais le jour.
+  return value ? formatDateTimeInZone(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T12:00:00Z` : value, timeZone, { day: 'numeric', month: 'long', year: 'numeric' }) : '—';
 }
 
-function formatDateTime(value) {
-  return value ? new Date(value).toLocaleString('fr-FR') : '—';
+function formatDateTime(value, timeZone) {
+  return value ? formatDateTimeInZone(value, timeZone, { dateStyle: 'short', timeStyle: 'medium' }) : '—';
 }
 
 function cell(text, { header = false, bold = false, color, widthPct, align } = {}) {
@@ -104,10 +107,90 @@ function questionBlock(question, index, detailEntry) {
   return [title, table];
 }
 
+function descriptionParagraphs(description) {
+  const text = typeof description === 'string' ? description.trim() : '';
+  if (!text) return [new Paragraph({ children: [new TextRun({ text: 'Non renseigné.', italics: true, color: MUTED, size: 20 })] })];
+  return text.split(/\r?\n/).map((line) => new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: line, size: 20 })] }));
+}
+
+const SIGNATURE_BOX = { maxWidth: 200, maxHeight: 80 };
+
+function signatureCell({ title, name, image, caption, emptyText }) {
+  const lines = [
+    new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: title, bold: true, size: 20, color: INK })] }),
+    new Paragraph({ spacing: { after: 80 }, children: [new TextRun({ text: name, size: 20 })] }),
+  ];
+  if (image) {
+    lines.push(new Paragraph({ spacing: { before: 60, after: 60 }, children: [image] }));
+  } else {
+    // Emplacement laissé vide (pas de signature) : hauteur réservée + mention explicite.
+    lines.push(new Paragraph({ spacing: { before: 200, after: 200 }, children: [new TextRun({ text: emptyText, italics: true, size: 18, color: MUTED })] }));
+  }
+  lines.push(new Paragraph({ children: [new TextRun({ text: caption, size: 16, color: MUTED })] }));
+
+  return new TableCell({
+    width: { size: 50, type: WidthType.PERCENTAGE },
+    borders: CELL_BORDERS,
+    margins: { top: 100, bottom: 100, left: 140, right: 140 },
+    children: lines,
+  });
+}
+
+// Bloc final « Signatures » : le salarié (signature dessinée à l'écran), et le formateur — sa
+// signature électronique n'est apposée QUE si le QCM est réussi. cantSplit + keepNext : le bloc reste
+// d'un seul tenant, jamais coupé entre deux pages.
+function signaturesBlock({ attempt, trainingInfo, employeeSignature, instructorSignature, timeZone }) {
+  const passed = attempt.passed === true;
+  const signedAt = formatDateTime(attempt.completed_at, timeZone);
+
+  const employeeCell = signatureCell({
+    title: 'Le salarié',
+    name: attempt.person_name || '—',
+    image: dataUrlImageRun(employeeSignature, SIGNATURE_BOX),
+    emptyText: 'Signature non recueillie',
+    caption: `Signature manuscrite électronique recueillie en ligne le ${signedAt}, après confirmation de l'adresse ${attempt.email}. Le salarié certifie avoir répondu personnellement.`,
+  });
+
+  const trainerName = trainingInfo?.instructor || 'Formateur';
+  const trainerCell = passed
+    ? signatureCell({
+        title: 'Le formateur',
+        name: trainerName,
+        image: dataUrlImageRun(instructorSignature, SIGNATURE_BOX),
+        emptyText: 'Signature du formateur non enregistrée',
+        caption: `Signature électronique apposée automatiquement à la réussite du QCM (${signedAt}).`,
+      })
+    : signatureCell({
+        title: 'Le formateur',
+        name: trainerName,
+        image: null,
+        emptyText: 'Non signé',
+        caption: 'La signature du formateur n\'est apposée qu\'en cas de réussite au QCM.',
+      });
+
+  return [
+    new Paragraph({ spacing: { before: 360, after: 80 }, keepNext: true, children: [new TextRun({ text: 'Signatures', bold: true, size: 26, color: INK })] }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      rows: [new TableRow({ cantSplit: true, children: [employeeCell, trainerCell] })],
+    }),
+  ];
+}
+
 // Compte rendu d'un passage de QCM, destiné à être conservé pour les audits : le QCM tel qu'il
 // était à l'envoi (quiz_snapshot), les réponses de la personne, la correction question par
 // question et le taux de réussite. attempt : ligne de training_quiz_attempts terminée.
-export async function buildTrainingQuizWord({ tenantName, tenantLogo, trainingTitle, sessionDate, attempt }) {
+export async function buildTrainingQuizWord({
+  tenantName,
+  tenantLogo,
+  tenantTimezone,
+  trainingTitle,
+  trainingInfo,
+  sessionDate,
+  employeeSignature,
+  instructorSignature,
+  attempt,
+}) {
   const questions = attempt.quiz_snapshot || [];
   const detailByQuestion = new Map((attempt.answers || []).map((entry) => [entry.question_id, entry]));
   const passed = attempt.passed === true;
@@ -135,15 +218,20 @@ export async function buildTrainingQuizWord({ tenantName, tenantLogo, trainingTi
       ['Personne évaluée', attempt.person_name || '—'],
       ['Email', attempt.email],
       ['Formation', trainingTitle],
-      ['Session', sessionDate ? formatDate(sessionDate) : '—'],
-      ['QCM envoyé le', formatDateTime(attempt.sent_at)],
-      ['QCM passé le', formatDateTime(attempt.completed_at)],
+      ['Formateur', trainingInfo?.instructor || 'Non renseigné'],
+      ['Session', sessionDate ? formatDate(sessionDate, tenantTimezone) : '—'],
+      ['QCM envoyé le', formatDateTime(attempt.sent_at, tenantTimezone)],
+      ['QCM passé le', formatDateTime(attempt.completed_at, tenantTimezone)],
       ['Résultat', `${attempt.correct_count} / ${attempt.total_count} bonnes réponses — ${attempt.score_percent} %`],
       ['Seuil de réussite', `${attempt.pass_threshold} %`],
       ['Conclusion', passed ? 'RÉUSSI' : 'NON RÉUSSI', passed ? GOOD : BAD],
     ]),
+    // Objet / contenu de la formation, tel qu'à l'envoi du QCM : ce sur quoi la personne est évaluée.
+    new Paragraph({ spacing: { before: 320, after: 80 }, keepNext: true, children: [new TextRun({ text: 'Objet et contenu de la formation', bold: true, size: 26, color: INK })] }),
+    ...descriptionParagraphs(trainingInfo?.description),
     new Paragraph({ spacing: { before: 320, after: 40 }, children: [new TextRun({ text: 'Détail des questions', bold: true, size: 26, color: INK })] }),
     ...questions.flatMap((question, index) => questionBlock(question, index, detailByQuestion.get(question.id))),
+    ...signaturesBlock({ attempt, trainingInfo, employeeSignature, instructorSignature, timeZone: tenantTimezone }),
   ];
 
   const doc = new Document({

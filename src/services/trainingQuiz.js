@@ -39,6 +39,7 @@ export function validateQuestions(rawQuestions) {
   }
 
   const questions = [];
+  const usedQuestionIds = new Set();
   for (const [index, raw] of rawQuestions.entries()) {
     const number = index + 1;
     const text = typeof raw?.text === 'string' ? raw.text.trim() : '';
@@ -51,18 +52,19 @@ export function validateQuestions(rawQuestions) {
     }
 
     const options = [];
+    const usedOptionIds = new Set();
     for (const [optionIndex, rawOption] of rawOptions.entries()) {
       const label = typeof rawOption?.label === 'string' ? rawOption.label.trim() : '';
       if (!label) return { error: `Question ${number} : la réponse ${optionIndex + 1} est vide.` };
       if (label.length > MAX_OPTION_LENGTH) return { error: `Question ${number} : réponse ${optionIndex + 1} trop longue.` };
-      options.push({ id: sanitizeId(rawOption.id), label, is_correct: rawOption.is_correct === true });
+      options.push({ id: uniqueId(rawOption.id, usedOptionIds), label, is_correct: rawOption.is_correct === true });
     }
 
     if (!options.some((option) => option.is_correct)) {
       return { error: `Question ${number} : cochez au moins une bonne réponse.` };
     }
 
-    questions.push({ id: sanitizeId(raw.id), text, options });
+    questions.push({ id: uniqueId(raw.id, usedQuestionIds), text, options });
   }
 
   return { questions };
@@ -70,6 +72,42 @@ export function validateQuestions(rawQuestions) {
 
 function sanitizeId(id) {
   return typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : crypto.randomUUID();
+}
+
+// Identifiant valide ET unique dans son groupe (questions d'un QCM, réponses d'une question) : deux
+// éléments au même id rendraient la correction ambiguë (cocher l'un cocherait l'autre).
+function uniqueId(id, used) {
+  let candidate = sanitizeId(id);
+  while (used.has(candidate)) candidate = crypto.randomUUID();
+  used.add(candidate);
+  return candidate;
+}
+
+// Date/heure affichée dans les emails et l'export Word, dans le fuseau de l'ENTREPRISE (réglage
+// Paramètres > Entreprise, tenants.timezone, UTC par défaut) — jamais celui du serveur (Render tourne
+// en UTC : une échéance « 14:00 » s'afficherait sinon avec plusieurs heures d'écart pour des
+// salariés en Métropole ou à La Réunion). Un fuseau invalide retombe sur UTC plutôt que de lever.
+export function formatDateTimeInZone(value, timeZone, options = {}) {
+  let zone = 'UTC';
+  try {
+    new Intl.DateTimeFormat('fr-FR', { timeZone });
+    zone = timeZone || 'UTC';
+  } catch {
+    zone = 'UTC';
+  }
+  return new Date(value).toLocaleString('fr-FR', { timeZone: zone, ...options });
+}
+
+// Échéance lisible sans ambiguïté : date, heure ET fuseau (« 22 septembre 2026 à 14:03 UTC+4 »).
+export function formatDeadline(value, timeZone) {
+  return formatDateTimeInZone(value, timeZone, {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
 }
 
 // Ce que voit la personne : les questions et réponses proposées, jamais les bonnes réponses.

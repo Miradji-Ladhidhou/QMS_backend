@@ -136,10 +136,16 @@ router.get('/', async (req, res) => {
     (quizzes || []).map((quiz) => [quiz.training_id, { question_count: quiz.questions.length, pass_threshold: quiz.pass_threshold }])
   );
 
+  // has_instructor_signature : seulement l'existence, jamais l'image (table à part, voir
+  // routes/trainingQuiz.js).
+  const { data: signatureRows } = await supabase.from('training_instructor_signatures').select('training_id').eq('tenant_id', req.tenantId);
+  const signedTrainingIds = new Set((signatureRows || []).map((row) => row.training_id));
+
   const withPrivacy = (items) =>
     items.map((training) => ({
       ...training,
       quiz: quizByTraining.get(training.id) || null,
+      has_instructor_signature: signedTrainingIds.has(training.id),
       is_private_to_me: training.category?.owner_user_id === req.user.id,
     }));
 

@@ -152,7 +152,9 @@ app.use('/api/customer-satisfaction', customerSatisfactionRoutes);
 // Express reconnaît ce middleware à sa signature à 4 paramètres, quel que soit son nom.
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
-  console.error(`Erreur non gérée sur ${req.method} ${req.originalUrl} :`, err);
+  // Le jeton d'un lien de QCM est dans l'adresse (/api/public/quiz/:token) : jamais dans les journaux.
+  const safeUrl = req.originalUrl.replace(/(\/api\/public\/quiz\/)[^/?]+/, '$1[jeton]');
+  console.error(`Erreur non gérée sur ${req.method} ${safeUrl} :`, err);
 
   if (err.type === 'entity.too.large' || err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ error: 'Fichier ou requête trop volumineux.' });

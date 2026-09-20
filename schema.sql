@@ -788,7 +788,24 @@ create table training_quiz_attempts (
   correct_count         integer,
   total_count           integer,
   score_percent         numeric(5, 2),
-  passed                boolean
+  passed                boolean,
+  -- Signature dessinée par le salarié en fin de QCM (PNG en data URL), obligatoire à la validation.
+  employee_signature    text,
+  -- Copie de la signature du formateur figée lors d'une RÉUSSITE (voir training_instructor_signatures).
+  instructor_signature  text,
+  -- Objet/contenu et formateur de la formation tels qu'ils étaient à l'envoi (pièce d'audit).
+  training_info         jsonb
+);
+
+-- Signature du formateur (image PNG en data URL), une par formation, ajoutée automatiquement sur le
+-- compte rendu Word d'un QCM réussi. Table à part : la liste des formations, lue par tous les
+-- membres, ne doit pas embarquer cette image.
+create table training_instructor_signatures (
+  training_id uuid primary key references trainings (id) on delete cascade,
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  image       text not null,
+  updated_by  uuid references users (id) on delete set null,
+  updated_at  timestamptz not null default now()
 );
 
 -- Intitulés de poste (job_title, déjà libre sur users/employees) concernés par cette formation
@@ -1789,6 +1806,7 @@ create index idx_training_quizzes_tenant_id on training_quizzes (tenant_id);
 create index idx_training_quiz_attempts_tenant_id on training_quiz_attempts (tenant_id);
 create index idx_training_quiz_attempts_training_id on training_quiz_attempts (training_id);
 create index idx_training_quiz_attempts_record_id on training_quiz_attempts (record_id);
+create index idx_training_instructor_signatures_tenant_id on training_instructor_signatures (tenant_id);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
 create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
@@ -2234,6 +2252,7 @@ alter table training_records enable row level security;
 alter table training_sessions enable row level security;
 alter table training_quizzes enable row level security;
 alter table training_quiz_attempts enable row level security;
+alter table training_instructor_signatures enable row level security;
 alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
@@ -2441,6 +2460,11 @@ create policy training_quizzes_isolation on training_quizzes
   with check (tenant_id = auth_tenant_id());
 
 create policy training_quiz_attempts_isolation on training_quiz_attempts
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy training_instructor_signatures_isolation on training_instructor_signatures
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
