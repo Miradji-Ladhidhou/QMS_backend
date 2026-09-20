@@ -352,6 +352,7 @@ router.post(
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('summary').optional({ values: 'falsy' }).trim().isLength({ max: 10000 }).withMessage('Le résumé ne peut pas dépasser 10 000 caractères.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('qualifies_internal_auditor').optional().isBoolean().withMessage('Valeur invalide.'),
     body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
   requireValidCategoryId('training'),
@@ -372,6 +373,7 @@ router.post(
       summary,
       category_id: categoryId,
       required_job_titles: requiredJobTitles,
+      qualifies_internal_auditor: qualifiesInternalAuditor,
     } = req.body;
 
     const { data, error } = await supabase
@@ -387,6 +389,7 @@ router.post(
         description: description || null,
         summary: summary || null,
         category_id: categoryId || null,
+        qualifies_internal_auditor: qualifiesInternalAuditor === true || qualifiesInternalAuditor === 'true',
         required_job_titles: requiredJobTitles ? normalizeJobTitles(requiredJobTitles) : [],
       })
       .select()
@@ -447,6 +450,7 @@ router.patch(
     body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
     body('summary').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 10000 }).withMessage('Le résumé ne peut pas dépasser 10 000 caractères.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
+    body('qualifies_internal_auditor').optional().isBoolean().withMessage('Valeur invalide.'),
     body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
   requireValidCategoryId('training'),
@@ -464,6 +468,10 @@ router.patch(
     }
     if ('required_job_titles' in req.body) {
       update.required_job_titles = normalizeJobTitles(req.body.required_job_titles);
+    }
+    // Booléen NOT NULL : traité à part de la boucle ci-dessus, qui remplace toute valeur fausse par null.
+    if ('qualifies_internal_auditor' in req.body) {
+      update.qualifies_internal_auditor = req.body.qualifies_internal_auditor === true || req.body.qualifies_internal_auditor === 'true';
     }
 
     if (Object.keys(update).length === 0) {

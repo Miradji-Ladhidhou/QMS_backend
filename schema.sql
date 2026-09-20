@@ -746,6 +746,12 @@ create table training_sessions (
 -- déplacement explicite (voir scripts/add-training-sessions-table.sql).
 alter table training_records add column session_id uuid references training_sessions (id) on delete set null;
 
+-- Formation qui qualifie les auditeurs internes (ISO 9001 §9.2, compétence des auditeurs) : la page
+-- Audits signale si l'auditeur désigné est qualifié (dernière réalisation valide, recyclage à jour,
+-- évaluation/QCM non échoué) — voir services/auditorQualification.js. Plusieurs formations peuvent
+-- être cochées : une seule valide suffit.
+alter table trainings add column qualifies_internal_auditor boolean not null default false;
+
 -- Résumé de la formation (texte lu par la personne avant le QCM) — voir training_quizzes.
 alter table trainings add column summary text;
 

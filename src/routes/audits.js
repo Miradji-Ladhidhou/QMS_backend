@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { fetchAuditorQualifications } from '../services/auditorQualification.js';
 
 const router = Router();
 
@@ -42,6 +43,16 @@ router.get('/', async (req, res) => {
 
   const visible = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
   res.json(visible);
+});
+
+// GET /api/audits/auditor-qualifications — qualification des auditeurs internes : les formations
+// « qualifiantes » (Formations > cocher « qualifie les auditeurs internes ») et, pour chaque personne
+// ayant suivi l'une d'elles, son statut (qualified / expired / failed ; absente = none). Sert de
+// repère aux listes d'auditeurs et à la fiche d'audit — un indicateur, jamais un blocage.
+// Placée avant GET /:id pour ne pas être capturée comme un id.
+router.get('/auditor-qualifications', async (req, res) => {
+  const { trainings, byUser } = await fetchAuditorQualifications({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole });
+  res.json({ trainings, by_user: byUser });
 });
 
 // GET /api/audits/:id — détail avec ses constats (findings), CAPA liée résolue pour chacun.
