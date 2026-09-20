@@ -12,6 +12,7 @@ import {
   fetchComplaintItems,
   fetchRiskItems,
   fetchReviewActionItems,
+  fetchManagementReviewItems,
   fetchSupplierItems,
   fetchPdcaItems,
 } from '../services/planningItems.js';
@@ -71,6 +72,7 @@ router.get('/', async (req, res) => {
       supplierItems,
       pdcaItems,
       reviewActionItems,
+      managementReviewItems,
     ] = await Promise.all([
       fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchDocumentItems(req.tenantId),
@@ -84,6 +86,7 @@ router.get('/', async (req, res) => {
       fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       // trainingUserIds : les personnes des services choisis (null = tout le tenant), comme pour les formations.
       fetchReviewActionItems(req.tenantId, { ownerIds: trainingUserIds, userId: req.user.id, userRole: req.userRole }),
+      fetchManagementReviewItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
     ]);
     items = [
       ...capaItems,
@@ -97,6 +100,7 @@ router.get('/', async (req, res) => {
       ...supplierItems,
       ...pdcaItems,
       ...reviewActionItems,
+      ...managementReviewItems,
     ];
   }
 

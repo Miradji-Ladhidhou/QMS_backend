@@ -16,8 +16,8 @@ import {
   TabStopType,
   TableLayoutType,
 } from 'docx';
-import { logoImageRun } from './wordLogo.js';
-import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, formatReviewDate } from './managementReviewContent.js';
+import { logoImageRun, dataUrlImageRun } from './wordLogo.js';
+import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, describeValidation, formatReviewDate } from './managementReviewContent.js';
 
 const INK = '1E293B';
 const MUTED = '64748B';
@@ -140,6 +140,16 @@ export async function buildManagementReviewWord({ tenantName, tenantLogo, review
 
     heading(`${number++}. Actions décidées (${review.actions.length})`),
     ...(review.actions.length === 0 ? textBlock('') : [actionsTable(review.actions)]),
+
+    ...(review.validation
+      ? [
+          heading(`${number++}. Validation de la direction`),
+          ...textBlock(describeValidation(review.validation)),
+          ...(dataUrlImageRun(review.validation.signature, { maxWidth: 200, maxHeight: 80 })
+            ? [new Paragraph({ spacing: { before: 80, after: 80 }, children: [dataUrlImageRun(review.validation.signature, { maxWidth: 200, maxHeight: 80 })] })]
+            : []),
+        ]
+      : []),
 
     new Paragraph({ spacing: { before: 320 }, children: [new TextRun({ text: `Document généré par ${generatedBy || 'Utilisateur inconnu'} le ${new Date().toLocaleString('fr-FR')}`, italics: true, size: 16, color: MUTED })] }),
   ];

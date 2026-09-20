@@ -62,9 +62,9 @@ function getGmailApiClient() {
 
 // MailComposer construit le MIME (nodemailer sait le faire sans envoyer via SMTP) ; l'API
 // Gmail attend ce MIME encodé en base64url comme corps de la requête.
-async function sendViaGmailApi(to, subject, htmlBody) {
+async function sendViaGmailApi(to, subject, htmlBody, attachments) {
   const rawBuffer = await new Promise((resolve, reject) => {
-    new MailComposer({ from: GMAIL_FROM_ADDRESS, to, subject, html: htmlBody }).compile().build((err, msg) => {
+    new MailComposer({ from: GMAIL_FROM_ADDRESS, to, subject, html: htmlBody, attachments }).compile().build((err, msg) => {
       if (err) reject(err);
       else resolve(msg);
     });
@@ -81,7 +81,9 @@ async function sendViaGmailApi(to, subject, htmlBody) {
 
 // Fonction générique d'envoi — les prochains chantiers (rappels planifiés, préférences
 // utilisateur) construisent le HTML via renderTemplate() puis appellent celle-ci.
-export async function sendEmail(to, subject, htmlBody) {
+// options.attachments : [{ filename, content: Buffer, contentType }] — pièces jointes (ex. le compte rendu PDF d'une
+// revue de direction, l'invitation .ics d'une convocation), transmises telles quelles à chaque transport.
+export async function sendEmail(to, subject, htmlBody, { attachments = [] } = {}) {
   // La suite de tests n'a pas de Mailpit ni de service externe fiable à disposition ; on
   // court-circuite l'envoi plutôt que d'en dépendre pendant les tests.
   if (process.env.NODE_ENV === 'test') {
@@ -89,16 +91,16 @@ export async function sendEmail(to, subject, htmlBody) {
   }
 
   if (transportMode === 'gmail-api') {
-    return sendViaGmailApi(to, subject, htmlBody);
+    return sendViaGmailApi(to, subject, htmlBody, attachments);
   }
 
   if (gmailSmtpTransport) {
-    const info = await gmailSmtpTransport.sendMail({ from: GMAIL_FROM_ADDRESS, to, subject, html: htmlBody });
+    const info = await gmailSmtpTransport.sendMail({ from: GMAIL_FROM_ADDRESS, to, subject, html: htmlBody, attachments });
     return { id: info.messageId };
   }
 
   if (localTransport) {
-    const info = await localTransport.sendMail({ from: FROM_ADDRESS, to, subject, html: htmlBody });
+    const info = await localTransport.sendMail({ from: FROM_ADDRESS, to, subject, html: htmlBody, attachments });
     return { id: info.messageId };
   }
 
@@ -111,6 +113,7 @@ export async function sendEmail(to, subject, htmlBody) {
     to,
     subject,
     html: htmlBody,
+    attachments: attachments.map(({ filename, content }) => ({ filename, content })),
   });
 
   if (error) {

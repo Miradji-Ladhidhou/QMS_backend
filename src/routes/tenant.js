@@ -82,7 +82,7 @@ router.use(requireAuth);
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
+    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
     .eq('id', req.tenantId)
     .single();
 
@@ -110,6 +110,11 @@ router.patch(
   [
     body('name').optional().trim().notEmpty().withMessage("Le nom de l'entreprise ne peut pas être vide."),
     body('timezone').optional().custom((value) => VALID_TIMEZONES.has(value)).withMessage('Fuseau horaire invalide.'),
+    body('management_review_frequency_months')
+      .optional({ nullable: true, values: 'falsy' })
+      .isInt({ min: 1, max: 60 })
+      .withMessage('Fréquence des revues de direction invalide (1 à 60 mois).')
+      .toInt(),
     body('document_review_frequency_months')
       .optional({ nullable: true, values: 'falsy' })
       .isInt({ min: 1 })
@@ -133,6 +138,10 @@ router.patch(
     if ('document_review_frequency_months' in req.body) {
       update.document_review_frequency_months = req.body.document_review_frequency_months || null;
     }
+    // Intervalle prévu entre deux revues de direction (§9.3.1) — voir services/managementReviewSchedule.js.
+    if ('management_review_frequency_months' in req.body) {
+      update.management_review_frequency_months = req.body.management_review_frequency_months || null;
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
@@ -142,7 +151,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
+      .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
       .single();
 
     if (error) {
@@ -178,7 +187,7 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
     .from('tenants')
     .update({ logo_url: logoPath })
     .eq('id', req.tenantId)
-    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months')
+    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
     .single();
 
   if (error) {

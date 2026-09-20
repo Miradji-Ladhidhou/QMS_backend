@@ -1,7 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
-import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, formatReviewDate } from './managementReviewContent.js';
+import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, describeValidation, formatReviewDate } from './managementReviewContent.js';
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
@@ -125,6 +125,22 @@ export function buildManagementReviewPdf({ tenantName, tenantLogo, review, previ
     sectionTitle(doc, `${number}. Actions décidées (${review.actions.length})`);
     if (review.actions.length === 0) paragraph(doc, '');
     else drawActions(doc, review.actions);
+
+    // Validation signée de la direction (la revue est alors verrouillée).
+    if (review.validation) {
+      number += 1;
+      sectionTitle(doc, `${number}. Validation de la direction`);
+      paragraph(doc, describeValidation(review.validation));
+      if (review.validation.signature) {
+        ensureSpace(doc, 100);
+        try {
+          doc.image(Buffer.from(review.validation.signature.replace(/^data:image\/png;base64,/, ''), 'base64'), PAGE_MARGIN, doc.y, { fit: [200, 80] });
+          doc.y += 88;
+        } catch {
+          // Signature illisible : le document reste valide, sans l'image.
+        }
+      }
+    }
 
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {

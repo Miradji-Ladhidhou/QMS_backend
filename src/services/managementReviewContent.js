@@ -6,6 +6,8 @@ export const ACTION_STATUSES = ['open', 'in_progress', 'done', 'cancelled'];
 export const ACTION_STATUS_LABELS = { open: 'À faire', in_progress: 'En cours', done: 'Réalisée', cancelled: 'Abandonnée' };
 const FINDING_LABELS = { major_nc: 'NC majeures', minor_nc: 'NC mineures', observation: 'Observations', strength: 'Points forts' };
 const RISK_LABELS = { low: 'Faible', medium: 'Moyen', high: 'Élevé', critical: 'Critique' };
+const DISPOSITION_LABELS = { correction: 'Correction', segregation: 'Isolement', return_to_supplier: 'Retour fournisseur', concession: 'Dérogation', scrap: 'Rebut', other: 'Autre' };
+const SEVERITY_LABELS = { minor: 'Mineur', moderate: 'Modéré', severe: 'Grave', fatal: 'Mortel' };
 const TREND_LABELS = { up: 'en hausse', down: 'en baisse', stable: 'stable' };
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -90,6 +92,68 @@ export function buildInputBlocks(review) {
     });
   }
 
+  // Éléments d'entrée complémentaires (absents des revues créées avant leur ajout).
+  if (input?.satisfaction_period) {
+    const sat = input.satisfaction_period;
+    blocks.push({
+      title: 'Satisfaction client',
+      lines:
+        sat.count === 0
+          ? ['Aucune enquête sur la période.']
+          : [`${sat.count} enquête(s), note moyenne ${sat.average_score}/5`, `${sat.satisfied_rate} % de clients satisfaits (note ≥ 4)`],
+    });
+  }
+  if (input?.suppliers_period) {
+    const sup = input.suppliers_period;
+    blocks.push({
+      title: 'Performance des fournisseurs',
+      lines: [
+        `${sup.active} fournisseur(s) actif(s), ${sup.evaluations} évaluation(s) sur la période${sup.average_score !== null ? `, note moyenne ${sup.average_score}/5` : ''}`,
+        `Sous surveillance : ${sup.under_watch} · À remplacer : ${sup.to_replace} · Évaluations en retard : ${sup.overdue_evaluations}`,
+      ],
+    });
+  }
+  if (input?.nonconforming_period) {
+    const nc = input.nonconforming_period;
+    const dispositions = Object.entries(nc.by_disposition || {}).map(([key, count]) => `${DISPOSITION_LABELS[key] || key} : ${count}`);
+    blocks.push({
+      title: 'Sorties non conformes',
+      lines: [`${nc.detected} détectée(s) sur la période, dont ${nc.still_open} encore ouverte(s)`, ...(dispositions.length > 0 ? [dispositions.join(' · ')] : [])],
+    });
+  }
+  if (input?.accidents_period) {
+    const acc = input.accidents_period;
+    const severities = Object.entries(acc.by_severity || {}).map(([key, count]) => `${SEVERITY_LABELS[key] || key} : ${count}`);
+    blocks.push({
+      title: 'Accidents',
+      lines: [
+        `${acc.count} accident(s) sur la période, dont ${acc.with_lost_time} avec arrêt de travail (${acc.lost_days} jour(s) perdu(s)), ${acc.still_open} non clôturé(s)`,
+        ...(severities.length > 0 ? [severities.join(' · ')] : []),
+      ],
+    });
+  }
+  if (input?.competences) {
+    const comp = input.competences;
+    blocks.push({
+      title: 'Compétences et formations',
+      lines: [
+        comp.compliance_rate === null ? 'Aucune formation enregistrée.' : `${comp.compliance_rate} % de formations à jour (${comp.records_tracked} suivies : ${comp.to_renew} à renouveler sous 60 jours, ${comp.expired} échue(s))`,
+        comp.auditors.designated
+          ? `Auditeurs internes : ${comp.auditors.qualified} qualifié(s), ${comp.auditors.to_recycle} à recycler, ${comp.auditors.not_qualified} non qualifié(s)`
+          : "Auditeurs internes : aucune formation qualifiante désignée",
+      ],
+    });
+  }
+  if (input?.quality_policy) {
+    const policy = input.quality_policy;
+    blocks.push({
+      title: 'Politique qualité',
+      lines: policy.defined
+        ? [`Version en vigueur du ${formatDate(policy.last_updated)}`, `Lue par ${policy.acknowledged} utilisateur(s) actif(s) sur ${policy.users}`]
+        : ["Aucune politique qualité publiée."],
+    });
+  }
+
   const snap = review.snapshot;
   if (snap) {
     blocks.push({
@@ -117,4 +181,11 @@ export const REVIEW_TEXT_SECTIONS = [
 
 export function formatReviewDate(value) {
   return formatDate(value);
+}
+
+// « Validée et signée électroniquement par Marie Durand le 20/09/2026 à 14:03 » — null si la revue n'est pas validée.
+export function describeValidation(validation) {
+  if (!validation) return null;
+  const when = new Date(validation.validated_at).toLocaleString('fr-FR');
+  return `Validée et signée par ${validation.validated_by_name || 'la direction'} le ${when}. Signature manuscrite électronique recueillie sur l'application.`;
 }

@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js';
+import { fetchAuditorQualifications } from './auditorQualification.js';
 
 // Photo chiffrée de l'état du SMQ, tenant-wide (pas de scope par service : une revue de
 // direction concerne l'entreprise dans son ensemble) — utilisée pour figer le snapshot d'une
@@ -269,6 +270,159 @@ async function computeOpenRisksBySeverity(tenantId) {
   return counts;
 }
 
+
+// --- Éléments d'entrée complémentaires (ISO 9001 §9.3.2 c, d, e) : satisfaction client, performance des
+// fournisseurs, sorties non conformes, accidents, compétences, politique qualité. Chaque fonction est
+// tolérante à une erreur de lecture (retourne des zéros) : une revue ne doit jamais échouer à la création
+// parce qu'un module secondaire est momentanément illisible.
+
+const round1 = (value) => Math.round(value * 10) / 10;
+
+// Satisfaction client (§9.1.2) : enquêtes de la période, note moyenne sur 5 et part des notes ≥ 4.
+async function computeSatisfactionPeriod(tenantId, periodStart, periodEnd) {
+  const { data, error } = await supabase
+    .from('customer_satisfaction_surveys')
+    .select('score')
+    .eq('tenant_id', tenantId)
+    .gte('survey_date', periodStart)
+    .lte('survey_date', periodEnd);
+  if (error || !data || data.length === 0) return { count: 0, average_score: null, satisfied_rate: null };
+  const total = data.reduce((sum, row) => sum + row.score, 0);
+  return {
+    count: data.length,
+    average_score: round1(total / data.length),
+    satisfied_rate: Math.round((data.filter((row) => row.score >= 4).length / data.length) * 100),
+  };
+}
+
+// Performance des prestataires externes (§8.4) : fournisseurs actifs, évaluations de la période (note
+// moyenne, décisions « sous surveillance » / « à remplacer ») et évaluations en retard.
+async function computeSuppliersPeriod(tenantId, periodStart, periodEnd) {
+  const empty = { active: 0, evaluations: 0, average_score: null, under_watch: 0, to_replace: 0, overdue_evaluations: 0 };
+  const [{ data: suppliers, error: suppliersError }, { data: evaluations, error: evaluationsError }] = await Promise.all([
+    supabase.from('suppliers').select('id, next_evaluation_date').eq('tenant_id', tenantId).eq('status', 'active'),
+    supabase
+      .from('supplier_evaluations')
+      .select('overall_score, decision')
+      .eq('tenant_id', tenantId)
+      .gte('evaluation_date', periodStart)
+      .lte('evaluation_date', periodEnd),
+  ]);
+  if (suppliersError || evaluationsError) return empty;
+
+  const today = isoDateInDays(0);
+  const scores = (evaluations || []).map((row) => Number(row.overall_score));
+  return {
+    active: (suppliers || []).length,
+    evaluations: (evaluations || []).length,
+    average_score: scores.length > 0 ? round1(scores.reduce((sum, score) => sum + score, 0) / scores.length) : null,
+    under_watch: (evaluations || []).filter((row) => row.decision === 'under_watch').length,
+    to_replace: (evaluations || []).filter((row) => row.decision === 'to_replace').length,
+    overdue_evaluations: (suppliers || []).filter((supplier) => supplier.next_evaluation_date && supplier.next_evaluation_date < today).length,
+  };
+}
+
+// Sorties non conformes (§8.7) détectées sur la période, dont celles encore ouvertes aujourd'hui.
+async function computeNonconformingPeriod(tenantId, periodStart, periodEnd) {
+  const { data, error } = await supabase
+    .from('nonconforming_outputs')
+    .select('status, disposition')
+    .eq('tenant_id', tenantId)
+    .gte('detected_at', periodStart)
+    .lte('detected_at', periodEnd);
+  if (error || !data) return { detected: 0, still_open: 0, by_disposition: {} };
+  const byDisposition = {};
+  for (const row of data) byDisposition[row.disposition] = (byDisposition[row.disposition] || 0) + 1;
+  return { detected: data.length, still_open: data.filter((row) => row.status !== 'closed').length, by_disposition: byDisposition };
+}
+
+// Accidents (santé-sécurité) survenus sur la période : gravité, avec arrêt de travail, jours perdus, ouverts.
+async function computeAccidentsPeriod(tenantId, periodStart, periodEnd) {
+  const { data, error } = await supabase
+    .from('accidents')
+    .select('severity, with_lost_time, lost_days, status')
+    .eq('tenant_id', tenantId)
+    .gte('occurred_at', periodStart)
+    .lte('occurred_at', periodEnd);
+  const empty = { count: 0, with_lost_time: 0, lost_days: 0, still_open: 0, by_severity: {} };
+  if (error || !data) return empty;
+  const bySeverity = {};
+  for (const row of data) bySeverity[row.severity] = (bySeverity[row.severity] || 0) + 1;
+  return {
+    count: data.length,
+    with_lost_time: data.filter((row) => row.with_lost_time).length,
+    lost_days: data.reduce((sum, row) => sum + (row.lost_days || 0), 0),
+    still_open: data.filter((row) => row.status !== 'closed').length,
+    by_severity: bySeverity,
+  };
+}
+
+// Compétences (§7.2) : part des formations à jour (dernière réalisation de chaque personne × formation,
+// échéance non dépassée) et qualification des auditeurs internes. Instantané du jour, pas une fenêtre.
+async function computeCompetences(tenantId) {
+  const empty = { records_tracked: 0, up_to_date: 0, to_renew: 0, expired: 0, compliance_rate: null, auditors: { designated: false, qualified: 0, to_recycle: 0, not_qualified: 0 } };
+  const { data, error } = await supabase.from('training_records').select('training_id, user_id, employee_id, completed_at, next_due_date').eq('tenant_id', tenantId);
+  if (error || !data) return empty;
+
+  const latestByPair = new Map();
+  for (const record of data) {
+    const key = `${record.training_id}:${record.user_id ? `u:${record.user_id}` : `e:${record.employee_id}`}`;
+    const known = latestByPair.get(key);
+    if (!known || record.completed_at > known.completed_at) latestByPair.set(key, record);
+  }
+
+  const today = isoDateInDays(0);
+  const soon = isoDateInDays(RENEWAL_WINDOW_DAYS);
+  let expired = 0;
+  let toRenew = 0;
+  for (const record of latestByPair.values()) {
+    if (record.next_due_date && record.next_due_date < today) expired += 1;
+    else if (record.next_due_date && record.next_due_date <= soon) toRenew += 1;
+  }
+  const total = latestByPair.size;
+
+  let auditors = empty.auditors;
+  try {
+    const { trainings, byUser } = await fetchAuditorQualifications({ tenantId, userId: null, userRole: 'admin' });
+    const statuses = Object.values(byUser).map((qualification) => qualification.status);
+    auditors = {
+      designated: trainings.length > 0,
+      qualified: statuses.filter((status) => status === 'qualified').length,
+      to_recycle: statuses.filter((status) => status === 'expired').length,
+      not_qualified: statuses.filter((status) => status === 'failed').length,
+    };
+  } catch {
+    // Compétence des auditeurs : complément, jamais bloquant.
+  }
+
+  return {
+    records_tracked: total,
+    up_to_date: total - expired - toRenew,
+    to_renew: toRenew,
+    expired,
+    compliance_rate: total > 0 ? Math.round(((total - expired) / total) * 100) : null,
+    auditors,
+  };
+}
+
+// Politique qualité (§5.2) : date de la version en vigueur et part des utilisateurs actifs l'ayant lue.
+async function computeQualityPolicy(tenantId) {
+  const { data: version, error } = await supabase
+    .from('quality_policy_versions')
+    .select('id, created_at')
+    .eq('tenant_id', tenantId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error || !version) return { defined: false, last_updated: null, acknowledged: 0, users: 0 };
+
+  const [{ count: acknowledged }, { count: users }] = await Promise.all([
+    supabase.from('quality_policy_acknowledgments').select('id', { count: 'exact', head: true }).eq('quality_policy_version_id', version.id),
+    supabase.from('users').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId).eq('is_active', true),
+  ]);
+  return { defined: true, last_updated: version.created_at.slice(0, 10), acknowledged: acknowledged || 0, users: users || 0 };
+}
+
 // period : { periodStart, periodEnd } optionnel — le calcul point-in-time existant (capas/
 // audits/documents/trainings/kpis) tourne TOUJOURS et garde exactement la même forme qu'avant
 // cette fonctionnalité (zéro régression sur le snapshot de clôture, voir managementReviews.js,
@@ -295,12 +449,18 @@ export async function buildQmsSnapshot(tenantId, period) {
 
   if (period?.periodStart && period?.periodEnd) {
     const { periodStart, periodEnd } = period;
-    const [kpiTrend, auditsPeriod, complaintsPeriod, capasPeriod, risksOpen] = await Promise.all([
+    const [kpiTrend, auditsPeriod, complaintsPeriod, capasPeriod, risksOpen, satisfaction, suppliers, nonconforming, accidents, competences, qualityPolicy] = await Promise.all([
       computeKpiTrend(tenantId, periodStart, periodEnd),
       computeAuditsPeriod(tenantId, periodStart, periodEnd),
       computeComplaintsPeriod(tenantId, periodStart, periodEnd),
       computeCapasPeriod(tenantId, periodStart, periodEnd),
       computeOpenRisksBySeverity(tenantId),
+      computeSatisfactionPeriod(tenantId, periodStart, periodEnd),
+      computeSuppliersPeriod(tenantId, periodStart, periodEnd),
+      computeNonconformingPeriod(tenantId, periodStart, periodEnd),
+      computeAccidentsPeriod(tenantId, periodStart, periodEnd),
+      computeCompetences(tenantId),
+      computeQualityPolicy(tenantId),
     ]);
     snapshot.period = { start: periodStart, end: periodEnd };
     snapshot.kpi_trend = kpiTrend;
@@ -308,6 +468,14 @@ export async function buildQmsSnapshot(tenantId, period) {
     snapshot.complaints_period = complaintsPeriod;
     snapshot.capas_period = capasPeriod;
     snapshot.risks_open = risksOpen;
+    // Éléments d'entrée complémentaires : absents des revues créées avant cette version (l'affichage et les exports
+    // les traitent comme optionnels).
+    snapshot.satisfaction_period = satisfaction;
+    snapshot.suppliers_period = suppliers;
+    snapshot.nonconforming_period = nonconforming;
+    snapshot.accidents_period = accidents;
+    snapshot.competences = competences;
+    snapshot.quality_policy = qualityPolicy;
   }
 
   return snapshot;

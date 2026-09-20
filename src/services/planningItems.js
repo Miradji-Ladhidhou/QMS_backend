@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
+import { computeReviewSchedule } from './managementReviewSchedule.js';
 
 // Extrait de planning.js (partagé avec dashboard.js, voir stats.overdue) : les deux routes
 // ont besoin exactement du même calcul "en retard" (date < aujourd'hui) et des mêmes règles
@@ -429,4 +430,35 @@ export async function fetchReviewActionItems(tenantId, { ownerIds, userId, userR
       link: `/management-reviews/${review.id}`,
     })
   );
+}
+
+// Revues de direction : celles déjà programmées (brouillons datés d'aujourd'hui ou plus tard) et, sinon, le rappel
+// « à programmer » à la date attendue de la prochaine revue (dernière revue clôturée + fréquence choisie).
+// Réservé à la vue admin/manager (comme les documents et procédures : pas de porteur individuel).
+export async function fetchManagementReviewItems(tenantId, { userId, userRole }) {
+  const schedule = await computeReviewSchedule(tenantId, { userId, userRole, filterViewable: filterViewableByCategory });
+  const items = [];
+
+  if (schedule.scheduled_review) {
+    items.push(
+      withOverdue({
+        type: 'management_review',
+        id: schedule.scheduled_review.id,
+        title: `Revue de direction — ${schedule.scheduled_review.title}`,
+        date: schedule.scheduled_review.review_date,
+        link: `/management-reviews/${schedule.scheduled_review.id}`,
+      })
+    );
+  } else if (schedule.next_due_date) {
+    items.push(
+      withOverdue({
+        type: 'management_review_due',
+        id: 'management-review-due',
+        title: 'Revue de direction à programmer',
+        date: schedule.next_due_date,
+        link: '/management-reviews',
+      })
+    );
+  }
+  return items;
 }

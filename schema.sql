@@ -455,6 +455,37 @@ create table management_reviews (
     check (period_start is null or period_end is null or period_end >= period_start)
 );
 
+-- Validation signée de la direction : la revue est alors verrouillée (seul le suivi des actions reste modifiable).
+-- La signature manuscrite (image PNG en data URL) est dans une table à part — la liste des revues, lue par tous les
+-- rôles, ne doit jamais l'embarquer.
+alter table management_reviews
+  add column validated_by uuid references users (id) on delete set null,
+  add column validated_at timestamptz;
+
+create table management_review_signatures (
+  review_id  uuid primary key references management_reviews (id) on delete cascade,
+  tenant_id  uuid not null references tenants (id) on delete cascade,
+  image      text not null,
+  signed_by  uuid references users (id) on delete set null,
+  signed_at  timestamptz not null default now()
+);
+
+-- Trace des convocations et des comptes rendus envoyés par email (qui, quand, à qui) — pièce d'audit.
+create table management_review_mailings (
+  id         uuid primary key default gen_random_uuid(),
+  tenant_id  uuid not null references tenants (id) on delete cascade,
+  review_id  uuid not null references management_reviews (id) on delete cascade,
+  kind       text not null check (kind in ('convocation', 'minutes')),
+  subject    text not null,
+  recipients jsonb not null default '[]'::jsonb,
+  sent_by    uuid references users (id) on delete set null,
+  sent_at    timestamptz not null default now()
+);
+
+-- Intervalle prévu entre deux revues de direction (§9.3.1) : alimente le rappel « revue à programmer » du planning.
+alter table tenants add column management_review_frequency_months integer check (management_review_frequency_months is null or management_review_frequency_months > 0);
+
+
 -- Actions décidées en sortie de revue (§9.3.3). Même principe bidirectionnel que
 -- audit_findings.linked_capa_id ci-dessus : une action peut rester autonome (ex. décision
 -- sans CAPA formelle) sans jamais donner lieu à une CAPA.
@@ -1843,6 +1874,9 @@ create index idx_training_quiz_attempts_record_id on training_quiz_attempts (rec
 create index idx_training_instructor_signatures_tenant_id on training_instructor_signatures (tenant_id);
 create index idx_audit_checklist_items_tenant_id on audit_checklist_items (tenant_id);
 create index idx_audit_checklist_items_audit_id on audit_checklist_items (audit_id);
+create index idx_management_review_signatures_tenant_id on management_review_signatures (tenant_id);
+create index idx_management_review_mailings_tenant_id on management_review_mailings (tenant_id);
+create index idx_management_review_mailings_review_id on management_review_mailings (review_id);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
 create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
@@ -2290,6 +2324,8 @@ alter table training_quizzes enable row level security;
 alter table training_quiz_attempts enable row level security;
 alter table training_instructor_signatures enable row level security;
 alter table audit_checklist_items enable row level security;
+alter table management_review_signatures enable row level security;
+alter table management_review_mailings enable row level security;
 alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
@@ -2507,6 +2543,16 @@ create policy training_instructor_signatures_isolation on training_instructor_si
   with check (tenant_id = auth_tenant_id());
 
 create policy audit_checklist_items_isolation on audit_checklist_items
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy management_review_signatures_isolation on management_review_signatures
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy management_review_mailings_isolation on management_review_mailings
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

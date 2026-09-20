@@ -7,6 +7,13 @@ import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQmsSnapshot } from '../services/qmsSnapshot.js';
 import { ACTION_STATUSES, describeAction, enrichActions, buildInputBlocks, formatReviewDate } from '../services/managementReviewContent.js';
 import { generateManagementReviewDraft } from '../services/groq.js';
+import { validateSignatureImage } from '../services/signatureImage.js';
+import { logActivity } from '../services/activityLog.js';
+import { sendEmail } from '../services/email.js';
+import { renderTemplate } from '../services/renderTemplate.js';
+import { getUserEmail } from '../services/notificationHelpers.js';
+import { computeReviewSchedule } from '../services/managementReviewSchedule.js';
+import { buildConvocationBody, buildIcs, buildMinutesBody, escapeHtml } from '../services/managementReviewMailing.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildManagementReviewPdf } from '../services/managementReviewPdf.js';
 import { buildManagementReviewWord } from '../services/managementReviewWord.js';
@@ -41,6 +48,19 @@ const ACTION_SELECT =
 async function isTenantUser(tenantId, userId) {
   const { data } = await supabase.from('users').select('id').eq('tenant_id', tenantId).eq('id', userId).maybeSingle();
   return Boolean(data);
+}
+
+const VALIDATED_MESSAGE = 'Cette revue a été validée et signée par la direction : rouvrez-la pour la modifier.';
+
+// Une revue validée est verrouillée (le document est signé) ; seul le SUIVI des actions (responsable, échéance,
+// statut) et la création de CAPA restent possibles. Retourne true (et répond 409) si la revue est verrouillée.
+async function rejectIfValidated(req, res, reviewId) {
+  const { data } = await supabase.from('management_reviews').select('validated_at').eq('tenant_id', req.tenantId).eq('id', reviewId).maybeSingle();
+  if (data?.validated_at) {
+    res.status(409).json({ error: VALIDATED_MESSAGE, code: 'review_validated' });
+    return true;
+  }
+  return false;
 }
 
 // Revue précédente = la revue CLÔTURÉE la plus récente antérieure à celle-ci (§9.3.2 a : le statut des
@@ -102,11 +122,36 @@ router.get('/', async (req, res) => {
   res.json(viewable);
 });
 
+// GET /api/management-reviews/schedule — planification : fréquence choisie, dernière revue clôturée, date attendue de
+// la prochaine, revue déjà programmée. Placée avant GET /:id pour ne pas être capturée comme un id.
+router.get('/schedule', async (req, res) => {
+  res.json(await computeReviewSchedule(req.tenantId, { userId: req.user.id, userRole: req.userRole, filterViewable: filterViewableByCategory }));
+});
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_RECIPIENTS = 100;
+const SEND_CONCURRENCY = 5;
+
+// GET /api/management-reviews/recipients — destinataires possibles d'une convocation ou d'un compte rendu : les comptes
+// actifs (adresse du compte) et le personnel sans compte qui a une adresse. Admin/manager uniquement.
+router.get('/recipients', requireRole('admin', 'manager'), async (req, res) => {
+  const [{ data: users }, { data: employees }] = await Promise.all([
+    supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).eq('is_active', true).order('full_name'),
+    supabase.from('employees').select('id, full_name, email').eq('tenant_id', req.tenantId).eq('is_active', true).not('email', 'is', null).order('full_name'),
+  ]);
+  const accounts = await Promise.all((users || []).map(async (user) => ({ kind: 'user', id: user.id, name: user.full_name || 'Utilisateur', email: await getUserEmail(user.id) })));
+  const people = [
+    ...accounts.filter((account) => account.email),
+    ...(employees || []).filter((employee) => employee.email).map((employee) => ({ kind: 'employee', id: employee.id, name: employee.full_name, email: employee.email })),
+  ];
+  res.json(people);
+});
+
 // GET /api/management-reviews/:id — détail avec ses actions, CAPA liée résolue pour chacune.
 router.get('/:id', async (req, res) => {
   const { data: review, error } = await supabase
     .from('management_reviews')
-    .select('*, category:categories(id, name, color, is_restricted, owner_user_id)')
+    .select('*, category:categories(id, name, color, is_restricted, owner_user_id), validator:users!management_reviews_validated_by_fkey(id, full_name)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -139,10 +184,25 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les actions de cette revue.' });
   }
 
+  // Historique des convocations et comptes rendus envoyés : réservé à ceux qui peuvent en envoyer.
+  let mailings = [];
+  if (req.userRole === 'admin' || req.userRole === 'manager') {
+    const { data } = await supabase
+      .from('management_review_mailings')
+      .select('id, kind, subject, recipients, sent_at, sender:users!management_review_mailings_sent_by_fkey(id, full_name)')
+      .eq('tenant_id', req.tenantId)
+      .eq('review_id', review.id)
+      .order('sent_at', { ascending: false })
+      .limit(20);
+    mailings = data || [];
+  }
+
   res.json({
     ...review,
     actions: enrichActions(actions),
+    mailings,
     previous_review: await fetchPreviousReview(req, review),
+    is_validated: Boolean(review.validated_at),
     is_private_to_me: review.category?.owner_user_id === req.user.id,
   });
 });
@@ -169,17 +229,24 @@ async function loadReviewForExport(req, res) {
     }
   }
 
-  const [{ data: actions }, previousReview, { data: tenant }, { data: me }] = await Promise.all([
+  const [{ data: actions }, previousReview, { data: tenant }, { data: me }, { data: signature }, { data: validator }] = await Promise.all([
     supabase.from('management_review_actions').select(ACTION_SELECT).eq('tenant_id', req.tenantId).eq('review_id', review.id).order('created_at', { ascending: true }),
     fetchPreviousReview(req, review),
     supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
     supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+    supabase.from('management_review_signatures').select('image, signed_at').eq('review_id', review.id).maybeSingle(),
+    review.validated_by ? supabase.from('users').select('full_name').eq('id', review.validated_by).maybeSingle() : Promise.resolve({ data: null }),
   ]);
 
   return {
     tenantName: tenant?.name,
     tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
-    review: { ...review, actions: enrichActions(actions || []) },
+    // validation : présente seulement si la direction a validé et signé la revue (voir POST /:id/validate).
+    review: {
+      ...review,
+      actions: enrichActions(actions || []),
+      validation: review.validated_at ? { validated_at: review.validated_at, validated_by_name: validator?.full_name || null, signature: signature?.image || null } : null,
+    },
     previousReview,
     generatedBy: me?.full_name,
   };
@@ -219,6 +286,7 @@ router.post('/:id/ai-draft', requireRole('admin', 'manager'), async (req, res) =
   const data = await loadReviewForExport(req, res);
   if (!data) return;
   const { review, previousReview } = data;
+  if (review.validated_at) return res.status(409).json({ error: VALIDATED_MESSAGE, code: 'review_validated' });
 
   const blocks = buildInputBlocks(review);
   if (blocks.length === 0) {
@@ -261,6 +329,180 @@ router.post('/:id/ai-draft', requireRole('admin', 'manager'), async (req, res) =
     res.status(503).json({ error: `Impossible de générer le brouillon : ${err.message}` });
   }
 });
+
+// POST /api/management-reviews/:id/validate { signature } — la direction (admin) valide et signe la revue : la revue
+// doit être clôturée (conclusions et suivi des actions précédentes déjà exigés à la clôture). La revue est ensuite
+// verrouillée ; la signature manuscrite est conservée à part et figure sur le PDF/Word.
+router.post('/:id/validate', requireRole('admin'), async (req, res) => {
+  const { data: review } = await supabase
+    .from('management_reviews')
+    .select('id, status, validated_at')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (!review) return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  if (review.validated_at) return res.status(409).json({ error: 'Cette revue est déjà validée.', code: 'review_validated' });
+  if (review.status !== 'completed') return res.status(400).json({ error: "Clôturez la revue avant de la valider : la validation signe un document terminé." });
+
+  const parsed = validateSignatureImage(req.body?.signature);
+  if (parsed.error) return res.status(400).json({ error: req.body?.signature ? parsed.error : 'Signez dans le cadre pour valider la revue.' });
+
+  const now = new Date().toISOString();
+  const { error: signatureError } = await supabase
+    .from('management_review_signatures')
+    .upsert({ review_id: review.id, tenant_id: req.tenantId, image: parsed.dataUrl, signed_by: req.user.id, signed_at: now }, { onConflict: 'review_id' });
+  if (signatureError) return res.status(500).json({ error: "Impossible d'enregistrer la signature." });
+
+  const { data, error } = await supabase
+    .from('management_reviews')
+    .update({ validated_by: req.user.id, validated_at: now })
+    .eq('tenant_id', req.tenantId)
+    .eq('id', review.id)
+    .is('validated_at', null)
+    .select('id, validated_by, validated_at')
+    .maybeSingle();
+  if (error) return res.status(500).json({ error: 'Erreur lors de la validation.' });
+  // Deux validations simultanées : la seconde ne trouve plus de ligne à mettre à jour.
+  if (!data) return res.status(409).json({ error: 'Cette revue est déjà validée.', code: 'review_validated' });
+
+  await logActivity({ tenantId: req.tenantId, actorId: req.user.id, actorEmail: req.user.email, action: 'MANAGEMENT_REVIEW_VALIDATED', entityType: 'management_review', entityId: review.id, req });
+  res.json({ ...data, is_validated: true });
+});
+
+// POST /api/management-reviews/:id/reopen — la direction (admin) rouvre une revue validée : la validation et la
+// signature sont effacées, la revue redevient modifiable (à re-valider ensuite). Tracé dans le journal d'activité.
+router.post('/:id/reopen', requireRole('admin'), async (req, res) => {
+  const { data: review } = await supabase.from('management_reviews').select('id, validated_at').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
+  if (!review) return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  if (!review.validated_at) return res.status(400).json({ error: "Cette revue n'est pas validée." });
+
+  await supabase.from('management_review_signatures').delete().eq('review_id', review.id);
+  const { error } = await supabase.from('management_reviews').update({ validated_by: null, validated_at: null }).eq('tenant_id', req.tenantId).eq('id', review.id);
+  if (error) return res.status(500).json({ error: 'Erreur lors de la réouverture.' });
+
+  await logActivity({ tenantId: req.tenantId, actorId: req.user.id, actorEmail: req.user.email, action: 'MANAGEMENT_REVIEW_REOPENED', entityType: 'management_review', entityId: review.id, metadata: { previously_validated_at: review.validated_at }, req });
+  res.json({ id: review.id, validated_by: null, validated_at: null, is_validated: false });
+});
+
+// GET /api/management-reviews/:id/validation-signature — la signature de validation, pour l'aperçu sur la page
+// (jamais embarquée dans la liste ni dans le détail de la revue).
+router.get('/:id/validation-signature', async (req, res) => {
+  const { data: review } = await supabase.from('management_reviews').select('id, category_id, validated_at').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
+  if (!review) return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  if (req.userRole !== 'admin') {
+    const allowed = await hasGenericCategoryPermission({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, categoryId: review.category_id, permission: 'view' });
+    if (!allowed) return res.status(404).json({ error: 'Revue de direction introuvable.' });
+  }
+  const { data } = await supabase.from('management_review_signatures').select('image, signed_at').eq('review_id', review.id).maybeSingle();
+  res.json(data || null);
+});
+
+// Envoi d'une convocation ou du compte rendu : destinataires = comptes/salariés (résolus côté serveur, jamais une
+// adresse fournie pour une personne connue) + adresses libres. Un email PAR destinataire (personne ne voit les autres).
+const MAILING_VALIDATORS = [
+  body('recipients').optional().isArray({ max: MAX_RECIPIENTS }).withMessage(`Au plus ${MAX_RECIPIENTS} destinataires.`),
+  body('recipients.*.kind').optional().isIn(['user', 'employee']).withMessage('Type de destinataire invalide.'),
+  body('recipients.*.id').optional().isUUID().withMessage('Destinataire invalide.'),
+  body('extra_emails').optional().isArray({ max: MAX_RECIPIENTS }).withMessage('Adresses invalides.'),
+  body('extra_emails.*').optional().isString().trim().matches(EMAIL_PATTERN).withMessage('Une adresse email est invalide.'),
+  body('meeting_time').optional({ values: 'falsy' }).matches(/^([01]\d|2[0-3]):[0-5]\d$/).withMessage("Heure invalide (format HH:MM)."),
+  body('location').optional({ values: 'falsy' }).isString().trim().isLength({ max: 200 }),
+  body('message').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }).withMessage('Message trop long (2000 caractères max).'),
+];
+
+async function sendReviewMailing(req, res, kind) {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
+
+  const data = await loadReviewForExport(req, res);
+  if (!data) return;
+  const { review, previousReview, tenantName } = data;
+
+  if (kind === 'minutes' && !review.validated_at) {
+    return res.status(409).json({ error: "Validez et signez la revue avant d'envoyer le compte rendu.", code: 'review_not_validated' });
+  }
+
+  // Résolution des destinataires.
+  const requested = req.body.recipients || [];
+  const userIds = requested.filter((r) => r.kind === 'user').map((r) => r.id);
+  const employeeIds = requested.filter((r) => r.kind === 'employee').map((r) => r.id);
+  const [{ data: users }, { data: employees }] = await Promise.all([
+    userIds.length > 0 ? supabase.from('users').select('id, full_name').eq('tenant_id', req.tenantId).in('id', userIds) : { data: [] },
+    employeeIds.length > 0 ? supabase.from('employees').select('id, full_name, email').eq('tenant_id', req.tenantId).in('id', employeeIds) : { data: [] },
+  ]);
+
+  const candidates = [
+    ...(await Promise.all((users || []).map(async (user) => ({ name: user.full_name || 'Utilisateur', email: await getUserEmail(user.id) })))),
+    ...(employees || []).map((employee) => ({ name: employee.full_name, email: employee.email })),
+    ...(req.body.extra_emails || []).map((email) => ({ name: '', email })),
+  ];
+  const seen = new Set();
+  const results = [];
+  const toSend = [];
+  for (const candidate of candidates) {
+    if (!candidate.email) {
+      results.push({ name: candidate.name, email: null, status: 'no_email' });
+      continue;
+    }
+    const key = candidate.email.trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    toSend.push({ ...candidate, email: candidate.email.trim() });
+  }
+  if (toSend.length === 0 && results.length === 0) return res.status(400).json({ error: 'Sélectionnez au moins un destinataire.' });
+
+  const meetingTime = req.body.meeting_time || null;
+  const location = req.body.location || null;
+  const message = req.body.message || null;
+
+  const title = kind === 'convocation' ? `Convocation — Revue de direction « ${review.title} »` : `Compte rendu — Revue de direction « ${review.title} »`;
+  const subject = `${title} du ${new Date(`${review.review_date}T12:00:00`).toLocaleDateString('fr-FR')}`.replace(/[\r\n]+/g, ' ');
+  const safeName = review.title.replace(/[^A-Za-z0-9À-ÿ_-]+/g, '-');
+  const attachments =
+    kind === 'convocation'
+      ? [
+          {
+            filename: 'revue-de-direction.ics',
+            contentType: 'text/calendar; charset=utf-8; method=PUBLISH',
+            content: Buffer.from(buildIcs({ review, meetingTime, location, tenantName, description: `Revue de direction « ${review.title} »${message ? `\n\n${message}` : ''}` }), 'utf-8'),
+          },
+        ]
+      : [{ filename: `Compte-rendu-${safeName}.pdf`, contentType: 'application/pdf', content: await buildManagementReviewPdf(data) }];
+
+  async function sendOne(recipient) {
+    try {
+      const bodyHtml =
+        kind === 'convocation'
+          ? buildConvocationBody({ review, previousReview, meetingTime, location, message, recipientName: recipient.name })
+          : buildMinutesBody({ review, recipientName: recipient.name, message });
+      const html = renderTemplate('managementReviewMailing', { heading: escapeHtml(title), tenantName: escapeHtml(tenantName || 'QMS SaaS'), bodyHtml });
+      await sendEmail(recipient.email, subject, html, { attachments });
+      return { name: recipient.name, email: recipient.email, status: 'sent' };
+    } catch (err) {
+      console.error(`Envoi ${kind} de revue échoué pour un destinataire :`, err.message);
+      return { name: recipient.name, email: recipient.email, status: 'failed' };
+    }
+  }
+  for (let start = 0; start < toSend.length; start += SEND_CONCURRENCY) {
+    results.push(...(await Promise.all(toSend.slice(start, start + SEND_CONCURRENCY).map(sendOne))));
+  }
+
+  // Trace : qui a été convoqué / a reçu le compte rendu, quand, par qui (seuls les envois réussis comptent comme remis).
+  const { data: mailing } = await supabase
+    .from('management_review_mailings')
+    .insert({ tenant_id: req.tenantId, review_id: review.id, kind, subject, recipients: results, sent_by: req.user.id })
+    .select('id, kind, subject, recipients, sent_at')
+    .single();
+  await logActivity({ tenantId: req.tenantId, actorId: req.user.id, actorEmail: req.user.email, action: kind === 'convocation' ? 'MANAGEMENT_REVIEW_CONVOCATION_SENT' : 'MANAGEMENT_REVIEW_MINUTES_SENT', entityType: 'management_review', entityId: review.id, metadata: { sent: results.filter((r) => r.status === 'sent').length, total: results.length }, req });
+
+  res.json({ results, mailing });
+}
+
+// POST /api/management-reviews/:id/send-convocation — convocation avec ordre du jour et invitation calendrier (.ics).
+router.post('/:id/send-convocation', requireRole('admin', 'manager'), MAILING_VALIDATORS, (req, res) => sendReviewMailing(req, res, 'convocation'));
+
+// POST /api/management-reviews/:id/send-minutes — compte rendu signé (PDF joint), seulement une fois la revue validée.
+router.post('/:id/send-minutes', requireRole('admin', 'manager'), MAILING_VALIDATORS, (req, res) => sendReviewMailing(req, res, 'minutes'));
 
 // POST /api/management-reviews — admin/manager uniquement, comme pour les audits : une revue
 // de direction n'est pas ouverte à l'initiative d'un member.
@@ -382,13 +624,16 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('management_reviews')
-      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status, review_date')
+      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status, review_date, validated_at')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
 
     if (fetchError || !existing) {
       return res.status(404).json({ error: 'Revue de direction introuvable.' });
+    }
+    if (existing.validated_at) {
+      return res.status(409).json({ error: VALIDATED_MESSAGE, code: 'review_validated' });
     }
 
     // Une revue clôturée ne doit plus jamais voir sa période bouger : ce serait invalider
@@ -494,6 +739,17 @@ router.delete(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    // Une revue validée et signée ne se supprime pas d'un clic : il faut d'abord la rouvrir.
+    const { count: validatedCount } = await supabase
+      .from('management_reviews')
+      .select('id', { count: 'exact', head: true })
+      .eq('tenant_id', req.tenantId)
+      .in('id', req.body.ids)
+      .not('validated_at', 'is', null);
+    if (validatedCount > 0) {
+      return res.status(409).json({ error: `${validatedCount} revue(s) validée(s) et signée(s) dans la sélection : rouvrez-les avant de les supprimer.`, code: 'review_validated' });
+    }
+
     const { error, count } = await supabase
       .from('management_reviews')
       .delete({ count: 'exact' })
@@ -509,6 +765,7 @@ router.delete(
 );
 
 router.delete('/:id', requireRole('admin', 'manager'), async (req, res) => {
+  if (await rejectIfValidated(req, res, req.params.id)) return;
   const { error, count } = await supabase
     .from('management_reviews')
     .delete({ count: 'exact' })
@@ -601,6 +858,7 @@ router.post(
   async (req, res) => {
     const review = await resolveReview(req, res);
     if (!review) return;
+    if (await rejectIfValidated(req, res, review.id)) return;
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -650,6 +908,8 @@ router.patch(
     if (req.body.owner && !(await isTenantUser(req.tenantId, req.body.owner))) {
       return res.status(400).json({ error: 'Responsable invalide.' });
     }
+    // Le texte d'une action fait partie du document signé ; son suivi (responsable, échéance, statut) reste libre.
+    if ('description' in req.body && (await rejectIfValidated(req, res, req.params.reviewId))) return;
 
     const update = {};
     if ('description' in req.body) update.description = req.body.description;
@@ -683,6 +943,7 @@ router.patch(
 
 // DELETE /api/management-reviews/:reviewId/actions/:id — admin/manager uniquement.
 router.delete('/:reviewId/actions/:id', requireRole('admin', 'manager'), async (req, res) => {
+  if (await rejectIfValidated(req, res, req.params.reviewId)) return;
   const { error, count } = await supabase
     .from('management_review_actions')
     .delete({ count: 'exact' })

@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, formatReviewDate } from './managementReviewContent.js';
+import { ACTION_STATUS_LABELS, REVIEW_TEXT_SECTIONS, buildInputBlocks, describeValidation, formatReviewDate } from './managementReviewContent.js';
 
 const INK_ARGB = 'FF1E293B';
 const HEADER_FILL_ARGB = 'FFF1F5F9';
@@ -52,6 +52,7 @@ export async function buildManagementReviewXlsx({ review, previousReview }) {
     ['Dossier', review.category?.name || ''],
     ...REVIEW_TEXT_SECTIONS.map(({ key, title }) => [title, review[key] || '']),
     ['Actions décidées', review.actions.length],
+    ['Validation de la direction', describeValidation(review.validation) || 'Non validée'],
   ];
   const reviewSheet = workbook.addWorksheet('Revue');
   addTable(reviewSheet, ['Champ', 'Contenu'], facts, [40, 100]);

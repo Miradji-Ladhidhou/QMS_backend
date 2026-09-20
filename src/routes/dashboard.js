@@ -14,6 +14,7 @@ import {
   fetchSupplierItems,
   fetchPdcaItems,
   fetchReviewActionItems,
+  fetchManagementReviewItems,
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
@@ -191,9 +192,9 @@ function countActiveAndOverdue(items) {
 
 // Revues de direction non closes ("draft" = pas encore passée en "completed", voir
 // schema.sql). Pas de service_id sur management_reviews : toujours tout le tenant, jamais
-// scopé par service — comme documents/kpis. Pas de fetchManagementReviewItems dans
-// planningItems.js (une revue de direction n'a pas d'échéance individuelle exploitée par le
-// planning), donc une requête dédiée ici plutôt qu'une réutilisation.
+// scopé par service — comme documents/kpis. Ce compteur reste une requête dédiée : le nombre de
+// brouillons n'est pas une échéance ; les revues PROGRAMMÉES et le rappel « à programmer » sont eux
+// des échéances (fetchManagementReviewItems, planningItems.js) et comptent dans le total « en retard ».
 async function countManagementReviewsDraft(tenantId) {
   const { count, error } = await supabase
     .from('management_reviews')
@@ -247,7 +248,7 @@ async function computeTenantMetrics(tenantId) {
   const haccpActivePlans = await countActiveHaccpPlans(tenantId, null);
   const accidentsOpen = await countAccidentsOpen(tenantId, scopeUser);
 
-  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems] =
+  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
     await Promise.all([
       fetchCapaItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchDocumentItems(tenantId),
@@ -260,6 +261,7 @@ async function computeTenantMetrics(tenantId) {
       fetchSupplierItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchPdcaItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchReviewActionItems(tenantId, { ownerIds: null, ...scopeUser }),
+      fetchManagementReviewItems(tenantId, scopeUser),
     ]);
   const overdueTotal = countOverdueItems([
     capaItems,
@@ -273,6 +275,7 @@ async function computeTenantMetrics(tenantId) {
     supplierItems,
     pdcaItems,
     reviewActionItems,
+    managementReviewItems,
   ]);
 
   return {
@@ -443,7 +446,7 @@ router.get('/stats', async (req, res) => {
     const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
     const accidentsOpen = await countAccidentsOpen(req.tenantId, { userId: req.user.id, userRole: req.userRole }, serviceIds);
 
-    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems] =
+    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
       await Promise.all([
         fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchDocumentItems(req.tenantId),
@@ -456,6 +459,7 @@ router.get('/stats', async (req, res) => {
         fetchSupplierItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchPdcaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchReviewActionItems(req.tenantId, { ownerIds: trainingUserIds, userId: req.user.id, userRole: req.userRole }),
+        fetchManagementReviewItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
       ]);
     const overdueTotal = countOverdueItems([
       capaItems,
@@ -469,6 +473,7 @@ router.get('/stats', async (req, res) => {
       supplierItems,
       pdcaItems,
       reviewActionItems,
+      managementReviewItems,
     ]);
 
     metrics = {
