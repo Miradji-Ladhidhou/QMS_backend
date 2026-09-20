@@ -852,6 +852,15 @@ create table kpi_calculation_configs (
   updated_at        timestamptz not null default now()
 );
 
+-- Paramétrage propre à une série : unité, cible et sens d'objectif (même convention que
+-- kpis.target_direction : 'min' = plancher ≥, 'max' = plafond ≤). Les trois sont NULL ensemble
+-- = la série reprend les valeurs globales du KPI ; renseignés ensemble = série paramétrée à
+-- part (tout-ou-rien imposé par l'API, voir routes/kpis.js#parseSeriesBody).
+alter table kpi_calculation_configs
+  add column unit             text,
+  add column target           numeric,
+  add column target_direction text check (target_direction is null or target_direction in ('min', 'max'));
+
 -- config_id identifie la série qui a produit la valeur (nul pour une saisie manuelle, qui
 -- n'a pas de recette). unique (config_id, period_date) autorise plusieurs séries à avoir
 -- chacune leur valeur sur la même période (comparaison sur un même graphique) ; les NULL

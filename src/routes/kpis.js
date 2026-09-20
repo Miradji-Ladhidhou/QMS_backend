@@ -45,7 +45,7 @@ router.get('/', async (req, res) => {
     // frontend de choisir la bonne visualisation par carte (tendance multi-séries vs
     // répartition) et de nommer chaque courbe, sans une requête par KPI.
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column, unit, target, target_direction), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -89,7 +89,7 @@ router.get('/report', async (req, res) => {
     // buildSeriesInfo dans kpiReportPdf.js) — même embed que GET /. folder : nom du dossier de
     // chaque KPI, pour le regroupement du rapport (null = à la racine).
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), folder:kpi_folders(id, name), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column, unit, target, target_direction), category:categories(id, name, color, is_restricted, owner_user_id), folder:kpi_folders(id, name), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId);
 
@@ -254,7 +254,7 @@ router.post(
     const { data: full } = await supabase
       .from('kpis')
       .select(
-        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column, unit, target, target_direction), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
       )
       .eq('tenant_id', req.tenantId)
       .eq('id', kpi.id)
@@ -348,7 +348,7 @@ router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
     .from('kpis')
     .select(
-      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column, unit, target, target_direction), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -825,7 +825,38 @@ const SERIES_VALIDATORS = [
   body('filter_logic').optional({ values: 'falsy' }).isIn(['all', 'any']).withMessage('filter_logic invalide.'),
   body('group_by_column').optional({ values: 'falsy' }).trim(),
   body('period_column').optional({ values: 'falsy' }).trim(),
+  // Paramétrage propre à la série (unité + cible + sens) — tout-ou-rien, vérifié dans
+  // parseSeriesBody. '' et null valent "absent" (la série reprend alors les valeurs du KPI).
+  body('unit').optional({ nullable: true }).isString().withMessage("L'unité doit être un texte.").trim().isLength({ max: 30 }).withMessage("L'unité ne peut pas dépasser 30 caractères."),
+  body('target')
+    .optional({ nullable: true, values: 'falsy' })
+    .custom((value) => value === 0 || value === '0' || Number.isFinite(Number(value)))
+    .withMessage("L'objectif cible doit être un nombre."),
+  body('target_direction').optional({ values: 'falsy' }).isIn(['min', 'max']).withMessage("Le sens de l'objectif doit être 'min' ou 'max'."),
 ];
+
+// Extrait le paramétrage propre d'une série. Retourne { settings } avec settings =
+// - undefined : aucun des trois champs n'est dans le corps → à laisser tel quel (PATCH partiel,
+//   ex. le formulaire de recette de calcul qui ne les connaît pas) ;
+// - null : les trois sont vides → la série reprend les valeurs globales du KPI ;
+// - { unit, target, target_direction } : série paramétrée à part.
+// Tout-ou-rien : une série à moitié paramétrée (unité sans objectif, etc.) n'aurait pas de
+// sens à l'affichage (statut, ligne d'objectif) — 400 plutôt que de deviner.
+function parseSeriesSettings(body) {
+  const keys = ['unit', 'target', 'target_direction'];
+  if (!keys.some((key) => key in body)) return { settings: undefined };
+
+  const unit = typeof body.unit === 'string' ? body.unit.trim() : '';
+  const hasTarget = body.target !== undefined && body.target !== null && body.target !== '';
+  const direction = body.target_direction || '';
+  const provided = [unit !== '', hasTarget, direction !== ''].filter(Boolean).length;
+
+  if (provided === 0) return { settings: null };
+  if (provided < 3) {
+    return { error: "Une série paramétrée à part doit avoir une unité, un objectif cible et un sens de l'objectif — ou aucun des trois pour reprendre ceux du KPI." };
+  }
+  return { settings: { unit, target: Number(body.target), target_direction: direction } };
+}
 
 function parseSeriesBody(req) {
   const {
@@ -850,7 +881,18 @@ function parseSeriesBody(req) {
     return { error: 'group_by_column est requis pour un calcul de type count_grouped.' };
   }
 
-  return { label, calcType, sourceColumn, filters, filterLogic, groupByColumn, periodColumn };
+  const { settings, error: settingsError } = parseSeriesSettings(req.body);
+  if (settingsError) return { error: settingsError };
+
+  return { label, calcType, sourceColumn, filters, filterLogic, groupByColumn, periodColumn, settings };
+}
+
+// Colonnes unit/target/target_direction à écrire pour un paramétrage parsé (voir
+// parseSeriesSettings) : rien si undefined, les trois à null pour "valeurs du KPI".
+function seriesSettingsColumns(settings) {
+  if (settings === undefined) return {};
+  if (settings === null) return { unit: null, target: null, target_direction: null };
+  return settings;
 }
 
 // Avertissement non bloquant : les colonnes référencées ne figurent pas dans le dernier
@@ -946,6 +988,7 @@ router.post('/:id/series', SERIES_VALIDATORS, async (req, res) => {
       filter_logic: parsed.filterLogic,
       group_by_column: parsed.groupByColumn || null,
       period_column: parsed.periodColumn || null,
+      ...seriesSettingsColumns(parsed.settings),
     })
     .select()
     .single();
@@ -996,6 +1039,7 @@ router.patch('/:id/series/:configId', requireRole('admin', 'manager'), SERIES_VA
       filter_logic: parsed.filterLogic,
       group_by_column: parsed.groupByColumn || null,
       period_column: parsed.periodColumn || null,
+      ...seriesSettingsColumns(parsed.settings),
       updated_at: new Date().toISOString(),
     })
     .eq('tenant_id', req.tenantId)

@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { buildSeriesInfo, computeRecentAverage, getKpiStatus } from './kpiReportPdf.js';
+import { buildSeriesInfo, computeRecentAverage, getKpiStatus, resolveSeriesSettings } from './kpiReportPdf.js';
 
 // Mêmes teintes que listReportXlsx.js/pdfTheme.js — identité visuelle cohérente entre le PDF et
 // l'Excel d'un même rapport.
@@ -78,18 +78,22 @@ function addSummarySheet(workbook, kpis) {
 // Colonne Série vide pour un KPI mono-série (pas de libellé de série à afficher).
 function addDetailSheet(workbook, kpis) {
   const sheet = workbook.addWorksheet('Détail');
-  sheet.columns = [{ width: 32 }, { width: 24 }, { width: 20 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 50 }];
-  titleRow(sheet, 1, 7, 'Détail des relevés');
-  headerRow(sheet, 2, ['KPI', 'Dossier', 'Série', 'Période', 'Valeur', 'Source', 'Commentaire']);
+  sheet.columns = [{ width: 32 }, { width: 24 }, { width: 20 }, { width: 14 }, { width: 12 }, { width: 12 }, { width: 50 }, { width: 14 }, { width: 18 }];
+  titleRow(sheet, 1, 9, 'Détail des relevés');
+  // Unité/Objectif en fin de ligne (colonnes ajoutées après coup) : ceux de la série si elle est
+  // paramétrée à part, sinon ceux du KPI — voir resolveSeriesSettings.
+  headerRow(sheet, 2, ['KPI', 'Dossier', 'Série', 'Période', 'Valeur', 'Source', 'Commentaire', 'Unité', 'Objectif']);
 
   let rowNumber = 3;
   kpis.forEach((kpi) => {
     const { showMultiSeries, seriesList } = buildSeriesInfo(kpi);
     const entries = showMultiSeries
-      ? seriesList.flatMap((series) => series.records.map((record) => ({ record, seriesLabel: series.label })))
-      : [...kpi.records].sort((a, b) => (a.period_date > b.period_date ? 1 : -1)).map((record) => ({ record, seriesLabel: null }));
+      ? seriesList.flatMap((series) => series.records.map((record) => ({ record, seriesLabel: series.label, settings: series.settings })))
+      : [...kpi.records]
+          .sort((a, b) => (a.period_date > b.period_date ? 1 : -1))
+          .map((record) => ({ record, seriesLabel: null, settings: resolveSeriesSettings(kpi, null) }));
 
-    entries.forEach(({ record, seriesLabel }) => {
+    entries.forEach(({ record, seriesLabel, settings }) => {
       const row = sheet.getRow(rowNumber);
       row.getCell(1).value = kpi.name;
       row.getCell(2).value = kpi.folder?.name || 'Sans dossier';
@@ -98,6 +102,8 @@ function addDetailSheet(workbook, kpis) {
       row.getCell(5).value = record.value;
       row.getCell(6).value = record.source === 'import' ? 'Import' : 'Manuelle';
       row.getCell(7).value = record.comment || null;
+      row.getCell(8).value = settings.unit || null;
+      row.getCell(9).value = settings.target !== null ? `${settings.direction === 'max' ? '<=' : '>='} ${settings.target} ${settings.unit}`.trim() : null;
       row.eachCell((cell) => {
         cell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
       });
@@ -107,7 +113,7 @@ function addDetailSheet(workbook, kpis) {
   });
 
   sheet.views = [{ state: 'frozen', ySplit: 2 }];
-  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: rowNumber - 1, column: 7 } };
+  sheet.autoFilter = { from: { row: 2, column: 1 }, to: { row: rowNumber - 1, column: 9 } };
 }
 
 // Trié par dossier (racine d'abord, puis alphabétique) puis par nom de KPI — même ordre que

@@ -44,6 +44,17 @@ const STATUS_LABELS = { good: 'Objectif atteint', bad: 'Objectif non atteint', n
 // se reconnaître visuellement de la même façon dans le rapport PDF que sur la carte à l'écran.
 const SERIES_COLORS = ['#1F3864', '#E69F00', '#009E73', '#CC79A7', '#0072B2', '#D55E00'];
 
+// Unité / cible / sens effectifs d'une série : les siens si elle est paramétrée à part (les trois
+// colonnes de kpi_calculation_configs sont renseignées ensemble, voir routes/kpis.js), sinon ceux
+// du KPI. Miroir de resolveSeriesSettings côté frontend (lib/kpiSeriesSettings.js).
+export function resolveSeriesSettings(kpi, config) {
+  if (config && config.target_direction) {
+    return { unit: config.unit || '', target: Number(config.target), direction: config.target_direction, custom: true };
+  }
+  const hasTarget = kpi.target !== null && kpi.target !== undefined;
+  return { unit: kpi.unit || '', target: hasTarget ? Number(kpi.target) : null, direction: kpi.target_direction || 'min', custom: false };
+}
+
 // Miroir exact de la logique showMultiSeries/labelForRecord de KpiCard (Kpis.jsx) : un KPI
 // n'est "multi-séries" que si plusieurs libellés distincts apparaissent réellement dans ses
 // enregistrements (séries de calcul + éventuelle saisie manuelle détachée), jamais sur la
@@ -68,6 +79,7 @@ export function buildSeriesInfo(kpi) {
   const seriesList = orderedLabels.map((label, i) => ({
     label,
     color: SERIES_COLORS[i % SERIES_COLORS.length],
+    settings: resolveSeriesSettings(kpi, seriesConfigs.find((c) => c.label === label)),
     records: kpi.records.filter((r) => labelForRecord(r) === label).sort((a, b) => (a.period_date > b.period_date ? 1 : -1)),
   }));
 
@@ -184,7 +196,7 @@ function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
 // manquant sur une période casse la ligne au lieu de l'interpoler (connectNulls={false} côté
 // frontend) — d'où moveTo() plutôt que lineTo() dès qu'une période n'a pas de valeur pour
 // cette série.
-function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, unit }) {
+function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, targets, unit }) {
   const allRecords = seriesList.flatMap((s) => s.records);
   if (allRecords.length < 2) {
     doc
@@ -197,10 +209,10 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, un
   const values = allRecords.map((r) => r.value);
   let minValue = Math.min(...values);
   let maxValue = Math.max(...values);
-  if (target !== null && target !== undefined) {
-    minValue = Math.min(minValue, target);
-    maxValue = Math.max(maxValue, target);
-  }
+  targets.forEach(({ value }) => {
+    minValue = Math.min(minValue, value);
+    maxValue = Math.max(maxValue, value);
+  });
   if (minValue === maxValue) {
     minValue -= 1;
     maxValue += 1;
@@ -235,15 +247,17 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, un
   doc.text(`${maxValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop - 2, { width: 32, align: 'right', lineBreak: false });
   doc.text(`${minValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop + plotHeight - 4, { width: 32, align: 'right', lineBreak: false });
 
-  if (target !== null && target !== undefined) {
-    const targetY = scaleY(target);
-    doc.strokeColor(MUTED).lineWidth(0.5).dash(2, { space: 2 });
+  // Une ligne d'objectif par cible distincte : grise pour celle du KPI, à la couleur de la série
+  // pour un objectif propre à une série (plusieurs séries n'ont pas forcément le même).
+  targets.forEach(({ value, color }) => {
+    const targetY = scaleY(value);
+    doc.strokeColor(color || MUTED).lineWidth(0.5).dash(2, { space: 2 });
     doc
       .moveTo(plotLeft, targetY)
       .lineTo(plotLeft + plotWidth, targetY)
       .stroke();
     doc.undash();
-  }
+  });
 
   seriesList.forEach((series) => {
     const byPeriod = new Map(series.records.map((r) => [r.period_date, r.value]));
@@ -287,7 +301,7 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, target, un
 // série affichée sur la carte KpiCard. Retourne le Y de la ligne suivante pour que l'appelant
 // puisse continuer la mise en page sans connaître la hauteur à l'avance (nombre de séries et
 // longueur des libellés variables d'un KPI à l'autre).
-function drawSeriesAverages(doc, x, y, maxWidth, seriesList, unit) {
+function drawSeriesAverages(doc, x, y, maxWidth, seriesList) {
   const lineHeight = 13;
   let cursorX = x;
   let cursorY = y;
@@ -296,7 +310,12 @@ function drawSeriesAverages(doc, x, y, maxWidth, seriesList, unit) {
   seriesList.forEach((series) => {
     const values = series.records.map((r) => r.value);
     const average = values.length > 0 ? Number((values.reduce((sum, v) => sum + v, 0) / values.length).toFixed(2)) : null;
-    const text = `${series.label} : ${average !== null ? `${average} ${unit || ''}` : '—'}`;
+    const { unit, target, direction, custom } = series.settings;
+    const valueText = average !== null ? `${average} ${unit}`.trim() : '—';
+    // Objectif rappelé seulement pour une série paramétrée à part : celui du KPI figure déjà
+    // sous le titre de la section.
+    const targetText = custom ? ` (objectif ${direction === 'max' ? '<=' : '>='} ${target} ${unit})`.replace(/ \)$/, ')') : '';
+    const text = `${series.label} : ${valueText}${targetText}`;
     const textWidth = doc.widthOfString(text);
     const badgeWidth = 10 + textWidth + 14;
 
@@ -399,6 +418,25 @@ function ensureSpace(doc, tenantName, tenantLogo, requiredHeight) {
 }
 
 const CHART_HEIGHT = 90;
+
+// Lignes d'objectif du graphique multi-séries : celle du KPI (une seule, si au moins une série
+// la suit) + une par série paramétrée à part, à la couleur de cette série.
+function chartTargets(seriesList) {
+  const targets = [];
+  const inheriting = seriesList.find((series) => !series.settings.custom && series.settings.target !== null);
+  if (inheriting) targets.push({ value: inheriting.settings.target, color: null });
+  seriesList.forEach((series) => {
+    if (series.settings.custom) targets.push({ value: series.settings.target, color: series.color });
+  });
+  return targets;
+}
+
+// Unité de l'axe : celle des séries si elles en partagent une, sinon rien (mélanger "%" et
+// "heures" sur un même axe serait trompeur — l'unité de chaque série figure dans sa rangée).
+function sharedUnit(seriesList) {
+  const units = new Set(seriesList.map((series) => series.settings.unit));
+  return units.size === 1 ? [...units][0] : '';
+}
 const RECORD_ROWS_MAX = 12;
 
 function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
@@ -430,9 +468,15 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
 
     const sectionTop = doc.y;
     doc.font('Body-Bold').fontSize(12).fillColor(INK).text(kpi.name, PAGE_MARGIN, sectionTop, { width: CONTENT_WIDTH });
-    doc.font('Body').fontSize(9).fillColor('#555555').text(targetLine, PAGE_MARGIN, sectionTop + 16);
+    // Quand toutes les séries ont leur propre objectif, celui du KPI ne s'applique plus à aucune.
+    const allCustom = seriesList.every((series) => series.settings.custom);
+    doc
+      .font('Body')
+      .fontSize(9)
+      .fillColor('#555555')
+      .text(allCustom ? 'Objectif : propre à chaque série (voir ci-dessous)' : targetLine, PAGE_MARGIN, sectionTop + 16);
 
-    const averagesY = drawSeriesAverages(doc, PAGE_MARGIN, sectionTop + 30, CONTENT_WIDTH, seriesList, kpi.unit);
+    const averagesY = drawSeriesAverages(doc, PAGE_MARGIN, sectionTop + 30, CONTENT_WIDTH, seriesList);
 
     const chartY = averagesY + 4;
     drawMultiSeriesChart(doc, {
@@ -441,8 +485,8 @@ function drawKpiSection(doc, tenantName, tenantLogo, kpi, detailStats) {
       width: CONTENT_WIDTH,
       height: CHART_HEIGHT,
       seriesList,
-      target: kpi.target,
-      unit: kpi.unit,
+      targets: chartTargets(seriesList),
+      unit: sharedUnit(seriesList),
     });
 
     doc.y = chartY + CHART_HEIGHT + 6;

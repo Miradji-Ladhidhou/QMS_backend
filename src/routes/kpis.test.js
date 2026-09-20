@@ -254,6 +254,91 @@ describe('GET /api/kpis/report?format=xlsx — classeur Excel équivalent', () =
 // des valeurs saisies à la main sous plusieurs courbes distinctes d'un même KPI "manuel" —
 // même mécanisme que les séries import (kpi_calculation_configs), mais alimentées par
 // POST /:id/records au lieu du pipeline d'import.
+describe('Paramétrage propre à une série (unité, cible, sens)', () => {
+  async function createKpi() {
+    tenant = await createTenant();
+    const kpi = await request(app)
+      .post('/api/kpis')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Contrôle de commandes', unit: '%', target: 95, target_direction: 'min' });
+    return kpi.body;
+  }
+
+  const post = (kpiId, body) =>
+    request(app).post(`/api/kpis/${kpiId}/series`).set('Authorization', `Bearer ${tenant.admin.token}`).send(body);
+  const patch = (kpiId, seriesId, body) =>
+    request(app).patch(`/api/kpis/${kpiId}/series/${seriesId}`).set('Authorization', `Bearer ${tenant.admin.token}`).send(body);
+
+  it('sans paramétrage : unit/target/target_direction restent null (la série reprend ceux du KPI)', async () => {
+    const kpi = await createKpi();
+    const res = await post(kpi.id, { label: 'Ligne A', calc_type: 'manual' });
+    expect(res.status).toBe(201);
+    expect(res.body.unit).toBeNull();
+    expect(res.body.target).toBeNull();
+    expect(res.body.target_direction).toBeNull();
+  });
+
+  it('avec unité + cible + sens : enregistrés sur la série, GET /kpis les expose', async () => {
+    const kpi = await createKpi();
+    const res = await post(kpi.id, { label: 'Délai', calc_type: 'manual', unit: 'heures', target: 24, target_direction: 'max' });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ unit: 'heures', target_direction: 'max' });
+    expect(Number(res.body.target)).toBe(24);
+
+    const list = await request(app).get('/api/kpis').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const embedded = list.body.find((k) => k.id === kpi.id).calculation_configs.find((c) => c.id === res.body.id);
+    expect(embedded).toMatchObject({ unit: 'heures', target_direction: 'max' });
+    expect(Number(embedded.target)).toBe(24);
+  });
+
+  it('une cible à 0 est une vraie cible (pas confondue avec "absente")', async () => {
+    const kpi = await createKpi();
+    const res = await post(kpi.id, { label: 'Accidents', calc_type: 'manual', unit: 'accidents', target: 0, target_direction: 'max' });
+    expect(res.status).toBe(201);
+    expect(Number(res.body.target)).toBe(0);
+  });
+
+  it('tout-ou-rien : 400 si le paramétrage est incomplet', async () => {
+    const kpi = await createKpi();
+    const onlyUnit = await post(kpi.id, { label: 'A', calc_type: 'manual', unit: 'heures' });
+    expect(onlyUnit.status).toBe(400);
+    const noDirection = await post(kpi.id, { label: 'B', calc_type: 'manual', unit: 'heures', target: 24 });
+    expect(noDirection.status).toBe(400);
+    const noUnit = await post(kpi.id, { label: 'C', calc_type: 'manual', target: 24, target_direction: 'max' });
+    expect(noUnit.status).toBe(400);
+  });
+
+  it('400 si le sens ou la cible sont invalides', async () => {
+    const kpi = await createKpi();
+    const badDirection = await post(kpi.id, { label: 'A', calc_type: 'manual', unit: 'h', target: 1, target_direction: 'plafond' });
+    expect(badDirection.status).toBe(400);
+    const badTarget = await post(kpi.id, { label: 'B', calc_type: 'manual', unit: 'h', target: 'beaucoup', target_direction: 'max' });
+    expect(badTarget.status).toBe(400);
+  });
+
+  it('PATCH : un corps sans ces champs les laisse intacts ; des champs vides repassent la série au global', async () => {
+    const kpi = await createKpi();
+    const created = await post(kpi.id, { label: 'Délai', calc_type: 'manual', unit: 'heures', target: 24, target_direction: 'max' });
+
+    // Renommage seul (ce que fait le formulaire de recette de calcul) : paramétrage conservé.
+    const renamed = await patch(kpi.id, created.body.id, { label: 'Délai moyen', calc_type: 'manual' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.unit).toBe('heures');
+    expect(renamed.body.target_direction).toBe('max');
+
+    // Champs vides : retour aux valeurs globales du KPI.
+    const reset = await patch(kpi.id, created.body.id, { label: 'Délai moyen', calc_type: 'manual', unit: '', target: null, target_direction: '' });
+    expect(reset.status).toBe(200);
+    expect(reset.body.unit).toBeNull();
+    expect(reset.body.target).toBeNull();
+    expect(reset.body.target_direction).toBeNull();
+
+    // Et on peut le repasser en paramétrage propre.
+    const custom = await patch(kpi.id, created.body.id, { label: 'Délai moyen', calc_type: 'manual', unit: 'jours', target: 2, target_direction: 'max' });
+    expect(custom.body.unit).toBe('jours');
+  });
+});
+
 describe('KPI manuel à plusieurs séries (calc_type = "manual")', () => {
   it('POST /:id/series accepte calc_type "manual" avec juste un label', async () => {
     tenant = await createTenant();
