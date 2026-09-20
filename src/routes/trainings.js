@@ -126,8 +126,22 @@ router.get('/', async (req, res) => {
   // is_private_to_me : le formulaire d'édition (EditTrainingModal, Trainings.jsx) prend sa
   // formation directement dans cette liste, jamais un second appel — calculé ici pour la même
   // raison que can_edit sur les documents.
+  // quiz : uniquement le nombre de questions et le seuil — jamais le contenu du QCM, qui porte les
+  // bonnes réponses et que ne doit pas voir un simple membre (voir routes/trainingQuiz.js).
+  const { data: quizzes } = await supabase
+    .from('training_quizzes')
+    .select('training_id, pass_threshold, questions')
+    .eq('tenant_id', req.tenantId);
+  const quizByTraining = new Map(
+    (quizzes || []).map((quiz) => [quiz.training_id, { question_count: quiz.questions.length, pass_threshold: quiz.pass_threshold }])
+  );
+
   const withPrivacy = (items) =>
-    items.map((training) => ({ ...training, is_private_to_me: training.category?.owner_user_id === req.user.id }));
+    items.map((training) => ({
+      ...training,
+      quiz: quizByTraining.get(training.id) || null,
+      is_private_to_me: training.category?.owner_user_id === req.user.id,
+    }));
 
   if (req.userRole === 'admin') {
     return res.json(withPrivacy(data));
@@ -330,6 +344,7 @@ router.post(
     body('instructor').optional({ values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ values: 'falsy' }).trim().isLength({ max: 2000 }),
+    body('summary').optional({ values: 'falsy' }).trim().isLength({ max: 10000 }).withMessage('Le résumé ne peut pas dépasser 10 000 caractères.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
     body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
@@ -348,6 +363,7 @@ router.post(
       instructor,
       duration,
       description,
+      summary,
       category_id: categoryId,
       required_job_titles: requiredJobTitles,
     } = req.body;
@@ -363,6 +379,7 @@ router.post(
         instructor: instructor || null,
         duration: duration || null,
         description: description || null,
+        summary: summary || null,
         category_id: categoryId || null,
         required_job_titles: requiredJobTitles ? normalizeJobTitles(requiredJobTitles) : [],
       })
@@ -422,6 +439,7 @@ router.patch(
     body('instructor').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 200 }),
     body('duration').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 100 }),
     body('description').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 2000 }),
+    body('summary').optional({ nullable: true, values: 'falsy' }).trim().isLength({ max: 10000 }).withMessage('Le résumé ne peut pas dépasser 10 000 caractères.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
     body('required_job_titles').optional().custom(isValidJobTitlesArray).withMessage('Postes concernés invalides.'),
   ],
@@ -433,7 +451,7 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration', 'description', 'category_id']) {
+    for (const field of ['title', 'type', 'frequency_months', 'location', 'instructor', 'duration', 'description', 'summary', 'category_id']) {
       if (field in req.body) {
         update[field] = req.body[field] || null;
       }

@@ -1,0 +1,174 @@
+import {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  Header,
+  Footer,
+  Table,
+  TableRow,
+  TableCell,
+  AlignmentType,
+  PageNumber,
+  WidthType,
+  ShadingType,
+  VerticalAlign,
+  TabStopType,
+} from 'docx';
+import { logoImageRun } from './wordLogo.js';
+
+// Mêmes teintes neutres que les autres exports Word (voir listReportWord.js).
+const INK = '1E293B';
+const MUTED = '64748B';
+const HEADER_FILL = 'F1F5F9';
+const BORDER = 'D9D9D9';
+const GOOD = '047857';
+const BAD = 'B91C1C';
+const HEADER_WIDTH_DXA = 9026;
+
+const CELL_BORDER = { style: 'single', size: 2, color: BORDER };
+const CELL_BORDERS = { top: CELL_BORDER, bottom: CELL_BORDER, left: CELL_BORDER, right: CELL_BORDER };
+
+function formatDate(value) {
+  return value ? new Date(value).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : '—';
+}
+
+function formatDateTime(value) {
+  return value ? new Date(value).toLocaleString('fr-FR') : '—';
+}
+
+function cell(text, { header = false, bold = false, color, widthPct, align } = {}) {
+  return new TableCell({
+    width: widthPct ? { size: widthPct, type: WidthType.PERCENTAGE } : undefined,
+    shading: header ? { type: ShadingType.CLEAR, fill: HEADER_FILL } : undefined,
+    verticalAlign: VerticalAlign.CENTER,
+    borders: CELL_BORDERS,
+    margins: { top: 60, bottom: 60, left: 100, right: 100 },
+    children: [
+      new Paragraph({
+        alignment: align,
+        children: [new TextRun({ text, bold: header || bold, color: color || (header ? INK : undefined), size: 20 })],
+      }),
+    ],
+  });
+}
+
+function identityTable(rows) {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: rows.map(
+      ([label, value, valueColor]) =>
+        new TableRow({ children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70, color: valueColor, bold: !!valueColor })] })
+    ),
+  });
+}
+
+function questionBlock(question, index, detailEntry) {
+  const selected = new Set(detailEntry?.selected_option_ids || []);
+  const isCorrect = detailEntry?.is_correct === true;
+
+  const title = new Paragraph({
+    spacing: { before: 280, after: 80 },
+    keepNext: true,
+    children: [
+      new TextRun({ text: `Question ${index + 1} — ${question.text}`, bold: true, size: 22, color: INK }),
+      new TextRun({ text: `   ${isCorrect ? 'Correcte' : 'Incorrecte'}`, bold: true, size: 20, color: isCorrect ? GOOD : BAD }),
+    ],
+  });
+
+  const table = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({
+        tableHeader: true,
+        children: [
+          cell('Réponse proposée', { header: true, widthPct: 60 }),
+          cell('Cochée par la personne', { header: true, widthPct: 20, align: AlignmentType.CENTER }),
+          cell('Bonne réponse', { header: true, widthPct: 20, align: AlignmentType.CENTER }),
+        ],
+      }),
+      ...question.options.map(
+        (option) =>
+          new TableRow({
+            cantSplit: true,
+            children: [
+              cell(option.label, { widthPct: 60 }),
+              cell(selected.has(option.id) ? 'Oui' : '', { widthPct: 20, align: AlignmentType.CENTER, bold: selected.has(option.id) }),
+              cell(option.is_correct ? 'Oui' : '', { widthPct: 20, align: AlignmentType.CENTER, bold: option.is_correct, color: option.is_correct ? GOOD : undefined }),
+            ],
+          })
+      ),
+    ],
+  });
+
+  return [title, table];
+}
+
+// Compte rendu d'un passage de QCM, destiné à être conservé pour les audits : le QCM tel qu'il
+// était à l'envoi (quiz_snapshot), les réponses de la personne, la correction question par
+// question et le taux de réussite. attempt : ligne de training_quiz_attempts terminée.
+export async function buildTrainingQuizWord({ tenantName, tenantLogo, trainingTitle, sessionDate, attempt }) {
+  const questions = attempt.quiz_snapshot || [];
+  const detailByQuestion = new Map((attempt.answers || []).map((entry) => [entry.question_id, entry]));
+  const passed = attempt.passed === true;
+
+  const logo = logoImageRun(tenantLogo);
+  const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — QCM ${trainingTitle}`, size: 16, color: MUTED });
+  const header = logo
+    ? new Paragraph({
+        spacing: { after: 120 },
+        tabStops: [{ type: TabStopType.RIGHT, position: HEADER_WIDTH_DXA }],
+        children: [logo, new TextRun({ text: '\t', size: 16 }), headerTitle],
+      })
+    : new Paragraph({ alignment: AlignmentType.RIGHT, children: [headerTitle] });
+
+  const body = [
+    new Paragraph({
+      spacing: { after: 60 },
+      children: [new TextRun({ text: 'Évaluation de formation — QCM', bold: true, size: 32, color: INK })],
+    }),
+    new Paragraph({
+      spacing: { after: 200 },
+      children: [new TextRun({ text: trainingTitle, size: 24, color: MUTED })],
+    }),
+    identityTable([
+      ['Personne évaluée', attempt.person_name || '—'],
+      ['Email', attempt.email],
+      ['Formation', trainingTitle],
+      ['Session', sessionDate ? formatDate(sessionDate) : '—'],
+      ['QCM envoyé le', formatDateTime(attempt.sent_at)],
+      ['QCM passé le', formatDateTime(attempt.completed_at)],
+      ['Résultat', `${attempt.correct_count} / ${attempt.total_count} bonnes réponses — ${attempt.score_percent} %`],
+      ['Seuil de réussite', `${attempt.pass_threshold} %`],
+      ['Conclusion', passed ? 'RÉUSSI' : 'NON RÉUSSI', passed ? GOOD : BAD],
+    ]),
+    new Paragraph({ spacing: { before: 320, after: 40 }, children: [new TextRun({ text: 'Détail des questions', bold: true, size: 26, color: INK })] }),
+    ...questions.flatMap((question, index) => questionBlock(question, index, detailByQuestion.get(question.id))),
+  ];
+
+  const doc = new Document({
+    sections: [
+      {
+        headers: { default: new Header({ children: [header] }) },
+        footers: {
+          default: new Footer({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new TextRun({ text: `Référence QCM-${attempt.id.slice(0, 8).toUpperCase()}  ·  Page `, size: 16, color: MUTED }),
+                  new TextRun({ children: [PageNumber.CURRENT], size: 16, color: MUTED }),
+                  new TextRun({ text: ' / ', size: 16, color: MUTED }),
+                  new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 16, color: MUTED }),
+                ],
+              }),
+            ],
+          }),
+        },
+        children: body,
+      },
+    ],
+  });
+
+  return Packer.toBuffer(doc);
+}

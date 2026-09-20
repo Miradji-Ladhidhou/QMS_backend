@@ -34,3 +34,17 @@ export const apiLimiter = rateLimit({
   skip: skipInTests,
   message: { error: 'Trop de requêtes, réessayez dans quelques minutes.' },
 });
+
+// Pages publiques du QCM de formation (routes/publicQuiz.js), ouvertes sans compte depuis un lien
+// email. Plafond par IP volontairement large : toute une équipe passe souvent le QCM depuis le
+// même réseau d'entreprise (donc la même IP). Ce n'est pas la protection principale — jeton de
+// 256 bits + verrouillage du lien après quelques emails erronés — seulement un filet contre un
+// script qui martèlerait ces routes.
+export const publicQuizLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTests,
+  message: { error: 'Trop de requêtes, réessayez dans quelques minutes.' },
+});

@@ -746,6 +746,51 @@ create table training_sessions (
 -- déplacement explicite (voir scripts/add-training-sessions-table.sql).
 alter table training_records add column session_id uuid references training_sessions (id) on delete set null;
 
+-- Résumé de la formation (texte lu par la personne avant le QCM) — voir training_quizzes.
+alter table trainings add column summary text;
+
+-- Un QCM par formation, réutilisable pour toutes ses sessions et modifiable si le contenu évolue.
+-- questions : [{ id, text, options: [{ id, label, is_correct }] }] — validé côté API
+-- (services/trainingQuiz.js#validateQuestions). pass_threshold : % minimal de bonnes réponses.
+create table training_quizzes (
+  id             uuid primary key default gen_random_uuid(),
+  tenant_id      uuid not null references tenants (id) on delete cascade,
+  training_id    uuid not null unique references trainings (id) on delete cascade,
+  pass_threshold integer not null default 80 check (pass_threshold between 1 and 100),
+  questions      jsonb not null default '[]'::jsonb,
+  updated_by     uuid references users (id) on delete set null,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+-- Un passage de QCM = un lien envoyé par email à une personne pour une réalisation (valable 48 h,
+-- une seule tentative par lien ; renvoyer un lien crée un nouveau passage, les anciens restent
+-- conservés). quiz_snapshot/pass_threshold figent le QCM tel qu'il était à l'envoi : modifier le
+-- QCM ensuite ne réécrit jamais un passage déjà fait (pièce d'audit). Seul le hash du jeton est
+-- stocké, jamais le jeton lui-même. failed_email_attempts : verrouille le lien après trop
+-- d'emails erronés saisis sur la page publique.
+create table training_quiz_attempts (
+  id                    uuid primary key default gen_random_uuid(),
+  tenant_id             uuid not null references tenants (id) on delete cascade,
+  training_id           uuid not null references trainings (id) on delete cascade,
+  record_id             uuid not null references training_records (id) on delete cascade,
+  token_hash            text not null unique,
+  email                 text not null,
+  person_name           text,
+  quiz_snapshot         jsonb not null,
+  pass_threshold        integer not null,
+  sent_by               uuid references users (id) on delete set null,
+  sent_at               timestamptz not null default now(),
+  expires_at            timestamptz not null,
+  failed_email_attempts integer not null default 0,
+  completed_at          timestamptz,
+  answers               jsonb,
+  correct_count         integer,
+  total_count           integer,
+  score_percent         numeric(5, 2),
+  passed                boolean
+);
+
 -- Intitulés de poste (job_title, déjà libre sur users/employees) concernés par cette formation
 -- — voir buildMatrix dans routes/trainings.js. Tableau vide (défaut) = s'applique à tout le
 -- monde, comportement identique à avant cette colonne : jusqu'ici TOUTE formation croisait
@@ -1740,6 +1785,10 @@ create index idx_training_records_session_id on training_records (session_id);
 
 create index idx_training_sessions_tenant_id on training_sessions (tenant_id);
 create index idx_training_sessions_training_id on training_sessions (training_id);
+create index idx_training_quizzes_tenant_id on training_quizzes (tenant_id);
+create index idx_training_quiz_attempts_tenant_id on training_quiz_attempts (tenant_id);
+create index idx_training_quiz_attempts_training_id on training_quiz_attempts (training_id);
+create index idx_training_quiz_attempts_record_id on training_quiz_attempts (record_id);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
 create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
@@ -2183,6 +2232,8 @@ alter table supplier_evaluations enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
 alter table training_sessions enable row level security;
+alter table training_quizzes enable row level security;
+alter table training_quiz_attempts enable row level security;
 alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
@@ -2380,6 +2431,16 @@ create policy training_records_isolation on training_records
   with check (tenant_id = auth_tenant_id());
 
 create policy training_sessions_isolation on training_sessions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy training_quizzes_isolation on training_quizzes
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy training_quiz_attempts_isolation on training_quiz_attempts
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
