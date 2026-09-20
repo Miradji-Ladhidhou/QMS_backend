@@ -101,3 +101,18 @@ export async function fetchAuditorQualifications({ tenantId, userId, userRole })
   const today = new Date().toISOString().slice(0, 10);
   return { trainings, byUser: resolveQualifications({ trainings, records: records || [], attempts, today }) };
 }
+
+const STATUS_TEXT = { qualified: 'Qualifié', expired: 'À recycler', failed: 'Non qualifié (évaluation non satisfaisante)', none: 'Non qualifié (aucune formation suivie)' };
+
+// Phrase de qualification d'un auditeur pour les documents (fiche/export d'audit) : statut + formation
+// d'origine et dates. `trainings` vide = aucune formation qualifiante désignée par l'entreprise.
+export function describeQualificationForDocument(qualification, trainings) {
+  if (trainings.length === 0) return 'Non évaluée (aucune formation d\'auditeur interne désignée)';
+  const status = qualification?.status || 'none';
+  if (status === 'none') return STATUS_TEXT.none;
+  const date = (value) => (value ? new Date(`${value}T12:00:00`).toLocaleDateString('fr-FR') : '');
+  const parts = [`« ${qualification.training_title} » du ${date(qualification.completed_at)}`];
+  if (qualification.next_due_date) parts.push(`échéance ${date(qualification.next_due_date)}`);
+  if (qualification.quiz_score_percent !== null && qualification.quiz_score_percent !== undefined) parts.push(`QCM ${qualification.quiz_score_percent} %`);
+  return `${STATUS_TEXT[status]} — ${parts.join(', ')}`;
+}

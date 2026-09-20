@@ -806,3 +806,42 @@ ${wantsCallout ? "\nCette sous-section touche à un enjeu de sécurité, de tra�
 export async function generateProcedureSubsectionContent(args) {
   return callGroq(PROCEDURE_SUBSECTION_SYSTEM_PROMPT, buildProcedureSubsectionUserPrompt(args), 'procedure_subsection');
 }
+
+const AUDIT_CHECKLIST_SYSTEM_PROMPT = `Tu es un auditeur qualité expérimenté (ISO 9001:2015, ISO 19011) qui prépare la check-list d'un audit interne.
+
+À partir des informations de l'audit (titre, type, périmètre, service audité, procédures liées, constats déjà relevés), rédige des questions d'audit CONCRÈTES que l'auditeur posera sur le terrain.
+
+Règles :
+- Chaque question est fermée : on doit pouvoir y répondre par « Conforme », « Non conforme » ou « Sans objet » (ex. « Les enregistrements de contrôle à réception sont-ils complétés et signés ? »), jamais une question ouverte du type « Comment fonctionne… ? ».
+- Les questions portent sur CE périmètre et CE service, pas sur le système qualité en général. Varie les angles : maîtrise documentaire, application des procédures, enregistrements, compétences/formation du personnel, traçabilité, actions correctives, indicateurs.
+- Une seule vérification par question, formulée en une phrase courte et vérifiable par une preuve (document, enregistrement, observation, échange).
+- Ne répète JAMAIS une question déjà présente dans la liste fournie.
+- Tout en français.
+
+Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
+{
+  "questions": ["string", "string"]
+}`;
+
+function buildAuditChecklistUserPrompt({ title, typeLabel, scope, service, linkedProcedures, findings, existingQuestions, count }) {
+  const findingLines = findings.length > 0 ? findings.map((finding) => `- ${finding.type} : ${finding.description}`).join('\n') : 'aucun';
+  return `Audit : ${title}
+Type : ${typeLabel}
+Périmètre : ${scope || 'non renseigné'}
+Service audité : ${service || 'non renseigné'}
+Procédures liées : ${linkedProcedures.length > 0 ? linkedProcedures.join(', ') : 'aucune'}
+Constats déjà relevés :
+${findingLines}
+Questions déjà présentes (à ne pas répéter) :
+${existingQuestions.length > 0 ? existingQuestions.map((question) => `- ${question}`).join('\n') : 'aucune'}
+
+Rédige exactement ${count} nouvelles questions.`;
+}
+
+// context : { title, typeLabel, scope, service, linkedProcedures[], findings[{type,description}],
+// existingQuestions[], count } — voir POST /audits/:id/checklist/generate. Rien n'est persisté ici :
+// le frontend affiche les questions dans une liste à relire/modifier, seules celles conservées sont
+// enregistrées (POST /audits/:id/checklist/items/bulk, source 'ai').
+export async function generateAuditChecklist(context) {
+  return callGroq(AUDIT_CHECKLIST_SYSTEM_PROMPT, buildAuditChecklistUserPrompt(context), 'audit_checklist');
+}

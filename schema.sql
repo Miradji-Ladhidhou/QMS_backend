@@ -394,6 +394,24 @@ create table audit_findings (
   updated_at     timestamptz not null default now()
 );
 
+-- Check-list (QCM) d'audit : questions posées par l'auditeur, réponse Conforme / Non conforme / Sans
+-- objet + observation. source : saisie à la main ou générée par l'IA (puis relue). Le taux de
+-- conformité se calcule sur les réponses données, « sans objet » exclues.
+create table audit_checklist_items (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  audit_id    uuid not null references audits (id) on delete cascade,
+  position    integer not null,
+  question    text not null,
+  answer      text check (answer in ('conform', 'nonconform', 'na')),
+  observation text,
+  answered_by uuid references users (id) on delete set null,
+  answered_at timestamptz,
+  source      text not null default 'manual' check (source in ('manual', 'ai')),
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
 -- Constat d'audit à l'origine de cette CAPA (voir aussi audit_findings.linked_capa_id,
 -- l'inverse) — même raisonnement que qqoqccp_analysis_id ci-dessus : audit_findings est
 -- définie juste au-dessus, donc ajoutée après coup ici plutôt qu'inline dans capas.
@@ -1813,6 +1831,8 @@ create index idx_training_quiz_attempts_tenant_id on training_quiz_attempts (ten
 create index idx_training_quiz_attempts_training_id on training_quiz_attempts (training_id);
 create index idx_training_quiz_attempts_record_id on training_quiz_attempts (record_id);
 create index idx_training_instructor_signatures_tenant_id on training_instructor_signatures (tenant_id);
+create index idx_audit_checklist_items_tenant_id on audit_checklist_items (tenant_id);
+create index idx_audit_checklist_items_audit_id on audit_checklist_items (audit_id);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
 create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
@@ -2259,6 +2279,7 @@ alter table training_sessions enable row level security;
 alter table training_quizzes enable row level security;
 alter table training_quiz_attempts enable row level security;
 alter table training_instructor_signatures enable row level security;
+alter table audit_checklist_items enable row level security;
 alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
@@ -2471,6 +2492,11 @@ create policy training_quiz_attempts_isolation on training_quiz_attempts
   with check (tenant_id = auth_tenant_id());
 
 create policy training_instructor_signatures_isolation on training_instructor_signatures
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy audit_checklist_items_isolation on audit_checklist_items
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

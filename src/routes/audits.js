@@ -5,7 +5,11 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
-import { fetchAuditorQualifications } from '../services/auditorQualification.js';
+import { fetchAuditorQualifications, describeQualificationForDocument } from '../services/auditorQualification.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { buildAuditPdf } from '../services/auditPdf.js';
+import { buildAuditWord } from '../services/auditWord.js';
+import { buildAuditXlsx } from '../services/auditXlsx.js';
 
 const router = Router();
 
@@ -53,6 +57,89 @@ router.get('/', async (req, res) => {
 router.get('/auditor-qualifications', async (req, res) => {
   const { trainings, byUser } = await fetchAuditorQualifications({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole });
   res.json({ trainings, by_user: byUser });
+});
+
+// Données d'un audit pour ses exports (PDF, Word, Excel) : l'audit, ses constats, sa check-list, ses
+// procédures liées, le nom/logo de l'entreprise et la qualification de l'auditeur (preuve de compétence,
+// ISO 9001 §9.2). Répond 404 lui-même et retourne null si l'audit est introuvable ou inaccessible.
+async function loadAuditForExport(req, res) {
+  const { data: audit, error } = await supabase.from('audits').select(AUDIT_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
+  if (error || !audit) {
+    res.status(404).json({ error: 'Audit introuvable.' });
+    return null;
+  }
+
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: audit.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) {
+    res.status(404).json({ error: 'Audit introuvable.' });
+    return null;
+  }
+
+  const [{ data: findings }, { data: checklistItems }, { data: procedureLinks }, { data: tenant }, qualifications] = await Promise.all([
+    supabase
+      .from('audit_findings')
+      .select('*, linked_capa:capas!audit_findings_linked_capa_id_fkey(id, number, title, status)')
+      .eq('tenant_id', req.tenantId)
+      .eq('audit_id', audit.id)
+      .order('created_at', { ascending: true }),
+    supabase
+      .from('audit_checklist_items')
+      .select('id, position, question, answer, observation, answered_at, source, answerer:users!audit_checklist_items_answered_by_fkey(id, full_name)')
+      .eq('tenant_id', req.tenantId)
+      .eq('audit_id', audit.id)
+      .order('position', { ascending: true }),
+    supabase.from('procedure_audit_links').select('procedure:procedures(id, number, title)').eq('tenant_id', req.tenantId).eq('audit_id', audit.id),
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    fetchAuditorQualifications({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole }),
+  ]);
+
+  return {
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    audit,
+    findings: findings || [],
+    checklistItems: checklistItems || [],
+    linkedProcedures: (procedureLinks || []).map((link) => link.procedure).filter(Boolean),
+    qualificationText: audit.lead_auditor ? describeQualificationForDocument(qualifications.byUser[audit.lead_auditor], qualifications.trainings) : null,
+  };
+}
+
+// GET /api/audits/:id/pdf — fiche imprimable : faits, qualification de l'auditeur, périmètre, conclusion,
+// constats, check-list (réponses et taux de conformité), procédures liées.
+router.get('/:id/pdf', async (req, res) => {
+  const data = await loadAuditForExport(req, res);
+  if (!data) return;
+  const pdfBuffer = await buildAuditPdf(data);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="audit.pdf"');
+  res.send(pdfBuffer);
+});
+
+// GET /api/audits/:id/word — même contenu que la fiche PDF, en document Word modifiable.
+router.get('/:id/word', async (req, res) => {
+  const data = await loadAuditForExport(req, res);
+  if (!data) return;
+  const { data: me } = await supabase.from('users').select('full_name').eq('id', req.user.id).single();
+  const buffer = await buildAuditWord({ ...data, generatedBy: me?.full_name });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', 'attachment; filename="audit.docx"');
+  res.send(buffer);
+});
+
+// GET /api/audits/:id/xlsx — classeur : onglets Audit, Constats, Check-list (une ligne par question).
+router.get('/:id/xlsx', async (req, res) => {
+  const data = await loadAuditForExport(req, res);
+  if (!data) return;
+  const buffer = await buildAuditXlsx(data);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="audit.xlsx"');
+  res.send(Buffer.from(buffer));
 });
 
 // GET /api/audits/:id — détail avec ses constats (findings), CAPA liée résolue pour chacun.
