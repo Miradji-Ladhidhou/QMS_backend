@@ -71,61 +71,51 @@ export function buildTrainingCertificatePdf({
 
     // Décalés de +20 vers le bas par rapport à l'ancien logo (56pt) : le logo agrandi (80pt)
     // chevauchait sinon le nom de l'entreprise juste en dessous.
-    doc.fillColor(MUTED).fontSize(11).text((tenantName || 'Entreprise').toUpperCase(), MARGIN, MARGIN + 104, {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-      characterSpacing: 1.5,
-    });
+    // Tout le texte est centré sur la page. x est passé explicitement à chaque appel : pdfkit garde
+    // le x du dernier text() positionné, donc un appel sans x qui suit un bloc à marge (titre,
+    // description) se retrouvait décalé vers la droite au lieu d'être centré.
+    const centered = (text, { color = INK, size = 12, inset = 0, y = doc.y, ...options } = {}) => {
+      doc.fillColor(color).fontSize(size).text(text, MARGIN + inset, y, {
+        width: PAGE_WIDTH - (MARGIN + inset) * 2,
+        align: 'center',
+        ...options,
+      });
+    };
 
-    doc.fillColor(INK).fontSize(30).text('Certificat de réussite', MARGIN, MARGIN + 138, {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
+    // Décalés de +20 vers le bas par rapport à l'ancien logo (56pt) : le logo agrandi (80pt)
+    // chevauchait sinon le nom de l'entreprise juste en dessous.
+    centered((tenantName || 'Entreprise').toUpperCase(), { color: MUTED, size: 11, y: MARGIN + 104, characterSpacing: 1.5 });
+    centered('Certificat de réussite', { size: 30, y: MARGIN + 138 });
 
     doc.moveDown(1.1);
-    doc.fillColor(INK).fontSize(12).text('Ce certificat est décerné à', {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
+    centered('Ce certificat est décerné à');
 
     doc.moveDown(0.3);
-    doc.fillColor(INK).fontSize(23).text(personName, {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
+    centered(personName, { size: 23, inset: 60 });
 
     doc.moveDown(0.5);
-    doc.fillColor(INK).fontSize(12).text('pour avoir suivi avec succès la formation', {
-      width: PAGE_WIDTH - MARGIN * 2,
-      align: 'center',
-    });
+    centered('pour avoir suivi avec succès la formation');
 
     doc.moveDown(0.25);
-    doc.fillColor(INK).fontSize(16).text(trainingTitle, MARGIN + 60, doc.y, {
-      width: PAGE_WIDTH - (MARGIN + 60) * 2,
-      align: 'center',
-    });
+    centered(trainingTitle, { size: 16, inset: 60 });
 
     doc.moveDown(0.5);
-    doc.fillColor(MUTED).fontSize(10).text(
+    centered(
       `Type : ${trainingType || NOT_SET}  ·  Durée : ${duration || NOT_SET}  ·  Formateur : ${instructor || NOT_SET}  ·  Lieu : ${location || NOT_SET}`,
-      { width: PAGE_WIDTH - MARGIN * 2, align: 'center' }
+      { color: MUTED, size: 10, inset: 20 }
     );
 
     if (description) {
       doc.moveDown(0.4);
-      doc
-        .fillColor(MUTED)
-        .fontSize(9)
-        .text(description, MARGIN + 100, doc.y, { width: PAGE_WIDTH - (MARGIN + 100) * 2, align: 'center' });
+      centered(description, { color: MUTED, size: 9, inset: 100 });
     }
 
     doc.moveDown(0.6);
-    doc.fillColor(MUTED).fontSize(11).text(
+    centered(
       nextDueDate
         ? `Réalisée le ${formatDate(completedAt)} — renouvellement à prévoir avant le ${formatDate(nextDueDate)}`
         : `Réalisée le ${formatDate(completedAt)}`,
-      { width: PAGE_WIDTH - MARGIN * 2, align: 'center' }
+      { color: MUTED, size: 11, inset: 20 }
     );
 
     // Ligne de signature en bas, façon diplôme papier.
@@ -137,17 +127,13 @@ export function buildTrainingCertificatePdf({
       .strokeColor(GOLD)
       .lineWidth(1)
       .stroke();
-    doc.fillColor(MUTED).fontSize(9).text(tenantName || 'Entreprise', PAGE_WIDTH / 2 - signatureWidth / 2, signatureY + 6, {
-      width: signatureWidth,
-      align: 'center',
-    });
+    centered(tenantName || 'Entreprise', { color: MUTED, size: 9, y: signatureY + 6 });
 
-    // Référence + date d'émission, discrètes, en pied de page — traçabilité de l'audit.
-    doc.fillColor(MUTED).fontSize(7);
-    doc.text(certificateReference(recordId), MARGIN + 16, PAGE_HEIGHT - MARGIN - 20);
-    doc.text(`Émis le ${formatDateTime(new Date())}`, MARGIN, PAGE_HEIGHT - MARGIN - 20, {
-      width: PAGE_WIDTH - MARGIN * 2 - 16,
-      align: 'right',
+    // Référence + date d'émission, discrètes, centrées en pied de page — traçabilité de l'audit.
+    centered(`${certificateReference(recordId)}  ·  Émis le ${formatDateTime(new Date())}`, {
+      color: MUTED,
+      size: 7,
+      y: PAGE_HEIGHT - MARGIN - 20,
     });
 
     doc.end();
