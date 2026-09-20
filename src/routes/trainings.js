@@ -31,6 +31,21 @@ function addMonths(dateStr, months) {
   return date.toISOString().slice(0, 10);
 }
 
+// Crée la session qui matérialise cet événement collectif (voir schema.sql#training_sessions)
+// — appelée par POST /:id/records ET /:id/records/bulk, pour que toute nouvelle réalisation,
+// individuelle ou groupée, appartienne toujours à une session dès sa création. Retourne null en
+// cas d'échec plutôt que de lever : l'appelant décide comment réagir (ici, faire échouer
+// l'enregistrement de la réalisation elle-même, jamais la créer orpheline silencieusement).
+async function createTrainingSession({ tenantId, trainingId, sessionDate, createdBy }) {
+  const { data, error } = await supabase
+    .from('training_sessions')
+    .insert({ tenant_id: tenantId, training_id: trainingId, session_date: sessionDate, created_by: createdBy })
+    .select('id, session_date')
+    .single();
+  if (error) return null;
+  return data;
+}
+
 function isValidJobTitlesArray(value) {
   return Array.isArray(value) && value.every((entry) => typeof entry === 'string' && entry.trim().length > 0);
 }
@@ -99,7 +114,7 @@ router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('trainings')
     .select(
-      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted, owner_user_id)'
+      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, evaluation_result, evaluation_notes, session:training_sessions(id, session_date), user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted, owner_user_id)'
     )
     .eq('tenant_id', req.tenantId)
     .order('title', { ascending: true });
@@ -528,6 +543,19 @@ router.post(
     const completedAt = req.body.completed_at || new Date().toISOString().slice(0, 10);
     const nextDueDate = training.frequency_months ? addMonths(completedAt, training.frequency_months) : null;
 
+    // Chaque réalisation, même isolée, appartient dès sa création à sa propre session (voir
+    // createTrainingSession) — une "session de 1" ici, regroupable ensuite avec d'autres via
+    // PATCH /:id/records/:recordId#session_id.
+    const session = await createTrainingSession({
+      tenantId: req.tenantId,
+      trainingId: training.id,
+      sessionDate: completedAt,
+      createdBy: req.user.id,
+    });
+    if (!session) {
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement de la réalisation." });
+    }
+
     const { data, error } = await supabase
       .from('training_records')
       .insert({
@@ -538,11 +566,15 @@ router.post(
         completed_at: completedAt,
         next_due_date: nextDueDate,
         certificate_url: certificateUrl || null,
+        session_id: session.id,
       })
-      .select('*, user:users(id, full_name), employee:employees(id, full_name)')
+      .select('*, session:training_sessions(id, session_date), user:users(id, full_name), employee:employees(id, full_name)')
       .single();
 
     if (error) {
+      // Session désormais orpheline (0 réalisation) — jamais laissée derrière un échec, pour
+      // ne pas accumuler des sessions vides à chaque doublon/erreur de saisie.
+      await supabase.from('training_sessions').delete().eq('id', session.id);
       // Violation de training_records_user_unique/_employee_unique (voir schema.sql) : déjà
       // enregistré pour cette personne, cette formation, cette date.
       if (error.code === '23505') {
@@ -641,12 +673,26 @@ router.post(
       });
     }
 
+    // Une session par appel bulk : c'est exactement l'événement collectif que ce champ était
+    // déjà censé représenter (voir le commentaire de la route ci-dessus) — désormais
+    // matérialisé, pas juste implicite via completed_at partagé.
+    const session = await createTrainingSession({
+      tenantId: req.tenantId,
+      trainingId: training.id,
+      sessionDate: completedAt,
+      createdBy: req.user.id,
+    });
+    if (!session) {
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement des réalisations." });
+    }
+
     const { data, error } = await supabase
       .from('training_records')
-      .insert(rows)
-      .select('*, user:users(id, full_name), employee:employees(id, full_name)');
+      .insert(rows.map((row) => ({ ...row, session_id: session.id })))
+      .select('*, session:training_sessions(id, session_date), user:users(id, full_name), employee:employees(id, full_name)');
 
     if (error) {
+      await supabase.from('training_sessions').delete().eq('id', session.id);
       return res.status(500).json({ error: "Erreur lors de l'enregistrement des réalisations." });
     }
 
@@ -667,6 +713,8 @@ router.patch(
     body('certificate_url').optional({ values: 'falsy' }).trim(),
     body('evaluation_result').optional({ nullable: true }).isBoolean().withMessage('Valeur invalide.'),
     body('evaluation_notes').optional({ values: 'falsy' }).trim(),
+    body('session_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Session invalide.'),
+    body('new_session_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de session invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -674,11 +722,17 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    if (req.body.session_id && req.body.new_session_date) {
+      return res.status(400).json({ error: 'Choisissez soit une session existante, soit une nouvelle date, pas les deux.' });
+    }
+
     if (
       !('completed_at' in req.body) &&
       !('certificate_url' in req.body) &&
       !('evaluation_result' in req.body) &&
-      !('evaluation_notes' in req.body)
+      !('evaluation_notes' in req.body) &&
+      !('session_id' in req.body) &&
+      !req.body.new_session_date
     ) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
@@ -706,6 +760,40 @@ router.patch(
     }
     if ('evaluation_result' in req.body) update.evaluation_result = req.body.evaluation_result;
     if ('evaluation_notes' in req.body) update.evaluation_notes = req.body.evaluation_notes || null;
+
+    // Déplacer vers une session existante — doit appartenir à CETTE formation (pas de session
+    // d'une autre formation, ce serait incohérent avec le regroupement affiché côté écran).
+    if ('session_id' in req.body && req.body.session_id) {
+      const { data: targetSession, error: targetSessionError } = await supabase
+        .from('training_sessions')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('training_id', req.params.id)
+        .eq('id', req.body.session_id)
+        .maybeSingle();
+      if (targetSessionError || !targetSession) {
+        return res.status(404).json({ error: 'Session introuvable.' });
+      }
+      update.session_id = targetSession.id;
+    } else if ('session_id' in req.body) {
+      // session_id explicitement vide/null : détache de sa session actuelle ("sans session").
+      update.session_id = null;
+    }
+
+    // Déplacer vers une NOUVELLE session, créée à la volée pour cette date — un seul appel au
+    // lieu d'un aller-retour "créer la session" puis "déplacer la réalisation" côté frontend.
+    if (req.body.new_session_date) {
+      const newSession = await createTrainingSession({
+        tenantId: req.tenantId,
+        trainingId: req.params.id,
+        sessionDate: req.body.new_session_date,
+        createdBy: req.user.id,
+      });
+      if (!newSession) {
+        return res.status(500).json({ error: 'Erreur lors de la création de la session.' });
+      }
+      update.session_id = newSession.id;
+    }
 
     if ('evaluation_result' in update && update.evaluation_result !== null) {
       // Même règle que CAPA/Réclamations : un verdict d'efficacité (true ou false) sans
@@ -739,7 +827,7 @@ router.patch(
       .eq('tenant_id', req.tenantId)
       .eq('training_id', req.params.id)
       .eq('id', req.params.recordId)
-      .select('*, user:users(id, full_name), employee:employees(id, full_name)')
+      .select('*, session:training_sessions(id, session_date), user:users(id, full_name), employee:employees(id, full_name)')
       .single();
 
     if (error || !data) {

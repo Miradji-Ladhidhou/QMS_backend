@@ -724,6 +724,28 @@ create unique index training_records_employee_unique
 alter table training_records add column evaluation_result boolean;
 alter table training_records add column evaluation_notes text;
 
+-- Événement collectif (une date, un groupe de personnes formées ensemble) qui regroupe des
+-- training_records — jusqu'ici seule completed_at partagée entre plusieurs lignes distinguait
+-- implicitement "cette réalisation faisait partie du même événement", sans rien pour le
+-- matérialiser ni le nommer (voir POST /trainings/:id/records/bulk, qui crée maintenant
+-- automatiquement sa session). session_date reste une donnée d'affichage/regroupement, jamais
+-- la source de vérité de next_due_date : training_records.completed_at garde son rôle exact
+-- (calcul de renouvellement, buildMatrix, exports, certificats) — déplacer une réalisation
+-- dans une session ne modifie jamais sa date de réalisation individuelle.
+create table training_sessions (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null references tenants (id) on delete cascade,
+  training_id  uuid not null references trainings (id) on delete cascade,
+  session_date date not null,
+  created_by   uuid references users (id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+-- on delete set null (pas cascade) : supprimer une session (aucune UI de suppression prévue,
+-- mais par sécurité) ne doit jamais supprimer les réalisations qu'elle contenait. Nullable :
+-- les réalisations déjà en base au moment de cette migration restent "sans session" jusqu'à un
+-- déplacement explicite (voir scripts/add-training-sessions-table.sql).
+alter table training_records add column session_id uuid references training_sessions (id) on delete set null;
+
 -- Intitulés de poste (job_title, déjà libre sur users/employees) concernés par cette formation
 -- — voir buildMatrix dans routes/trainings.js. Tableau vide (défaut) = s'applique à tout le
 -- monde, comportement identique à avant cette colonne : jusqu'ici TOUTE formation croisait
@@ -1705,6 +1727,10 @@ create index idx_training_records_training_id on training_records (training_id);
 create index idx_training_records_user_id on training_records (user_id);
 create index idx_training_records_employee_id on training_records (employee_id);
 create index idx_training_records_next_due_date on training_records (next_due_date);
+create index idx_training_records_session_id on training_records (session_id);
+
+create index idx_training_sessions_tenant_id on training_sessions (tenant_id);
+create index idx_training_sessions_training_id on training_sessions (training_id);
 
 create index idx_kpi_folders_tenant_id on kpi_folders (tenant_id);
 create index idx_kpi_folders_parent_id on kpi_folders (parent_id);
@@ -2147,6 +2173,7 @@ alter table suppliers enable row level security;
 alter table supplier_evaluations enable row level security;
 alter table trainings enable row level security;
 alter table training_records enable row level security;
+alter table training_sessions enable row level security;
 alter table kpi_folders enable row level security;
 alter table kpis enable row level security;
 alter table kpi_records enable row level security;
@@ -2339,6 +2366,11 @@ create policy trainings_isolation on trainings
   with check (tenant_id = auth_tenant_id());
 
 create policy training_records_isolation on training_records
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy training_sessions_isolation on training_sessions
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
