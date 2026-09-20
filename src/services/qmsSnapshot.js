@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { fetchAuditorQualifications } from './auditorQualification.js';
+import { KPI_EVALUATION_SELECT, evaluateKpiSeries, meetsTarget, offTargetSeries } from './kpiSeriesEvaluation.js';
 
 // Photo chiffrée de l'état du SMQ, tenant-wide (pas de scope par service : une revue de
 // direction concerne l'entreprise dans son ensemble) — utilisée pour figer le snapshot d'une
@@ -75,32 +76,15 @@ async function countTrainingsToRenew(tenantId) {
   return count;
 }
 
-// Même fenêtre que routes/dashboard.js#KPI_RECENT_WINDOW, Kpis.jsx et kpiReportPdf.js : le
-// statut hors objectif reflète les relevés RÉCENTS, jamais toute la vie du KPI — sinon
-// l'instantané d'une revue de direction pourrait contredire ce que montre l'app elle-même.
-const KPI_RECENT_WINDOW = 6;
-
-// Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js), déjà dupliqué dans
-// kpiReportPdf.js et dashboard.js pour la même raison.
+// Le statut hors objectif reflète les relevés RÉCENTS (fenêtre de kpiSeriesEvaluation.js, la même
+// que Kpis.jsx, le dashboard et kpiReportPdf.js), jamais toute la vie du KPI — sinon l'instantané
+// d'une revue de direction pourrait contredire ce que montre l'app elle-même. Un KPI est hors
+// objectif dès qu'une de ses séries (courbes) n'atteint pas SON objectif : jamais de moyenne de
+// séries qui n'ont ni la même unité ni le même objectif.
 async function countOffTargetKpis(tenantId) {
-  const { data, error } = await supabase
-    .from('kpis')
-    .select('id, target, target_direction, records:kpi_records(period_date, value)')
-    .eq('tenant_id', tenantId);
+  const { data, error } = await supabase.from('kpis').select(KPI_EVALUATION_SELECT).eq('tenant_id', tenantId);
   if (error || !data) return 0;
-
-  let count = 0;
-  for (const kpi of data) {
-    if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
-    const recentValues = [...kpi.records]
-      .sort((a, b) => (a.period_date < b.period_date ? -1 : 1))
-      .slice(-KPI_RECENT_WINDOW)
-      .map((r) => r.value);
-    const average = recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length;
-    const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
-    if (!meetsTarget) count += 1;
-  }
-  return count;
+  return data.filter((kpi) => offTargetSeries(kpi).length > 0).length;
 }
 
 function averageOf(values) {
@@ -127,7 +111,7 @@ function daysBetween(startStr, endStr) {
 async function computeKpiTrend(tenantId, periodStart, periodEnd) {
   const { data, error } = await supabase
     .from('kpis')
-    .select('id, name, unit, target, target_direction, records:kpi_records(period_date, value)')
+    .select(KPI_EVALUATION_SELECT)
     .eq('tenant_id', tenantId);
   if (error || !data) return [];
 
@@ -135,26 +119,46 @@ async function computeKpiTrend(tenantId, periodStart, periodEnd) {
   const previousEnd = addDaysToDate(periodStart, -1);
   const previousStart = addDaysToDate(periodStart, -periodLengthDays);
 
+  const inRange = (records, start, end) => records.filter((r) => r.period_date >= start && r.period_date <= end).map((r) => r.value);
+  const trendOf = (current, previous) => (current !== null && previous !== null ? (current > previous ? 'up' : current < previous ? 'down' : 'stable') : null);
+
   return data.map((kpi) => {
-    const currentAvg = averageOf(
-      kpi.records.filter((r) => r.period_date >= periodStart && r.period_date <= periodEnd).map((r) => r.value)
-    );
-    const previousAvg = averageOf(
-      kpi.records.filter((r) => r.period_date >= previousStart && r.period_date <= previousEnd).map((r) => r.value)
-    );
-    let trend = null;
-    if (currentAvg !== null && previousAvg !== null) {
-      trend = currentAvg > previousAvg ? 'up' : currentAvg < previousAvg ? 'down' : 'stable';
+    const { showMultiSeries, series } = evaluateKpiSeries(kpi);
+    const base = { id: kpi.id, name: kpi.name, unit: kpi.unit, target: kpi.target, target_direction: kpi.target_direction };
+
+    // Plusieurs séries : une ligne par série, avec SON unité, SON objectif et SON sens — le KPI n'a
+    // alors ni moyenne ni tendance globales, elles n'auraient aucun sens.
+    if (showMultiSeries) {
+      return {
+        ...base,
+        current_avg: null,
+        previous_avg: null,
+        trend: null,
+        series: series.map((item) => {
+          const currentAvg = averageOf(inRange(item.records, periodStart, periodEnd));
+          const previousAvg = averageOf(inRange(item.records, previousStart, previousEnd));
+          return {
+            label: item.label,
+            unit: item.unit,
+            target: item.target,
+            target_direction: item.direction,
+            current_avg: currentAvg,
+            previous_avg: previousAvg,
+            trend: trendOf(currentAvg, previousAvg),
+            meets_target: meetsTarget(currentAvg, item.target, item.direction),
+          };
+        }),
+      };
     }
+
+    const currentAvg = averageOf(inRange(kpi.records, periodStart, periodEnd));
+    const previousAvg = averageOf(inRange(kpi.records, previousStart, previousEnd));
     return {
-      id: kpi.id,
-      name: kpi.name,
-      unit: kpi.unit,
-      target: kpi.target,
-      target_direction: kpi.target_direction,
+      ...base,
       current_avg: currentAvg,
       previous_avg: previousAvg,
-      trend,
+      trend: trendOf(currentAvg, previousAvg),
+      meets_target: meetsTarget(currentAvg, kpi.target, kpi.target_direction),
     };
   });
 }

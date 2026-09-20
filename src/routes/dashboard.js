@@ -18,6 +18,7 @@ import {
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
+import { KPI_EVALUATION_SELECT, evaluateKpiSeries, offTargetSeries } from '../services/kpiSeriesEvaluation.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
@@ -118,46 +119,37 @@ async function countProceduresToReview(tenantId) {
   return count || 0;
 }
 
-// Nombre de relevés RÉCENTS (les plus proches d'aujourd'hui par period_date) utilisés pour
-// juger si un KPI est hors objectif — jamais toute sa vie entière. Historique réel : la moyenne
-// "toute l'histoire" utilisée avant ce changement diluait une mauvaise tendance récente derrière
-// des années de bonnes valeurs, rendant le compteur "hors objectif" silencieux sur des KPI dont
-// la situation ACTUELLE était pourtant mauvaise — perçu à raison comme "pas synchronisé avec la
-// réalité". Même fenêtre utilisée ici et dans Kpis.jsx (frontend), pour que le nombre affiché
-// sur une carte KPI et son statut good/bad restent l'un ET l'autre décrits par la même moyenne.
-const KPI_RECENT_WINDOW = 6;
+// Le statut d'un KPI se juge sur ses relevés RÉCENTS (KPI_RECENT_WINDOW, voir
+// services/kpiSeriesEvaluation.js), jamais sur toute sa vie : la moyenne "toute l'histoire" diluait
+// une mauvaise tendance récente derrière des années de bonnes valeurs. Même fenêtre que Kpis.jsx.
 
 // Miroir de getKpiStatus (frontend/src/lib/kpiStatus.js, dupliqué aussi dans
-// kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne de ses KPI_RECENT_WINDOW derniers
-// relevés ne respecte pas le sens de l'objectif (target_direction). Pas de service_id sur les
+// kpiReportPdf.js) : un KPI est "hors objectif" si la moyenne des derniers relevés d'une de ses
+// séries ne respecte pas le sens de l'objectif de cette série. Pas de service_id sur les
 // KPI (voir schema.sql) : toujours tout le tenant, jamais scopé — comme documents.to_review.
 // `preview` renvoie jusqu'à 3 KPI hors objectif avec leurs 8 derniers points (mini-courbe côté
 // dashboard, volontairement plus large que la fenêtre de calcul pour donner un peu de contexte
 // visuel) plutôt qu'un simple chiffre — même dataset déjà chargé, aucune requête en plus.
 async function computeKpiSummary(tenantId) {
-  const { data: kpis, error } = await supabase
-    .from('kpis')
-    .select('id, name, unit, target, target_direction, records:kpi_records(period_date, value)')
-    .eq('tenant_id', tenantId);
+  const { data: kpis, error } = await supabase.from('kpis').select(KPI_EVALUATION_SELECT).eq('tenant_id', tenantId);
 
   if (error || !kpis) return { offTarget: 0, preview: [] };
 
+  // Un KPI multi-séries est hors objectif dès qu'UNE de ses séries n'atteint pas son propre objectif
+  // (chaque courbe a son unité, sa cible et son sens) — jamais sur la moyenne de toutes ses courbes.
+  // L'aperçu montre alors la première série concernée.
   const offTargetKpis = [];
   for (const kpi of kpis) {
-    if (kpi.target === null || kpi.target === undefined || kpi.records.length === 0) continue;
-    const sortedValues = [...kpi.records].sort((a, b) => (a.period_date < b.period_date ? -1 : 1)).map((r) => r.value);
-    const recentValues = sortedValues.slice(-KPI_RECENT_WINDOW);
-    const average = recentValues.reduce((sum, value) => sum + value, 0) / recentValues.length;
-    const meetsTarget = kpi.target_direction === 'max' ? average <= kpi.target : average >= kpi.target;
-    if (!meetsTarget) {
-      offTargetKpis.push({
-        id: kpi.id,
-        name: kpi.name,
-        unit: kpi.unit,
-        average: Number(average.toFixed(2)),
-        sparkline: sortedValues.slice(-8),
-      });
-    }
+    const [failing] = offTargetSeries(kpi);
+    if (!failing) continue;
+    const { series, average } = failing;
+    offTargetKpis.push({
+      id: kpi.id,
+      name: evaluateKpiSeries(kpi).showMultiSeries ? `${kpi.name} — ${series.label}` : kpi.name,
+      unit: series.unit,
+      average: Number(average.toFixed(2)),
+      sparkline: series.records.map((r) => r.value).slice(-8),
+    });
   }
 
   return { offTarget: offTargetKpis.length, preview: offTargetKpis.slice(0, 3) };

@@ -46,6 +46,24 @@ export function describeAction(action) {
   return `${action.description} — ${parts.join(', ')}`;
 }
 
+// Valeur (moyenne de la période) et objectif d'une courbe, avec son unité et son sens propres.
+function seriesText(item) {
+  const unit = item.unit ? ` ${item.unit}` : '';
+  const value = item.current_avg !== null && item.current_avg !== undefined ? `${Number(item.current_avg).toFixed(1)}${unit}` : '—';
+  const target = item.target !== null && item.target !== undefined ? ` (objectif ${item.target_direction === 'max' ? '≤' : '≥'} ${item.target}${unit})` : '';
+  const verdict = item.meets_target === true ? ', objectif atteint' : item.meets_target === false ? ', objectif non atteint' : '';
+  return `${value}${target}${item.trend ? `, ${TREND_LABELS[item.trend] || item.trend}` : ''}${verdict}`;
+}
+
+// Un KPI à une seule courbe tient sur une ligne ; un KPI à plusieurs courbes en occupe une par courbe,
+// chacune jugée sur SON objectif (jamais de moyenne de courbes de nature différente).
+function kpiLines(kpi) {
+  if (Array.isArray(kpi.series) && kpi.series.length > 0) {
+    return [`${kpi.name} :`, ...kpi.series.map((item) => `  • ${item.label} : ${seriesText(item)}`)];
+  }
+  return [`${kpi.name} : ${seriesText(kpi)}`];
+}
+
 // Blocs « éléments d'entrée » de la revue : [{ title, lines[] }]. Deux sources : input_snapshot (période
 // choisie : KPI, audits, réclamations, CAPA, risques) et snapshot (état du SMQ figé à la clôture).
 export function buildInputBlocks(review) {
@@ -61,11 +79,7 @@ export function buildInputBlocks(review) {
       lines:
         (input.kpi_trend || []).length === 0
           ? ['Aucun KPI.']
-          : input.kpi_trend.map((kpi) => {
-              const value = kpi.current_avg !== null && kpi.current_avg !== undefined ? `${Number(kpi.current_avg).toFixed(1)}${kpi.unit ? ` ${kpi.unit}` : ''}` : '—';
-              const target = kpi.target !== null && kpi.target !== undefined ? ` (objectif ${kpi.target_direction === 'max' ? '≤' : '≥'} ${kpi.target}${kpi.unit ? ` ${kpi.unit}` : ''})` : '';
-              return `${kpi.name} : ${value}${target}${kpi.trend ? `, ${TREND_LABELS[kpi.trend] || kpi.trend}` : ''}`;
-            }),
+          : input.kpi_trend.flatMap(kpiLines),
     });
     blocks.push({
       title: 'Audits internes',
