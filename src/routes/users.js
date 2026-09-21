@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
+import { fetchJobTitles } from '../services/jobTitles.js';
 
 const router = Router();
 export const ASSIGNABLE_ROLES = ['admin', 'manager', 'member'];
@@ -49,6 +50,16 @@ router.get('/', async (req, res) => {
   );
 
   res.json(withAuthInfo);
+});
+
+// GET /api/users/job-titles — postes déjà utilisés (comptes et personnel sans compte) avec le nombre de personnes et les
+// formations qu'ils rendent obligatoires ; sert à proposer les postes existants à la saisie. Admin/manager.
+router.get('/job-titles', requireRole('admin', 'manager'), async (req, res) => {
+  try {
+    res.json(await fetchJobTitles(req.tenantId));
+  } catch {
+    res.status(500).json({ error: 'Impossible de récupérer les postes.' });
+  }
 });
 
 // GET /api/users/me — profil de l'utilisateur authentifié
@@ -204,6 +215,7 @@ router.post(
     body('email').isEmail().withMessage('Adresse email invalide.'),
     body('full_name').trim().notEmpty().withMessage('Le nom complet est requis.'),
     body('role').optional({ values: 'falsy' }).isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
+    body('job_title').optional({ values: 'falsy' }).trim().isLength({ max: 150 }).withMessage('Poste trop long (150 caractères maximum).'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -211,7 +223,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { email, full_name: fullName, role } = req.body;
+    const { email, full_name: fullName, role, job_title: jobTitle } = req.body;
 
     let inviteResult;
     try {
@@ -237,6 +249,7 @@ router.post(
       tenant_id: req.tenantId,
       full_name: fullName,
       role: role || 'member',
+      job_title: jobTitle || null,
     });
 
     if (profileError) {
@@ -244,7 +257,7 @@ router.post(
       return res.status(500).json({ error: 'Erreur lors de la création du profil utilisateur.' });
     }
 
-    res.status(201).json({ id: userId, email, full_name: fullName, role: role || 'member' });
+    res.status(201).json({ id: userId, email, full_name: fullName, role: role || 'member', job_title: jobTitle || null });
   }
 );
 
