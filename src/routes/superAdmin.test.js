@@ -257,12 +257,13 @@ describe('GET /api/super-admin/job-runs', () => {
     expect(res.status).toBe(200);
 
     const byName = new Map(res.body.map((r) => [r.job_name, r]));
-    // Les 5 tâches connues sont toutes présentes (voir KNOWN_JOB_NAMES), même celles qui n'ont
+    // Les 6 tâches connues sont toutes présentes (voir KNOWN_JOB_NAMES), même celles qui n'ont
     // jamais encore tourné dans cette base de test.
     expect(byName.has('notificationJob')).toBe(true);
     expect(byName.has('backupJob')).toBe(true);
     expect(byName.has('driveTokenRefreshJob')).toBe(true);
     expect(byName.has('dashboardSnapshotJob')).toBe(true);
+    expect(byName.has('haccpReminderJob')).toBe(true);
 
     expect(byName.get('moduleKpiJob').status).toBe('partial');
     expect(byName.get('moduleKpiJob').summary).toBe('4/5 traité(s) avec succès.');

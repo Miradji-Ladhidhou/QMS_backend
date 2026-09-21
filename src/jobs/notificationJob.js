@@ -192,6 +192,25 @@ function describeReviewTiming(daysRemaining) {
   return `en retard de ${-daysRemaining} jour${-daysRemaining > 1 ? 's' : ''}`;
 }
 
+// Plans HACCP (non archivés) dont la revue annuelle tombe sur un jalon — mêmes jalons que la revue des risques :
+// 7 jours avant, le jour même, puis chaque semaine de retard. Prévenu : celui qui a revu le plan en dernier,
+// à défaut son auteur.
+export async function getHaccpReviewAlerts(tenantId) {
+  const { data, error } = await supabase
+    .from('haccp_plans')
+    .select('id, title, review_date, created_by, last_reviewed_by')
+    .eq('tenant_id', tenantId)
+    .not('review_date', 'is', null)
+    .neq('status', 'archived')
+    .lte('review_date', addDaysIso(RISK_REVIEW_REMINDER_LEAD_DAYS));
+
+  if (error) throw new Error(`Alertes revue des plans HACCP : ${error.message}`);
+
+  return data
+    .map((plan) => ({ ...plan, days_remaining: daysUntil(plan.review_date), user_id: plan.last_reviewed_by || plan.created_by }))
+    .filter((plan) => plan.user_id && isReminderMilestone(plan.days_remaining));
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -242,7 +261,7 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts, riskReviewAlerts] =
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts, riskReviewAlerts, haccpReviewAlerts] =
     await Promise.all([
       getDocumentAlerts(tenantId),
       getCapaAlerts(tenantId),
@@ -251,6 +270,7 @@ async function processTenant(tenantId) {
       getStaleApprovalAlerts(tenantId),
       getProcedureReviewAlerts(tenantId),
       getRiskReviewAlerts(tenantId),
+      getHaccpReviewAlerts(tenantId),
     ]);
 
   for (const doc of documentAlerts) {
@@ -409,6 +429,28 @@ async function processTenant(tenantId) {
       notificationTitle: 'Risque à revoir',
       notificationMessage: `${risk.title} (${whenText})`,
       notificationLink: `/risks/${risk.id}`,
+    });
+  }
+
+  for (const plan of haccpReviewAlerts) {
+    const whenText = describeReviewTiming(plan.days_remaining);
+    await sendImmediateNotification({
+      tenantId,
+      userId: plan.user_id,
+      prefField: 'email_haccp_alerts',
+      notificationType: 'haccp_review_due',
+      referenceId: plan.id,
+      templateName: 'haccpAlert',
+      subject: `Plan HACCP à revoir ${whenText} : ${plan.title}`,
+      variables: {
+        heading: 'Plan HACCP à revoir',
+        message: `La revue annuelle du plan « ${plan.title} » est prévue ${whenText} (échéance : ${plan.review_date}). Vérifiez que l'analyse des dangers, les CCP et leurs limites sont toujours valables.`,
+        buttonLabel: 'Voir le plan HACCP',
+        url: `${frontendUrl}/haccp/${plan.id}`,
+      },
+      notificationTitle: 'Plan HACCP à revoir',
+      notificationMessage: `${plan.title} (${whenText})`,
+      notificationLink: `/haccp/${plan.id}`,
     });
   }
 }

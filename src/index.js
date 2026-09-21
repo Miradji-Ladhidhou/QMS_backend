@@ -5,6 +5,7 @@ import { scheduleBackupJob } from './jobs/backupJob.js';
 import { scheduleDriveTokenRefreshJob } from './jobs/driveTokenRefreshJob.js';
 import { scheduleDashboardSnapshotJob } from './jobs/dashboardSnapshotJob.js';
 import { scheduleModuleKpiJob } from './jobs/moduleKpiJob.js';
+import { scheduleHaccpReminderJob } from './jobs/haccpReminderJob.js';
 
 const PORT = process.env.PORT || 4000;
 
@@ -17,3 +18,4 @@ scheduleBackupJob();
 scheduleDriveTokenRefreshJob();
 scheduleDashboardSnapshotJob();
 scheduleModuleKpiJob();
+scheduleHaccpReminderJob();

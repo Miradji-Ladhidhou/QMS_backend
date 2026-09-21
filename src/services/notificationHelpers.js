@@ -9,6 +9,7 @@ const DEFAULT_PREFERENCES = {
   email_approval_requests: true,
   email_procedure_review: true,
   email_risk_review: true,
+  email_haccp_alerts: true,
   digest_frequency: 'daily',
 };
 

@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, HEADER_FILL, ROW_ALT, drawLetterheadHeader } from './pdfTheme.js';
+import { describeLimits, numericLimitsOf } from './haccpMonitoring.js';
 
 // RED reste une couleur sémantique (danger significatif / dérive hors limites non couverte par
 // une CAPA), pas une couleur de marque — volontairement non touchée par l'en-tête neutre.
@@ -158,6 +159,8 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
   if (plan.product_description) infoFields.push({ label: 'Produit', value: plan.product_description });
   if (plan.service?.name) infoFields.push({ label: 'Service', value: plan.service.name });
   if (plan.team) infoFields.push({ label: 'Équipe', value: plan.team });
+  infoFields.push({ label: 'Prochaine revue', value: formatDate(plan.review_date) });
+  infoFields.push({ label: 'Dernière revue', value: plan.last_reviewed_at ? formatDate(plan.last_reviewed_at) : 'Jamais revu' });
   drawInfoGrid(doc, infoFields);
 
   doc.moveDown(0.4);
@@ -184,7 +187,7 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
         ccpRows.push({
           ccp_number: hazard.ccp.ccp_number || '—',
           hazard: hazard.description,
-          critical_limits: hazard.ccp.critical_limits,
+          critical_limits: `${hazard.ccp.critical_limits}${numericLimitsOf(hazard.ccp) ? ` [${describeLimits(numericLimitsOf(hazard.ccp))}]` : ''}`,
           monitoring: `${hazard.ccp.monitoring_procedure}${hazard.ccp.monitoring_frequency ? ` (${hazard.ccp.monitoring_frequency})` : ''}${
             hazard.ccp.monitoring_responsible_user ? ` — ${hazard.ccp.monitoring_responsible_user.full_name}` : ''
           }`,

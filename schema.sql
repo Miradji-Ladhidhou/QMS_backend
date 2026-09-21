@@ -627,6 +627,10 @@ create table haccp_plans (
   team               text,
   service_id         uuid references services (id) on delete set null,
   status             text not null default 'draft' check (status in ('draft', 'active', 'under_review', 'archived')),
+  -- Revue annuelle du plan (principe 6 : validation).
+  review_date        date,
+  last_reviewed_at   timestamptz,
+  last_reviewed_by   uuid references users (id) on delete set null,
   created_by         uuid references users (id) on delete set null,
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now()
@@ -675,15 +679,23 @@ create table haccp_ccps (
   hazard_id                   uuid not null references haccp_hazards (id) on delete cascade,
   ccp_number                  text,
   critical_limits             text not null,
+  -- Limites chiffrées (bornes incluses) : verdict automatique d'un relevé et courbe. Au moins une
+  -- borne pour activer le verdict automatique ; critical_limits reste la référence lisible.
+  limit_min                   numeric,
+  limit_max                   numeric,
+  limit_unit                  text,
   monitoring_procedure        text not null,
   monitoring_frequency        text,
+  -- Intervalle de surveillance en heures (ex. 12 = deux fois par jour) : rappel « relevé en retard ».
+  monitoring_interval_hours   numeric check (monitoring_interval_hours is null or monitoring_interval_hours > 0),
   monitoring_responsible      uuid references users (id) on delete set null,
   corrective_action_procedure text,
   verification_procedure      text,
   verification_frequency      text,
   record_keeping_procedure    text,
   created_at                  timestamptz not null default now(),
-  updated_at                  timestamptz not null default now()
+  updated_at                  timestamptz not null default now(),
+  check (limit_min is null or limit_max is null or limit_min <= limit_max)
 );
 
 -- Relevés de surveillance réels contre un CCP. linked_capa_id : même principe miroir que
@@ -694,6 +706,8 @@ create table haccp_monitoring_logs (
   tenant_id              uuid not null references tenants (id) on delete cascade,
   ccp_id                 uuid not null references haccp_ccps (id) on delete cascade,
   recorded_value         text not null,
+  -- Valeur numérique du relevé quand le CCP a des limites chiffrées.
+  numeric_value          numeric,
   within_limits          boolean not null,
   corrective_action_taken text,
   linked_capa_id         uuid references capas (id) on delete set null,
@@ -706,6 +720,21 @@ create table haccp_monitoring_logs (
 -- haccp_monitoring_logs.linked_capa_id, l'inverse) — même principe miroir que
 -- risks.linked_capa_id / capas.risk_id ci-dessus.
 alter table capas add column haccp_monitoring_log_id uuid references haccp_monitoring_logs (id) on delete set null;
+
+-- Versions d'un plan : instantané complet (étapes, dangers, CCP) à chaque revue, activation ou
+-- enregistrement manuel.
+create table haccp_plan_revisions (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  plan_id         uuid not null references haccp_plans (id) on delete cascade,
+  revision_number integer not null,
+  kind            text not null check (kind in ('manual', 'review', 'activation')),
+  reason          text,
+  snapshot        jsonb not null,
+  created_by      uuid references users (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  unique (plan_id, revision_number)
+);
 
 -- Évaluation fournisseurs (ISO 9001 §8.4 — maîtrise des processus/produits/services fournis
 -- par des prestataires externes). Un fournisseur (suppliers) porte plusieurs évaluations
@@ -1306,6 +1335,7 @@ create table user_notification_preferences (
   email_task_due            boolean not null default true,
   email_procedure_review    boolean not null default true,
   email_risk_review         boolean not null default true,
+  email_haccp_alerts        boolean not null default true,
   digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now()
@@ -1752,6 +1782,19 @@ create table risk_links (
   created_at   timestamptz not null default now(),
   check (num_nonnulls(audit_id, supplier_id, kpi_id, procedure_id) = 1)
 );
+
+-- Liens d'un plan HACCP avec un fournisseur (matières premières), une formation requise ou une procédure.
+create table haccp_plan_links (
+  id           uuid primary key default gen_random_uuid(),
+  tenant_id    uuid not null references tenants (id) on delete cascade,
+  plan_id      uuid not null references haccp_plans (id) on delete cascade,
+  supplier_id  uuid references suppliers (id) on delete cascade,
+  training_id  uuid references trainings (id) on delete cascade,
+  procedure_id uuid references procedures (id) on delete cascade,
+  created_by   uuid references users (id) on delete set null,
+  created_at   timestamptz not null default now(),
+  check (num_nonnulls(supplier_id, training_id, procedure_id) = 1)
+);
 alter table capas add column customer_satisfaction_survey_id uuid references customer_satisfaction_surveys (id) on delete set null;
 
 -- Résout le tenant_id de l'utilisateur authentifié (utilisé par les policies RLS).
@@ -1889,6 +1932,14 @@ create index idx_haccp_ccps_tenant_id on haccp_ccps (tenant_id);
 create index idx_haccp_ccps_hazard_id on haccp_ccps (hazard_id);
 
 create index idx_haccp_monitoring_logs_tenant_id on haccp_monitoring_logs (tenant_id);
+create index idx_haccp_monitoring_logs_ccp_recorded on haccp_monitoring_logs (ccp_id, recorded_at desc);
+create index idx_haccp_plan_revisions_tenant_id on haccp_plan_revisions (tenant_id);
+create index idx_haccp_plan_revisions_plan_id on haccp_plan_revisions (plan_id);
+create index idx_haccp_plan_links_tenant_id on haccp_plan_links (tenant_id);
+create index idx_haccp_plan_links_plan_id on haccp_plan_links (plan_id);
+create unique index uq_haccp_plan_links_supplier on haccp_plan_links (plan_id, supplier_id) where supplier_id is not null;
+create unique index uq_haccp_plan_links_training on haccp_plan_links (plan_id, training_id) where training_id is not null;
+create unique index uq_haccp_plan_links_procedure on haccp_plan_links (plan_id, procedure_id) where procedure_id is not null;
 create index idx_haccp_monitoring_logs_ccp_id on haccp_monitoring_logs (ccp_id);
 create index idx_haccp_monitoring_logs_recorded_at on haccp_monitoring_logs (recorded_at);
 
@@ -2366,6 +2417,8 @@ alter table haccp_process_steps enable row level security;
 alter table haccp_hazards enable row level security;
 alter table haccp_ccps enable row level security;
 alter table haccp_monitoring_logs enable row level security;
+alter table haccp_plan_revisions enable row level security;
+alter table haccp_plan_links enable row level security;
 alter table suppliers enable row level security;
 alter table supplier_evaluations enable row level security;
 alter table trainings enable row level security;
@@ -2534,6 +2587,16 @@ create policy accidents_isolation on accidents
   with check (tenant_id = auth_tenant_id());
 
 create policy pdca_projects_isolation on pdca_projects
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy haccp_plan_revisions_isolation on haccp_plan_revisions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy haccp_plan_links_isolation on haccp_plan_links
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

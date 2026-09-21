@@ -18,6 +18,7 @@ import {
 } from '../services/planningItems.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 import { filterViewableDocuments } from '../middleware/documentPermissions.js';
+import { fetchCcpStatuses } from '../services/haccpMonitoring.js';
 import { KPI_EVALUATION_SELECT, evaluateKpiSeries, offTargetSeries } from '../services/kpiSeriesEvaluation.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
@@ -167,6 +168,20 @@ async function countActiveHaccpPlans(tenantId, serviceIds) {
   return data.filter((plan) => plan.status === 'active').length;
 }
 
+// Surveillance des plans actifs : CCP dont le relevé est en retard, et CCP en dérive répétée (voir
+// services/haccpMonitoring.js). Scopé par service comme les plans eux-mêmes.
+async function computeHaccpMonitoring(tenantId, serviceIds) {
+  try {
+    const ccps = (await fetchCcpStatuses(tenantId, { activeOnly: true })).filter((ccp) => !serviceIds || serviceIds.includes(ccp.plan.service_id));
+    return {
+      overdue_ccps: ccps.filter((ccp) => ccp.monitoring_state === 'overdue').length,
+      deviating_ccps: ccps.filter((ccp) => ccp.repeated_deviation).length,
+    };
+  } catch {
+    return { overdue_ccps: 0, deviating_ccps: 0 };
+  }
+}
+
 // Total "en retard" tous outils confondus (CAPA + documents + formations + tâches), en
 // réutilisant les mêmes fonctions que /api/planning pour ne jamais afficher un chiffre qui
 // contredirait le détail donné par la page Planning — voir services/planningItems.js.
@@ -281,7 +296,7 @@ async function computeTenantMetrics(tenantId) {
     risks: countActiveAndOverdue(riskItems),
     suppliers: countActiveAndOverdue(supplierItems),
     management_reviews: { draft: managementReviewsDraft },
-    haccp: { active_plans: haccpActivePlans },
+    haccp: { active_plans: haccpActivePlans, ...(await computeHaccpMonitoring(tenantId, null)) },
     accidents: { open: accidentsOpen },
     pdca: countActiveAndOverdue(pdcaItems),
     overdue: { total: overdueTotal },
@@ -380,7 +395,7 @@ router.get('/stats', async (req, res) => {
       // documents/kpis) — 0 forcé, widgets masqués pour member côté frontend.
       suppliers: { active: 0, overdue: 0 },
       management_reviews: { draft: 0 },
-      haccp: { active_plans: 0 },
+      haccp: { active_plans: 0, overdue_ccps: 0, deviating_ccps: 0 },
       // Pas de vue personnelle pour les accidents (injured_user_id désigne la personne
       // blessée, pas un porteur de suivi) : même 0 forcé que documents/kpis/suppliers ci-dessus.
       accidents: { open: 0 },
@@ -479,7 +494,7 @@ router.get('/stats', async (req, res) => {
       risks: countActiveAndOverdue(riskItems),
       suppliers: countActiveAndOverdue(supplierItems),
       management_reviews: { draft: managementReviewsDraft },
-      haccp: { active_plans: haccpActivePlans },
+      haccp: { active_plans: haccpActivePlans, ...(await computeHaccpMonitoring(req.tenantId, serviceIds)) },
       accidents: { open: accidentsOpen },
       pdca: countActiveAndOverdue(pdcaItems),
       overdue: { total: overdueTotal },

@@ -772,7 +772,7 @@ router.get('/health', async (req, res) => {
 // jamais tourné (voir GET /job-runs juste en dessous), pour qu'un job qui ne s'est pas encore
 // déclenché (redéploiement récent) reste visible plutôt que de disparaître silencieusement de
 // la liste.
-const KNOWN_JOB_NAMES = ['notificationJob', 'backupJob', 'driveTokenRefreshJob', 'dashboardSnapshotJob', 'moduleKpiJob'];
+const KNOWN_JOB_NAMES = ['notificationJob', 'backupJob', 'driveTokenRefreshJob', 'dashboardSnapshotJob', 'moduleKpiJob', 'haccpReminderJob'];
 
 // GET /api/super-admin/job-runs — dernière exécution de chaque tâche planifiée (voir
 // services/jobRunTracker.js), pour repérer une tâche en échec sans éplucher les logs bruts de
