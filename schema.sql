@@ -1007,6 +1007,10 @@ create table kpis (
 -- doit être rattachée à quelqu'un) — même nom de colonne que pdca_projects.owner.
 alter table kpis add column owner uuid references users (id) on delete set null;
 
+-- Preset de module dont ce KPI est issu (voir services/moduleKpiCatalog.js) : la vue « Indicateurs des modules »
+-- sait ainsi lesquels sont déjà suivis.
+alter table kpis add column module_preset_id text;
+
 -- Lien bidirectionnel avec capas, même principe que partout ailleurs dans ce fichier
 -- (complaints.linked_capa_id/capas.complaint_id, pdca_projects.linked_capa_id/capas.pdca_project_id...)
 -- — jusqu'ici le SEUL module de constat/mesure sans ce lien, alors qu'un KPI durablement hors
@@ -1944,6 +1948,7 @@ create index idx_risks_review_date on risks (review_date);
 create index idx_risks_score on risks (risk_score);
 create index idx_risk_assessments_tenant_id on risk_assessments (tenant_id);
 create index idx_risk_assessments_risk_id on risk_assessments (risk_id, assessed_at);
+create index idx_kpis_module_preset_id on kpis (tenant_id, module_preset_id) where module_preset_id is not null;
 create index idx_risk_links_tenant_id on risk_links (tenant_id);
 create index idx_risk_links_risk_id on risk_links (risk_id);
 create unique index uq_risk_links_audit on risk_links (risk_id, audit_id) where audit_id is not null;

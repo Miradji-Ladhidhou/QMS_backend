@@ -11,6 +11,9 @@ import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCat
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { MODULE_KPI_PRESETS, MODULE_KPI_SOURCES, getPreset } from '../services/moduleKpiSources.js';
 import { recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
+import { createModuleKpiFromPreset } from '../services/moduleKpiCreate.js';
+import { buildModuleOverview, enableEssentialIndicators } from '../services/moduleKpiOverview.js';
+import { domainOfPreset, isEssential } from '../services/moduleKpiCatalog.js';
 
 const router = Router();
 
@@ -160,6 +163,8 @@ router.get('/module-presets', async (req, res) => {
       id,
       module,
       module_label: MODULE_KPI_SOURCES[module]?.label || module,
+      domain: domainOfPreset({ module })?.key || null,
+      essential: isEssential(id),
       label,
       description,
       unit,
@@ -170,6 +175,66 @@ router.get('/module-presets', async (req, res) => {
     }))
   );
 });
+
+// GET /api/kpis/module-overview — vue « Indicateurs des modules » : par domaine, les indicateurs essentiels (suivis ou
+// non) avec valeur, objectif, état, comparaisons (période précédente, même période l'an dernier, moyenne des 6
+// précédentes) et courbe. Placé avant /:id.
+router.get('/module-overview', async (req, res) => {
+  try {
+    res.json(await buildModuleOverview({ tenantId: req.tenantId, viewer: { userId: req.user.id, userRole: req.userRole } }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/kpis/module-overview/enable-essentials — suit d'un coup tous les indicateurs essentiels pas encore suivis
+// (ou seulement ceux des domaines listés dans `domains`). Admin/manager.
+router.post(
+  '/module-overview/enable-essentials',
+  requireRole('admin', 'manager'),
+  [body('domains').optional().isArray().withMessage('Liste de domaines invalide.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() });
+    const result = await enableEssentialIndicators({ tenantId: req.tenantId, userId: req.user.id, only: req.body.domains || null });
+    res.status(201).json(result);
+  }
+);
+
+// PATCH /api/kpis/:id/objective — modifie l'objectif d'un KPI : { target, target_direction } (target: null retire
+// l'objectif), ou { reset: true } pour revenir à l'objectif par défaut du preset (KPI de module). Admin/manager.
+router.patch(
+  '/:id/objective',
+  requireRole('admin', 'manager'),
+  [
+    body('target').optional({ nullable: true }).custom((value) => value === null || (typeof value === 'number' && Number.isFinite(value))).withMessage("L'objectif doit être un nombre."),
+    body('target_direction').optional().isIn(KPI_TARGET_DIRECTIONS).withMessage("Sens de l'objectif invalide."),
+    body('reset').optional().isBoolean().withMessage('Valeur invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() });
+
+    const { data: kpi } = await supabase.from('kpis').select('id, module_preset_id, target, target_direction').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
+    if (!kpi) return res.status(404).json({ error: 'KPI introuvable.' });
+
+    let update;
+    if (req.body.reset === true) {
+      const preset = kpi.module_preset_id ? getPreset(kpi.module_preset_id) : null;
+      if (!preset) return res.status(400).json({ error: "Ce KPI n'a pas d'objectif par défaut." });
+      update = { target: preset.target ?? null, target_direction: preset.target_direction || 'min' };
+    } else {
+      if (!('target' in req.body) && !('target_direction' in req.body)) return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+      update = {};
+      if ('target' in req.body) update.target = req.body.target;
+      if ('target_direction' in req.body) update.target_direction = req.body.target_direction;
+    }
+
+    const { data, error } = await supabase.from('kpis').update(update).eq('tenant_id', req.tenantId).eq('id', kpi.id).select('id, target, target_direction').single();
+    if (error || !data) return res.status(500).json({ error: "Impossible d'enregistrer l'objectif." });
+    res.json(data);
+  }
+);
 
 // POST /api/kpis/from-module-preset — crée un KPI calculé automatiquement depuis un module
 // (kpis.calculation_type='module') + sa recette (kpi_calculation_configs), puis lance un
@@ -207,48 +272,11 @@ router.post(
       }
     }
 
-    const { data: kpi, error: kpiError } = await supabase
-      .from('kpis')
-      .insert({
-        tenant_id: req.tenantId,
-        name: preset.label,
-        unit: preset.unit || null,
-        target: preset.target ?? null,
-        target_direction: preset.target_direction || undefined,
-        frequency: preset.frequency || null,
-        calculation_type: 'module',
-        source_module: preset.module,
-        folder_id: folderId || null,
-        category_id: categoryId || null,
-      })
-      .select(`*, ${KPI_JOINS}`)
-      .single();
-
-    if (kpiError) {
-      return res.status(500).json({ error: 'Erreur lors de la création du KPI.' });
-    }
-
-    const { error: configError } = await supabase.from('kpi_calculation_configs').insert({
-      tenant_id: req.tenantId,
-      kpi_id: kpi.id,
-      label: 'Automatique',
-      calc_type: preset.recipe.calc_type,
-      source_column: preset.recipe.source_column || null,
-      filters: preset.recipe.filters || [],
-      filter_logic: preset.recipe.filter_logic || 'all',
-      group_by_column: preset.recipe.group_by_column || null,
-      period_column: preset.recipe.period_column || null,
-    });
-
-    if (configError) {
-      await supabase.from('kpis').delete().eq('id', kpi.id);
-      return res.status(500).json({ error: 'Erreur lors de la création de la recette de calcul.' });
-    }
-
+    let kpi;
     try {
-      await recomputeModuleKpi({ tenantId: req.tenantId, kpiId: kpi.id, recordedBy: req.user.id });
+      kpi = { id: await createModuleKpiFromPreset({ tenantId: req.tenantId, userId: req.user.id, preset, folderId, categoryId }) };
     } catch (err) {
-      console.error('[from-module-preset] Premier calcul échoué :', err.message);
+      return res.status(500).json({ error: err.message });
     }
 
     const { data: full } = await supabase

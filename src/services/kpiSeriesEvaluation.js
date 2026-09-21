@@ -7,7 +7,7 @@ import { buildSeriesInfo, resolveSeriesSettings } from './kpiReportPdf.js';
 
 // Colonnes à charger pour évaluer un KPI (à passer dans .select()).
 export const KPI_EVALUATION_SELECT =
-  'id, name, unit, target, target_direction, records:kpi_records(period_date, value, config_id), calculation_configs:kpi_calculation_configs(id, label, calc_type, unit, target, target_direction)';
+  'id, name, unit, target, target_direction, records:kpi_records(period_date, value, config_id), calculation_configs:kpi_calculation_configs(id, label, calc_type, unit, target, target_direction, created_at)';
 
 // Même fenêtre que routes/dashboard.js#KPI_RECENT_WINDOW et Kpis.jsx.
 export const KPI_RECENT_WINDOW = 6;
@@ -26,7 +26,9 @@ export function meetsTarget(value, target, direction) {
 // séries : ceux de chaque série (les siens si elle est paramétrée à part, sinon ceux du KPI).
 // Chaque série : { label, custom, unit, target, direction, records (triés par date) }.
 export function evaluateKpiSeries(kpi) {
-  const { showMultiSeries, seriesList } = buildSeriesInfo({ ...kpi, records: kpi.records || [] });
+  // Les séries dans l'ordre de leur création : l'ordre des lignes embarquées n'est pas garanti par la base.
+  const configs = [...(kpi.calculation_configs || [])].sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0));
+  const { showMultiSeries, seriesList } = buildSeriesInfo({ ...kpi, calculation_configs: configs, records: kpi.records || [] });
   return {
     showMultiSeries,
     series: seriesList.map((series) => {
