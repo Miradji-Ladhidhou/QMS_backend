@@ -489,6 +489,11 @@ alter table tenants add column management_review_frequency_months integer check 
 -- inacceptable : il exige une CAPA liée avant de passer traité/accepté/clôturé. 10 = « élevé ».
 alter table tenants add column risk_unacceptable_score integer not null default 10 check (risk_unacceptable_score between 2 and 25);
 
+-- Réglages de l'évaluation fournisseurs : { frequency_months: {low, medium, high, critical}, thresholds: {watch,
+-- replace}, weights: {<criticité>: {quality, delivery, price, responsiveness}}, auto_suspend_on_replace }.
+-- Vide = valeurs par défaut de l'application (services/supplierPolicy.js).
+alter table tenants add column supplier_settings jsonb not null default '{}'::jsonb;
+
 
 -- Actions décidées en sortie de revue (§9.3.3). Même principe bidirectionnel que
 -- audit_findings.linked_capa_id ci-dessus : une action peut rester autonome (ex. décision
@@ -752,6 +757,8 @@ create table suppliers (
   status                text not null default 'active' check (status in ('active', 'inactive', 'suspended')),
   service_id            uuid references services (id) on delete set null,
   next_evaluation_date  date,
+  -- Responsable du suivi : c'est lui que les rappels préviennent (à défaut, celui qui a créé le fournisseur).
+  owner                 uuid references users (id) on delete set null,
   created_by            uuid references users (id) on delete set null,
   created_at            timestamptz not null default now(),
   updated_at            timestamptz not null default now()
@@ -777,7 +784,32 @@ create table supplier_evaluations (
   comment              text,
   linked_capa_id       uuid references capas (id) on delete set null,
   evaluated_by         uuid references users (id) on delete set null,
+  -- Note globale PONDÉRÉE (poids en vigueur à la date de l'évaluation, conservés dans `weights`) et décision
+  -- qu'aurait proposée l'application. overall_score reste la moyenne simple d'origine.
+  weighted_score       numeric,
+  weights              jsonb,
+  suggested_decision   text check (suggested_decision is null or suggested_decision in ('maintained', 'under_watch', 'to_replace')),
   created_at           timestamptz not null default now()
+);
+
+-- Certificats et pièces d'un fournisseur (certificat qualité ou sécurité des aliments, agrément sanitaire,
+-- assurance, contrat...) avec leur date d'expiration ; le fichier est facultatif.
+create table supplier_documents (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  supplier_id uuid not null references suppliers (id) on delete cascade,
+  kind        text not null default 'other' check (kind in ('quality_certificate', 'food_safety_certificate', 'sanitary_approval', 'insurance', 'contract', 'other')),
+  title       text not null,
+  reference   text,
+  issuer      text,
+  issued_on   date,
+  expires_on  date,
+  notes       text,
+  file_path   text,
+  file_name   text,
+  uploaded_by uuid references users (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
 );
 
 -- Évaluation fournisseur à l'origine de cette CAPA (voir aussi
@@ -1336,6 +1368,7 @@ create table user_notification_preferences (
   email_procedure_review    boolean not null default true,
   email_risk_review         boolean not null default true,
   email_haccp_alerts        boolean not null default true,
+  email_supplier_alerts     boolean not null default true,
   digest_frequency          text not null default 'daily' check (digest_frequency in ('immediate', 'daily', 'weekly')),
   created_at                timestamptz not null default now(),
   updated_at                timestamptz not null default now()
@@ -1937,6 +1970,9 @@ create index idx_haccp_plan_revisions_tenant_id on haccp_plan_revisions (tenant_
 create index idx_haccp_plan_revisions_plan_id on haccp_plan_revisions (plan_id);
 create index idx_haccp_plan_links_tenant_id on haccp_plan_links (tenant_id);
 create index idx_haccp_plan_links_plan_id on haccp_plan_links (plan_id);
+create index idx_supplier_documents_tenant_id on supplier_documents (tenant_id);
+create index idx_supplier_documents_supplier_id on supplier_documents (supplier_id);
+create index idx_supplier_documents_expires_on on supplier_documents (expires_on);
 create unique index uq_haccp_plan_links_supplier on haccp_plan_links (plan_id, supplier_id) where supplier_id is not null;
 create unique index uq_haccp_plan_links_training on haccp_plan_links (plan_id, training_id) where training_id is not null;
 create unique index uq_haccp_plan_links_procedure on haccp_plan_links (plan_id, procedure_id) where procedure_id is not null;
@@ -2148,6 +2184,9 @@ create trigger trg_complaints_updated_at before update on complaints
   for each row execute function set_updated_at();
 
 create trigger trg_risks_updated_at before update on risks
+  for each row execute function set_updated_at();
+
+create trigger trg_supplier_documents_updated_at before update on supplier_documents
   for each row execute function set_updated_at();
 
 create trigger trg_accidents_updated_at before update on accidents
@@ -2419,6 +2458,7 @@ alter table haccp_ccps enable row level security;
 alter table haccp_monitoring_logs enable row level security;
 alter table haccp_plan_revisions enable row level security;
 alter table haccp_plan_links enable row level security;
+alter table supplier_documents enable row level security;
 alter table suppliers enable row level security;
 alter table supplier_evaluations enable row level security;
 alter table trainings enable row level security;
@@ -2592,6 +2632,11 @@ create policy pdca_projects_isolation on pdca_projects
   with check (tenant_id = auth_tenant_id());
 
 create policy haccp_plan_revisions_isolation on haccp_plan_revisions
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy supplier_documents_isolation on supplier_documents
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

@@ -307,7 +307,7 @@ async function computeSuppliersPeriod(tenantId, periodStart, periodEnd) {
     supabase.from('suppliers').select('id, next_evaluation_date').eq('tenant_id', tenantId).eq('status', 'active'),
     supabase
       .from('supplier_evaluations')
-      .select('overall_score, decision')
+      .select('overall_score, weighted_score, decision')
       .eq('tenant_id', tenantId)
       .gte('evaluation_date', periodStart)
       .lte('evaluation_date', periodEnd),
@@ -315,7 +315,7 @@ async function computeSuppliersPeriod(tenantId, periodStart, periodEnd) {
   if (suppliersError || evaluationsError) return empty;
 
   const today = isoDateInDays(0);
-  const scores = (evaluations || []).map((row) => Number(row.overall_score));
+  const scores = (evaluations || []).map((row) => Number(row.weighted_score ?? row.overall_score));
   return {
     active: (suppliers || []).length,
     evaluations: (evaluations || []).length,

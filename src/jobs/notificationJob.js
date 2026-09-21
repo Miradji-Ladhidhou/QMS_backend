@@ -3,6 +3,7 @@ import { supabase } from '../services/supabase.js';
 import { sendEmail } from '../services/email.js';
 import { renderTemplate } from '../services/renderTemplate.js';
 import { withJobRunTracking } from '../services/jobRunTracker.js';
+import { daysUntil as supplierDaysUntil, isSupplierReminderMilestone } from '../services/supplierPolicy.js';
 import { CLOSED_RISK_STATUSES, RISK_REVIEW_REMINDER_LEAD_DAYS, currentScore, daysUntil, isReminderMilestone } from '../services/riskAssessments.js';
 import {
   getUserEmail,
@@ -211,6 +212,28 @@ export async function getHaccpReviewAlerts(tenantId) {
     .filter((plan) => plan.user_id && isReminderMilestone(plan.days_remaining));
 }
 
+// Fournisseurs actifs : évaluation à faire (30 jours avant, 7 jours avant, le jour même, puis chaque semaine de retard)
+// et certificats qui expirent (mêmes jalons). Prévenu : le responsable du suivi du fournisseur, à défaut son créateur.
+// Renvoie { evaluations, documents } — exportée pour les tests.
+export async function getSupplierAlerts(tenantId) {
+  const horizon = addDaysIso(30);
+  const [{ data: suppliers, error: suppliersError }, { data: documents, error: documentsError }] = await Promise.all([
+    supabase.from('suppliers').select('id, name, next_evaluation_date, owner, created_by').eq('tenant_id', tenantId).eq('status', 'active').not('next_evaluation_date', 'is', null).lte('next_evaluation_date', horizon),
+    supabase.from('supplier_documents').select('id, title, expires_on, supplier:suppliers!inner(id, name, status, owner, created_by)').eq('tenant_id', tenantId).not('expires_on', 'is', null).lte('expires_on', horizon).eq('supplier.status', 'active'),
+  ]);
+  if (suppliersError) throw new Error(`Alertes évaluations fournisseurs : ${suppliersError.message}`);
+  if (documentsError) throw new Error(`Alertes certificats fournisseurs : ${documentsError.message}`);
+
+  return {
+    evaluations: suppliers
+      .map((supplier) => ({ ...supplier, days_remaining: supplierDaysUntil(supplier.next_evaluation_date), user_id: supplier.owner || supplier.created_by }))
+      .filter((supplier) => supplier.user_id && isSupplierReminderMilestone(supplier.days_remaining)),
+    documents: documents
+      .map((document) => ({ ...document, days_remaining: supplierDaysUntil(document.expires_on), user_id: document.supplier.owner || document.supplier.created_by }))
+      .filter((document) => document.user_id && isSupplierReminderMilestone(document.days_remaining)),
+  };
+}
+
 // Envoie (ou pas) une alerte du batch quotidien pour un utilisateur donné :
 // respecte l'interrupteur on/off, la fréquence choisie (weekly = lundi uniquement),
 // et la déduplication du jour via notification_log.
@@ -261,7 +284,7 @@ async function processTenant(tenantId) {
   const weeklyRunToday = isMonday();
   const frontendUrl = process.env.FRONTEND_URL;
 
-  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts, riskReviewAlerts, haccpReviewAlerts] =
+  const [documentAlerts, capaAlerts, trainingAlerts, taskAlerts, staleApprovals, procedureReviewAlerts, riskReviewAlerts, haccpReviewAlerts, supplierAlerts] =
     await Promise.all([
       getDocumentAlerts(tenantId),
       getCapaAlerts(tenantId),
@@ -271,6 +294,7 @@ async function processTenant(tenantId) {
       getProcedureReviewAlerts(tenantId),
       getRiskReviewAlerts(tenantId),
       getHaccpReviewAlerts(tenantId),
+      getSupplierAlerts(tenantId),
     ]);
 
   for (const doc of documentAlerts) {
@@ -451,6 +475,50 @@ async function processTenant(tenantId) {
       notificationTitle: 'Plan HACCP à revoir',
       notificationMessage: `${plan.title} (${whenText})`,
       notificationLink: `/haccp/${plan.id}`,
+    });
+  }
+
+  for (const supplier of supplierAlerts.evaluations) {
+    const whenText = describeReviewTiming(supplier.days_remaining);
+    await sendImmediateNotification({
+      tenantId,
+      userId: supplier.user_id,
+      prefField: 'email_supplier_alerts',
+      notificationType: 'supplier_evaluation_due',
+      referenceId: supplier.id,
+      templateName: 'genericAlert',
+      subject: `Évaluation fournisseur ${whenText} : ${supplier.name}`,
+      variables: {
+        heading: 'Évaluation fournisseur à faire',
+        message: `L'évaluation du fournisseur « ${supplier.name} » est prévue ${whenText} (échéance : ${supplier.next_evaluation_date}).`,
+        buttonLabel: 'Évaluer le fournisseur',
+        url: `${frontendUrl}/suppliers/${supplier.id}`,
+      },
+      notificationTitle: 'Évaluation fournisseur à faire',
+      notificationMessage: `${supplier.name} (${whenText})`,
+      notificationLink: `/suppliers/${supplier.id}`,
+    });
+  }
+
+  for (const document of supplierAlerts.documents) {
+    const whenText = document.days_remaining < 0 ? `expiré depuis ${-document.days_remaining} jour${-document.days_remaining > 1 ? 's' : ''}` : document.days_remaining === 0 ? "expire aujourd'hui" : `expire dans ${document.days_remaining} jour${document.days_remaining > 1 ? 's' : ''}`;
+    await sendImmediateNotification({
+      tenantId,
+      userId: document.user_id,
+      prefField: 'email_supplier_alerts',
+      notificationType: 'supplier_document_expiring',
+      referenceId: document.id,
+      templateName: 'genericAlert',
+      subject: `Certificat fournisseur ${whenText} : ${document.supplier.name}`,
+      variables: {
+        heading: 'Certificat fournisseur à renouveler',
+        message: `Le document « ${document.title} » du fournisseur « ${document.supplier.name} » ${whenText} (échéance : ${document.expires_on}). Demandez le renouvellement à votre fournisseur.`,
+        buttonLabel: 'Voir le fournisseur',
+        url: `${frontendUrl}/suppliers/${document.supplier.id}`,
+      },
+      notificationTitle: 'Certificat fournisseur à renouveler',
+      notificationMessage: `${document.title} — ${document.supplier.name} (${whenText})`,
+      notificationLink: `/suppliers/${document.supplier.id}`,
     });
   }
 }

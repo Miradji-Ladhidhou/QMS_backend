@@ -580,7 +580,8 @@ describe('KPI de module — fournisseurs', () => {
     await makeSupplier(t, { criticality: 'critical' }); // critique, jamais évalué
     await makeSupplier(t, { criticality: 'low', next_evaluation_date: '2020-01-01' }); // éval en retard
     const s3 = await makeSupplier(t, { criticality: 'medium' });
-    await addEvaluation(t, s3.id, { quality_score: 2, delivery_score: 2, price_score: 2, responsiveness_score: 2 }); // note 2/5
+    // Note 2/5 : « maintenu » est plus indulgent que la décision proposée (sous surveillance) — il faut le justifier.
+    await addEvaluation(t, s3.id, { quality_score: 2, delivery_score: 2, price_score: 2, responsiveness_score: 2, comment: 'Maintenu malgré la note : plan de progrès en cours.' });
 
     const unev = await fromPreset(t, 'supplier_critical_unevaluated_backlog');
     let rec = (unev.body.records || []).find((r) => r.value !== null);

@@ -243,8 +243,10 @@ describe('buildQmsSnapshot — éléments d\'entrée complémentaires (satisfact
 
   it('fournisseurs : évaluations de la période, décisions et évaluations en retard', async () => {
     tenant = await createTenant();
+    // « Emballages Martin » est évalué : sa prochaine évaluation est alors recalculée (plus en retard). « Autre »,
+    // jamais évalué et attendu depuis 10 jours, reste la seule évaluation en retard.
     const active = (await request(app).post('/api/suppliers').set(auth(tenant.admin.token)).send({ name: 'Emballages Martin', criticality: 'high', next_evaluation_date: isoDate(-10) })).body;
-    await request(app).post('/api/suppliers').set(auth(tenant.admin.token)).send({ name: 'Autre', next_evaluation_date: isoDate(30) }).expect(201);
+    await request(app).post('/api/suppliers').set(auth(tenant.admin.token)).send({ name: 'Autre', next_evaluation_date: isoDate(-10) }).expect(201);
     await request(app)
       .post(`/api/suppliers/${active.id}/evaluations`)
       .set(auth(tenant.admin.token))

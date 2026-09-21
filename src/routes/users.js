@@ -17,6 +17,7 @@ const NOTIFICATION_PREFERENCE_FIELDS = [
   'email_procedure_review',
   'email_risk_review',
   'email_haccp_alerts',
+  'email_supplier_alerts',
   'digest_frequency',
 ];
 
@@ -131,6 +132,7 @@ router.patch(
     body('email_procedure_review').optional().isBoolean().withMessage('Valeur invalide.'),
     body('email_risk_review').optional().isBoolean().withMessage('Valeur invalide.'),
     body('email_haccp_alerts').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('email_supplier_alerts').optional().isBoolean().withMessage('Valeur invalide.'),
     body('digest_frequency').optional({ values: 'falsy' }).isIn(DIGEST_FREQUENCIES).withMessage('Fréquence invalide.'),
   ],
   async (req, res) => {
