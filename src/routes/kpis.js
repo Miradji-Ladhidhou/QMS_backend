@@ -12,7 +12,7 @@ import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { MODULE_KPI_PRESETS, MODULE_KPI_SOURCES, getPreset } from '../services/moduleKpiSources.js';
 import { recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
 import { createModuleKpiFromPreset } from '../services/moduleKpiCreate.js';
-import { buildModuleOverview, enableEssentialIndicators } from '../services/moduleKpiOverview.js';
+import { buildModuleOverview, enableEssentialIndicators, parseRanges } from '../services/moduleKpiOverview.js';
 import { domainOfPreset, isEssential } from '../services/moduleKpiCatalog.js';
 
 const router = Router();
