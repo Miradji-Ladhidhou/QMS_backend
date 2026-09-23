@@ -128,7 +128,7 @@ async function backfillPresetIds(tenantId, kpis) {
 export async function buildModuleOverview({ tenantId, viewer, ranges = {} }) {
   const { data: rows, error } = await supabase
     .from('kpis')
-    .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, folder_id, folder:kpi_folders(id, name), category:categories(id, is_restricted), records:kpi_records(period_date, value)')
+    .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, category:categories(id, is_restricted), records:kpi_records(period_date, value)')
     .eq('tenant_id', tenantId)
     .eq('calculation_type', 'module');
   if (error) throw new Error('Impossible de récupérer les indicateurs des modules.');
@@ -169,8 +169,6 @@ export async function buildModuleOverview({ tenantId, viewer, ranges = {} }) {
       const comparisons = buildComparisons(range ? points.filter((point) => !scoped.length || point.period_date <= scoped[scoped.length - 1].period_date) : points, range && scoped.length === 0);
       return {
         ...base,
-        folder_id: kpi.folder_id || null,
-        folder_name: kpi.folder?.name || null,
         target,
         target_direction: direction,
         target_changed: target !== base.default_target || direction !== base.default_direction,

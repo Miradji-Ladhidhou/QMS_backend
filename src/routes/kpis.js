@@ -185,6 +185,7 @@ router.get('/module-overview', async (req, res) => {
     if (error) return res.status(400).json({ error });
     res.json(await buildModuleOverview({ tenantId: req.tenantId, viewer: { userId: req.user.id, userRole: req.userRole }, ranges }));
   } catch (err) {
+    console.error('[kpis] module-overview failed:', err);
     res.status(500).json({ error: err.message });
   }
 });
