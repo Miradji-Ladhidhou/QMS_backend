@@ -181,7 +181,9 @@ router.get('/module-presets', async (req, res) => {
 // précédentes) et courbe. Placé avant /:id.
 router.get('/module-overview', async (req, res) => {
   try {
-    res.json(await buildModuleOverview({ tenantId: req.tenantId, viewer: { userId: req.user.id, userRole: req.userRole } }));
+    const { ranges, error } = parseRanges(req.query.ranges);
+    if (error) return res.status(400).json({ error });
+    res.json(await buildModuleOverview({ tenantId: req.tenantId, viewer: { userId: req.user.id, userRole: req.userRole }, ranges }));
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -430,6 +432,31 @@ router.patch(
       return res.status(500).json({ error: 'Erreur lors du déplacement.' });
     }
 
+    res.json({ updated: data.length });
+  }
+);
+
+// PATCH /api/kpis/bulk-folder — range plusieurs KPI d'un coup dans un dossier existant (folder_id: null = à la racine).
+// Placée avant PATCH /:id.
+router.patch(
+  '/bulk-folder',
+  requireRole('admin', 'manager'),
+  [
+    body('ids').isArray({ min: 1 }).withMessage('Sélectionnez au moins un KPI.'),
+    body('ids.*').isUUID().withMessage('Identifiant invalide.'),
+    body('folder_id').custom((value) => value === null || (typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value))).withMessage('Dossier invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg, details: errors.array() });
+
+    if (req.body.folder_id) {
+      const { data: folder } = await supabase.from('kpi_folders').select('id').eq('tenant_id', req.tenantId).eq('id', req.body.folder_id).maybeSingle();
+      if (!folder) return res.status(400).json({ error: 'Dossier introuvable.' });
+    }
+
+    const { data, error } = await supabase.from('kpis').update({ folder_id: req.body.folder_id }).eq('tenant_id', req.tenantId).in('id', req.body.ids).select('id');
+    if (error) return res.status(500).json({ error: 'Erreur lors du déplacement.' });
     res.json({ updated: data.length });
   }
 );
