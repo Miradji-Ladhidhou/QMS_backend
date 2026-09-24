@@ -8,6 +8,7 @@ import { buildAttendanceSheetPdf } from '../services/attendanceSheetPdf.js';
 import { buildTrainingCertificatePdf } from '../services/trainingCertificatePdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { sendPaginatedOrArray } from '../utils/pagination.js';
 
 const router = Router();
 
@@ -156,7 +157,7 @@ router.get('/', async (req, res) => {
   // Catégorie restreinte (voir Paramètres > Catégories modules) — opt-in, ne change rien tant
   // qu'aucune catégorie formation n'est marquée restreinte.
   const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
-  res.json(withPrivacy(viewable));
+  return sendPaginatedOrArray(res, withPrivacy(viewable), req.query, { defaultLimit: 25, maxLimit: 100 });
 });
 
 // GET /api/trainings/matrix — vue croisée personnel x formations (comptes ET salariés sans

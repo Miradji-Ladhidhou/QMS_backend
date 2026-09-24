@@ -8,6 +8,7 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildCapaPdf } from '../services/capaPdf.js';
 import { requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
+import { sendPaginatedOrArray } from '../utils/pagination.js';
 
 const router = Router();
 
@@ -144,7 +145,7 @@ router.get('/', async (req, res) => {
     items: data,
   });
 
-  res.json(visible);
+  return sendPaginatedOrArray(res, visible, req.query, { defaultLimit: 25, maxLimit: 100 });
 });
 
 // GET /api/capas/:id — détail avec commentaires de suivi

@@ -11,6 +11,7 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { sendImmediateNotification, getUserFullName } from '../services/notificationHelpers.js';
 import { extractText } from '../services/textExtraction.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
+import { sendPaginatedOrArray } from '../utils/pagination.js';
 import { parseExcelBuffer } from '../services/excelParsing.js';
 import {
   refreshAccessTokenIfNeeded,
@@ -348,7 +349,7 @@ router.get('/', async (req, res) => {
     }
   }
 
-  res.json(viewable.map((doc) => ({ ...doc, latest_version_comment: latestCommentByDocId.get(doc.id) || null })));
+  return sendPaginatedOrArray(res, viewable.map((doc) => ({ ...doc, latest_version_comment: latestCommentByDocId.get(doc.id) || null })), req.query, { defaultLimit: 25, maxLimit: 100 });
 });
 
 // GET /api/documents/search?q=terme — recherche plein texte (titre, description, contenu extrait)
