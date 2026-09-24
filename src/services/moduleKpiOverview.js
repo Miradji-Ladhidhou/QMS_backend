@@ -6,6 +6,7 @@ import { createModuleKpiFromPreset } from './moduleKpiCreate.js';
 
 // Historique gardé par indicateur pour la courbe et les comparaisons.
 const SERIES_LENGTH = 12;
+const KPI_PAGE_SIZE = 1000;
 // Comme getKpiStatus (frontend/src/lib/kpiStatus.js) : à moins de 10 % de l'objectif, « à surveiller » plutôt que « hors objectif ».
 const WARNING_MARGIN_RATIO = 0.1;
 
@@ -126,12 +127,19 @@ async function backfillPresetIds(tenantId, kpis) {
 // Vue « Indicateurs des modules » : par domaine, ses indicateurs (le noyau essentiel d'abord, puis « autres »), chacun
 // suivi ou non ; pour un indicateur suivi : valeur la plus récente, objectif, état, comparaisons et courbe.
 export async function buildModuleOverview({ tenantId, viewer, ranges = {} }) {
-  const { data: rows, error } = await supabase
-    .from('kpis')
-    .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, category:categories(id, is_restricted), records:kpi_records(period_date, value)')
-    .eq('tenant_id', tenantId)
-    .eq('calculation_type', 'module');
-  if (error) throw new Error('Impossible de récupérer les indicateurs des modules.');
+  const rows = [];
+  for (let offset = 0; ; offset += KPI_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from('kpis')
+      .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, category:categories(id, is_restricted), records:kpi_records(period_date, value)')
+      .eq('tenant_id', tenantId)
+      .eq('calculation_type', 'module')
+      .order('id', { ascending: true })
+      .range(offset, offset + KPI_PAGE_SIZE - 1);
+    if (error) throw new Error('Impossible de récupérer les indicateurs des modules.');
+    rows.push(...(data || []));
+    if (!data || data.length < KPI_PAGE_SIZE) break;
+  }
 
   const kpis = await filterViewableByCategory({ ...viewer, items: rows });
   await backfillPresetIds(tenantId, kpis);
