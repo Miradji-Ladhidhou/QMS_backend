@@ -252,7 +252,8 @@ router.post(
     // existants, l'email vit dans auth.users : le lire dans inviteOne() ajoutait une requête
     // Auth avant chaque envoi et expliquait la différence de délai observée. Préchargement
     // parallèle : une seule phase d'attente, puis les invitations peuvent partir ensemble.
-    const userIds = [...new Set((records || []).filter((record) => record.user_id).map((record) => record.user_id))];
+    const itemByRecordId = new Map(items.map((item) => [item.record_id, item]));
+    const userIds = [...new Set((records || []).filter((record) => record.user_id && !itemByRecordId.get(record.id)?.email).map((record) => record.user_id))];
     const userEmailEntries = await Promise.all(
       userIds.map(async (userId) => [userId, await getUserEmail(userId)])
     );
@@ -267,7 +268,10 @@ router.post(
       const personName = record.user?.full_name || record.employee?.full_name || 'Participant';
       let email;
       if (record.user_id) {
-        email = emailByUserId.get(record.user_id) || null;
+        // L'interface affiche et valide déjà l'adresse du compte avant l'envoi. L'utiliser ici
+        // évite une nouvelle requête Auth au clic ; le repli garde la compatibilité avec les
+        // anciens clients qui n'envoient pas encore email.
+        email = item.email || emailByUserId.get(record.user_id) || null;
       } else {
         email = item.email || record.employee?.email || null;
         // L'adresse saisie à l'envoi est mémorisée sur la fiche du salarié : inutile de la
