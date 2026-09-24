@@ -782,6 +782,47 @@ router.get('/stats', async (req, res) => {
   });
 });
 
+router.get('/platform-settings', async (req, res) => {
+  const { data, error } = await supabase.from('platform_settings').select('key, value, updated_at').order('key');
+  if (error) return res.status(500).json({ error: 'Impossible de récupérer les réglages plateforme.' });
+  res.json(data);
+});
+
+router.patch('/platform-settings/maintenance', [body('enabled').isBoolean(), body('message').optional().trim().isLength({ max: 500 })], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Réglage de maintenance invalide.', details: errors.array() });
+  const value = { enabled: req.body.enabled, message: req.body.message || 'Maintenance en cours. Revenez dans quelques instants.' };
+  const { data, error } = await supabase.from('platform_settings').upsert({ key: 'maintenance', value, updated_by: req.user.id }, { onConflict: 'key' }).select('key, value, updated_at').single();
+  if (error) return res.status(500).json({ error: 'Impossible de modifier le mode maintenance.' });
+  await logSuperAdminAction({ actorId: req.user.id, action: req.body.enabled ? 'maintenance_enabled' : 'maintenance_disabled', targetType: 'platform', details: value });
+  res.json(data);
+});
+
+router.get('/metrics', async (req, res) => {
+  const tables = ['tenants', 'users', 'documents', 'capas', 'kpis', 'trainings', 'audits', 'risks', 'suppliers', 'support_tickets'];
+  const counts = {};
+  for (const table of tables) {
+    const { count } = await supabase.from(table).select('id', { count: 'exact', head: true });
+    counts[table] = count || 0;
+  }
+  res.json({ counts, process_uptime_seconds: Math.round(process.uptime()), external: { provider: 'non_configured', message: 'Les métriques CPU et stockage Render/Supabase nécessitent une clé API fournisseur.' } });
+});
+
+router.get('/support-tickets', async (req, res) => {
+  const { data, error } = await supabase.from('support_tickets').select('*, tenant:tenants(id, name, slug), creator:users!support_tickets_created_by_fkey(full_name)').order('updated_at', { ascending: false }).limit(200);
+  if (error) return res.status(500).json({ error: 'Impossible de récupérer les tickets support.' });
+  res.json(data || []);
+});
+
+router.patch('/support-tickets/:id', [body('status').optional().isIn(['open', 'in_progress', 'resolved', 'closed']), body('priority').optional().isIn(['low', 'normal', 'high', 'urgent']), body('admin_note').optional().trim().isLength({ max: 5000 })], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Données de ticket invalides.', details: errors.array() });
+  const update = Object.fromEntries(['status', 'priority', 'admin_note'].filter((field) => field in req.body).map((field) => [field, req.body[field]]));
+  const { data, error } = await supabase.from('support_tickets').update(update).eq('id', req.params.id).select('*, tenant:tenants(id, name, slug)').single();
+  if (error || !data) return res.status(404).json({ error: 'Ticket introuvable.' });
+  res.json(data);
+});
+
 // GET /api/super-admin/health — vérifie que l'API répond et mesure la latence d'une requête
 // triviale vers la base. Pas une vraie supervision d'infrastructure (CPU/mémoire/réseau du
 // serveur d'hébergement) : ça nécessiterait les identifiants d'API de l'hébergeur (Render,

@@ -35,6 +35,15 @@ export async function requireAuth(req, res, next) {
     return res.status(403).json({ error: 'Ce compte est suspendu. Contactez votre administrateur.' });
   }
 
+  const { data: maintenance } = await supabase
+    .from('platform_settings')
+    .select('value')
+    .eq('key', 'maintenance')
+    .maybeSingle();
+  if (maintenance?.value?.enabled && !profile.is_super_admin) {
+    return res.status(503).json({ error: maintenance.value.message || 'Maintenance en cours.' });
+  }
+
   if (!profile.is_active) {
     return res.status(403).json({ error: 'Ce compte a été désactivé.' });
   }
