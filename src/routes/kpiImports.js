@@ -157,7 +157,8 @@ router.post('/:importId/ai-suggestion', requireRole('admin', 'manager'), async (
   const representativeIndexes = [...new Set([0, Math.floor(allRows.length / 2), allRows.length - 1])].filter((index) => index >= 0);
   const representativeRows = representativeIndexes.map((index) => allRows[index]?.row_data).filter(Boolean);
   try {
-    const suggestion = await generateKpiImportSuggestion({ columns, rowCount: allRows.length || importRow.row_count, profile, representativeRows });
+    const userPrompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim().slice(0, 2000) : '';
+    const suggestion = await generateKpiImportSuggestion({ columns, rowCount: allRows.length || importRow.row_count, profile, representativeRows, userPrompt });
     res.json({ ...suggestion, analyzed_rows: allRows.length, analyzed_from_original_file: true });
   } catch (err) {
     res.status(503).json({ error: err.message });
