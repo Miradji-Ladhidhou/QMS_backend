@@ -27,5 +27,6 @@ create table if not exists support_tickets (
 create index if not exists idx_support_tickets_tenant on support_tickets(tenant_id);
 create index if not exists idx_support_tickets_status on support_tickets(status);
 
+drop trigger if exists support_tickets_updated_at on support_tickets;
 create trigger support_tickets_updated_at before update on support_tickets
 for each row execute function set_updated_at();
