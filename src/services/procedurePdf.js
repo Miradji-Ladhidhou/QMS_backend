@@ -84,10 +84,16 @@ function drawStructuredParagraph(doc, text) {
     if (bullet || ordered) {
       const marker = ordered ? `${ordered[1]}.` : '•';
       const value = ordered ? ordered[2] : bullet[1];
+      if (!value.trim()) return;
       const left = PAGE_MARGIN + (nested ? 28 : 14);
+      const valueWidth = CONTENT_WIDTH - (left - PAGE_MARGIN) - 16;
+      const valueHeight = doc.heightOfString(value.trim(), { width: valueWidth, lineGap: 2 });
+      if (doc.y + valueHeight > doc.page.height - doc.page.margins.bottom) {
+        doc.addPage();
+      }
       const lineY = doc.y;
       doc.fontSize(10).fillColor(INK).text(marker, left, lineY, { width: 14 });
-      doc.text(value.trim(), left + 16, lineY, { width: CONTENT_WIDTH - (left - PAGE_MARGIN) - 16, lineGap: 2 });
+      doc.text(value.trim(), left + 16, lineY, { width: valueWidth, lineGap: 2 });
     } else {
       doc.fontSize(10).fillColor(INK).text(line.trim(), PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
@@ -159,7 +165,9 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
         doc.moveDown(0.35);
         break;
       case 'liste_puces':
-        (block.items || []).forEach((item) => drawStructuredParagraph(doc, `• ${item}`));
+        (block.items || [])
+          .filter((item) => String(item || '').trim())
+          .forEach((item) => drawStructuredParagraph(doc, `• ${item}`));
         doc.moveDown(0.3);
         break;
       case 'tableau':

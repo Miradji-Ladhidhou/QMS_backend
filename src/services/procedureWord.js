@@ -208,7 +208,9 @@ function listParagraph(text, { ordered = false, nested = false, continuation = f
 function bulletParagraphs(style, items) {
   const prefix = style.bulletStyle === 'round' ? '•' : '–';
   return (items || []).flatMap((item) => {
-    const lines = String(item || '').split('\n');
+    const value = String(item || '').trim();
+    if (!value) return [];
+    const lines = value.split('\n');
     return lines.map((line, index) =>
       listParagraph(index === 0 ? `${prefix} ${line.trim()}` : line.trim(), { continuation: index > 0 })
     );
