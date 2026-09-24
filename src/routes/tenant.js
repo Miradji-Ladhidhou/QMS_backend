@@ -78,6 +78,77 @@ async function backfillReviewDates(tenantId, newDefaultMonths) {
 
 router.use(requireAuth);
 
+const TENANT_EXPORT_TABLES = [
+  'users',
+  'document_categories',
+  'documents',
+  'document_versions',
+  'document_workflows',
+  'document_approvals',
+  'document_audit_log',
+  'capas',
+  'capa_comments',
+  'trainings',
+  'training_records',
+  'kpis',
+  'kpi_records',
+  'groups',
+  'group_members',
+  'user_notification_preferences',
+  'notifications',
+  'audits',
+  'audit_findings',
+  'audit_checklist_items',
+  'risks',
+  'risk_assessments',
+  'suppliers',
+  'supplier_evaluations',
+  'complaints',
+  'customer_satisfaction',
+  'pdca_projects',
+  'qqoqccp_analyses',
+  'management_reviews',
+  'management_review_actions',
+  'haccp_plans',
+  'haccp_hazards',
+  'haccp_ccps',
+  'tasks',
+  'activity_log',
+];
+
+// Export JSON des données métier du tenant — volontairement limité à une liste blanche :
+// jamais de select dynamique fourni par le client, et jamais de secrets Supabase.
+router.get('/data-export', requireRole('admin'), async (req, res) => {
+  const result = { exported_at: new Date().toISOString(), tenant_id: req.tenantId, tables: {} };
+  for (const table of TENANT_EXPORT_TABLES) {
+    const { data, error } = await supabase.from(table).select('*').eq('tenant_id', req.tenantId);
+    if (!error) result.tables[table] = data || [];
+  }
+  const { data: tenant, error: tenantError } = await supabase.from('tenants').select('id, name, slug, plan, timezone').eq('id', req.tenantId).single();
+  if (tenantError || !tenant) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  result.tenant = tenant;
+  res.setHeader('Content-Disposition', `attachment; filename="qms-export-${req.tenantId}.json"`);
+  res.json(result);
+});
+
+// Suppression définitive volontairement distincte de DELETE /api/tenant historique (retiré) :
+// le nom exact de l'entreprise est exigé pour éviter un clic accidentel.
+router.delete('/account', requireRole('admin'), [body('confirmation_name').trim().notEmpty().withMessage('Confirmation obligatoire.')], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ error: 'Confirmation invalide.', details: errors.array() });
+
+  const { data: tenant, error: tenantError } = await supabase.from('tenants').select('id, name').eq('id', req.tenantId).single();
+  if (tenantError || !tenant || req.body.confirmation_name !== tenant.name) {
+    return res.status(400).json({ error: "Le nom de l'entreprise ne correspond pas." });
+  }
+
+  const { data: users } = await supabase.from('users').select('id').eq('tenant_id', req.tenantId);
+  const { error: deleteError } = await supabase.from('tenants').delete().eq('id', req.tenantId);
+  if (deleteError) return res.status(500).json({ error: "Impossible de supprimer l'entreprise." });
+  await Promise.all((users || []).map((user) => supabase.auth.admin.deleteUser(user.id)));
+  res.status(204).send();
+});
+
 // GET /api/tenant — informations de l'entreprise du tenant courant
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
