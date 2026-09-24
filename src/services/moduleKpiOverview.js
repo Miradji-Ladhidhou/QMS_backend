@@ -41,9 +41,9 @@ export function buildComparisons(points, empty = false) {
   const yearAgoPoint = points.find((point) => point.period_date === yearAgo(latest.period_date)) || null;
   const lastSix = before.slice(-6);
   return {
-    latest: { period_date: latest.period_date, value: latest.value, calculation_metadata: latest.calculation_metadata || null },
-    previous: previous ? { period_date: previous.period_date, value: previous.value, calculation_metadata: previous.calculation_metadata || null } : null,
-    year_ago: yearAgoPoint ? { period_date: yearAgoPoint.period_date, value: yearAgoPoint.value, calculation_metadata: yearAgoPoint.calculation_metadata || null } : null,
+    latest: { id: latest.id, period_date: latest.period_date, value: latest.value, calculation_metadata: latest.calculation_metadata || null },
+    previous: previous ? { id: previous.id, period_date: previous.period_date, value: previous.value, calculation_metadata: previous.calculation_metadata || null } : null,
+    year_ago: yearAgoPoint ? { id: yearAgoPoint.id, period_date: yearAgoPoint.period_date, value: yearAgoPoint.value, calculation_metadata: yearAgoPoint.calculation_metadata || null } : null,
     average_6: lastSix.length > 0 ? { count: lastSix.length, value: round2(lastSix.reduce((sum, point) => sum + point.value, 0) / lastSix.length) } : null,
   };
 }
@@ -131,7 +131,7 @@ export async function buildModuleOverview({ tenantId, viewer, ranges = {} }) {
   for (let offset = 0; ; offset += KPI_PAGE_SIZE) {
     const { data, error } = await supabase
       .from('kpis')
-      .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, category:categories(id, is_restricted), records:kpi_records(period_date, value, calculation_metadata)')
+      .select('id, name, unit, target, target_direction, frequency, source_module, module_preset_id, updated_at, category_id, category:categories(id, is_restricted), records:kpi_records(id, period_date, value, calculation_metadata)')
       .eq('tenant_id', tenantId)
       .eq('calculation_type', 'module')
       .order('id', { ascending: true })
@@ -167,7 +167,7 @@ export async function buildModuleOverview({ tenantId, viewer, ranges = {} }) {
 
       const points = (kpi.records || [])
         .filter((record) => record.value !== null && record.value !== undefined)
-        .map((record) => ({ period_date: record.period_date, value: Number(record.value), calculation_metadata: record.calculation_metadata || null }))
+        .map((record) => ({ id: record.id, period_date: record.period_date, value: Number(record.value), calculation_metadata: record.calculation_metadata || null }))
         .sort((a, b) => (a.period_date < b.period_date ? -1 : 1));
       const direction = kpi.target_direction || 'min';
       const target = kpi.target === null || kpi.target === undefined ? null : Number(kpi.target);

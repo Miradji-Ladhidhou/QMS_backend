@@ -3,7 +3,7 @@
 // la recette de calcul via le moteur partagé (kpiCalculation.js), et remplace les kpi_records
 // correspondants. Miroir de POST /api/kpi-imports/:id/apply, mais sans fichier importé.
 import { supabase } from './supabase.js';
-import { groupRowsByPeriod, summarizeGroups } from './kpiCalculation.js';
+import { groupRowsByPeriod, matchesFilters, summarizeGroups } from './kpiCalculation.js';
 import { MODULE_KPI_SOURCES } from './moduleKpiSources.js';
 
 // Valeur sentinelle de kpi_calculation_configs.period_column pour un preset « photo à date »
@@ -56,6 +56,62 @@ async function fetchSourceRows(source, sourceModule, tenantId, rowsCache) {
   const rows = await source.fetchRows(tenantId);
   rowsCache.set(key, rows);
   return rows;
+}
+
+export async function getModuleKpiEvidence({ tenantId, kpiId, recordId }) {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('id, name, unit, calculation_type, source_module, frequency')
+    .eq('tenant_id', tenantId)
+    .eq('id', kpiId)
+    .single();
+  if (kpiError || !kpi) throw new Error('KPI introuvable.');
+  if (kpi.calculation_type !== 'module') throw new Error("Ce KPI n'est pas un KPI de module.");
+
+  const { data: record, error: recordError } = await supabase
+    .from('kpi_records')
+    .select('id, period_date, value, calculation_metadata')
+    .eq('tenant_id', tenantId)
+    .eq('kpi_id', kpiId)
+    .eq('id', recordId)
+    .single();
+  if (recordError || !record) throw new Error('Relevé introuvable.');
+
+  const { data: configs, error: configError } = await supabase.from('kpi_calculation_configs').select('*').eq('tenant_id', tenantId).eq('kpi_id', kpiId).limit(1);
+  const config = configs?.[0];
+  if (configError || !config) throw new Error('Recette de calcul introuvable.');
+  const source = MODULE_KPI_SOURCES[kpi.source_module];
+  if (!source) throw new Error(`Source de module inconnue : "${kpi.source_module}".`);
+
+  if (record.calculation_metadata?.matched_rows) {
+    return {
+      kpi: { id: kpi.id, name: kpi.name, unit: kpi.unit },
+      record: { id: record.id, period_date: record.period_date, value: record.value },
+      calculation: record.calculation_metadata,
+      rows_total: record.calculation_metadata.rows_total || record.calculation_metadata.matched_rows.length,
+      rows: record.calculation_metadata.matched_rows.map((row) => ({ ...row, included: true })),
+    };
+  }
+
+  const rows = await fetchSourceRows(source, kpi.source_module, tenantId);
+  const isSnapshot = config.period_column === SNAPSHOT_COLUMN;
+  const snapshotBucket = isSnapshot ? bucketDate(new Date(record.period_date), kpi.frequency) : null;
+  const bucketedRows = rows.map((row) => ({
+    row_index: row.row_index,
+    row_data: { ...row.row_data, [config.period_column]: isSnapshot ? snapshotBucket : bucketDate(row.row_data[config.period_column], kpi.frequency) },
+  }));
+  const groups = groupRowsByPeriod(bucketedRows, config.period_column, null);
+  const groupRows = groups.get(record.period_date) || [];
+  const result = summarizeGroups(config, new Map([[record.period_date, groupRows]])).periods[0];
+  const matchedIds = new Set(result?.matched_row_ids || []);
+
+  return {
+    kpi: { id: kpi.id, name: kpi.name, unit: kpi.unit },
+    record: { id: record.id, period_date: record.period_date, value: record.value },
+    calculation: { ...record.calculation_metadata, filters: config.filters || [], filter_logic: config.filter_logic || 'all', calc_type: config.calc_type, period_column: config.period_column, source_column: config.source_column || null },
+    rows_total: groupRows.length,
+    rows: groupRows.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, included: matchedIds.has(rowIndex), row_data: rowData })),
+  };
 }
 
 // Renvoie { periods, updated, deleted }. Lève si le KPI n'est pas un KPI de module valide.
@@ -143,6 +199,7 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null, r
           rows_valid: p.rows_valid,
           rows_rejected: p.rows_rejected,
           matched_row_ids: p.matched_row_ids || [],
+          matched_rows: p.matched_rows || [],
           matched_values: p.matched_values || [],
         },
       })),

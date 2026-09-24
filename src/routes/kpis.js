@@ -10,7 +10,7 @@ import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters }
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { MODULE_KPI_PRESETS, MODULE_KPI_SOURCES, getPreset } from '../services/moduleKpiSources.js';
-import { recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
+import { getModuleKpiEvidence, recomputeModuleKpi } from '../services/moduleKpiRecompute.js';
 import { createModuleKpiFromPreset } from '../services/moduleKpiCreate.js';
 import { buildModuleOverview, enableEssentialIndicators, parseRanges } from '../services/moduleKpiOverview.js';
 import { domainOfPreset, isEssential } from '../services/moduleKpiCatalog.js';
@@ -870,6 +870,15 @@ router.post('/:id/recompute', requireRole('admin', 'manager'), async (req, res) 
   } catch (err) {
     const clientError = err.message.includes("n'est pas un KPI de module") || err.message.includes('introuvable');
     return res.status(clientError ? 400 : 500).json({ error: err.message });
+  }
+});
+
+// GET /api/kpis/:id/records/:recordId/module-proof — lignes métier exactes utilisées par un KPI module.
+router.get('/:id/records/:recordId/module-proof', async (req, res) => {
+  try {
+    res.json(await getModuleKpiEvidence({ tenantId: req.tenantId, kpiId: req.params.id, recordId: req.params.recordId }));
+  } catch (err) {
+    res.status(err.message.includes('introuvable') ? 404 : 500).json({ error: err.message });
   }
 });
 

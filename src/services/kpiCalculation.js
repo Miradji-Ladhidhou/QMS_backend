@@ -145,12 +145,13 @@ export function computeGroup(config, rows) {
         value: rowsTotal > 0 ? Number(((matched.length / rowsTotal) * 100).toFixed(2)) : null,
         matching: matched.length,
         matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
+        matchedRows: matched.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, row_data: rowData })),
         rowsValid: rowsTotal,
         rejectedDetails: [],
       };
     }
     case 'count': {
-      return { value: matched.length, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: matched.length, rejectedDetails: [] };
+      return { value: matched.length, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), matchedRows: matched.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, row_data: rowData })), rowsValid: matched.length, rejectedDetails: [] };
     }
     case 'sum':
     case 'average':
@@ -181,6 +182,7 @@ export function computeGroup(config, rows) {
           value,
           matching: matched.length,
           matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
+          matchedRows: matched.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, row_data: rowData })),
           matchedValues: matched.map(({ rowIndex, rowData }) => ({ row_id: rowIndex, value: rowData[config.source_column] })),
           rowsValid: numbers.length,
           rejectedDetails,
@@ -255,6 +257,7 @@ export function summarizeGroups(config, groups) {
       rows_valid: result.rowsValid,
       rows_matched: result.matching ?? result.rowsValid,
       matched_row_ids: result.matchedRowIds || [],
+      matched_rows: result.matchedRows || [],
       matched_values: result.matchedValues || [],
       rows_rejected: result.rejectedDetails.length,
       rejected_details: result.rejectedDetails,
