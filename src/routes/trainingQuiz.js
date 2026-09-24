@@ -226,6 +226,16 @@ router.post(
     ]);
     const recordById = new Map((records || []).map((record) => [record.id, record]));
 
+    // Les salariés sans compte ont déjà leur email dans employees.email. Pour les comptes
+    // existants, l'email vit dans auth.users : le lire dans inviteOne() ajoutait une requête
+    // Auth avant chaque envoi et expliquait la différence de délai observée. Préchargement
+    // parallèle : une seule phase d'attente, puis les invitations peuvent partir ensemble.
+    const userIds = [...new Set((records || []).filter((record) => record.user_id).map((record) => record.user_id))];
+    const userEmailEntries = await Promise.all(
+      userIds.map(async (userId) => [userId, await getUserEmail(userId)])
+    );
+    const emailByUserId = new Map(userEmailEntries);
+
     const expiresAt = new Date(Date.now() + QUIZ_LINK_TTL_HOURS * 60 * 60 * 1000);
 
     async function inviteOne(item) {
@@ -235,7 +245,7 @@ router.post(
       const personName = record.user?.full_name || record.employee?.full_name || 'Participant';
       let email;
       if (record.user_id) {
-        email = await getUserEmail(record.user_id);
+        email = emailByUserId.get(record.user_id) || null;
       } else {
         email = item.email || record.employee?.email || null;
         // L'adresse saisie à l'envoi est mémorisée sur la fiche du salarié : inutile de la
