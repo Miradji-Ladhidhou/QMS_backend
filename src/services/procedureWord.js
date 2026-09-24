@@ -195,9 +195,9 @@ function photoPlaceholderParagraphs(caption) {
   ];
 }
 
-function listParagraph(text, { ordered = false, nested = false } = {}) {
+function listParagraph(text, { ordered = false, nested = false, continuation = false } = {}) {
   const left = nested ? 1080 : 720;
-  const hanging = 360;
+  const hanging = continuation ? 0 : 360;
   return new Paragraph({
     indent: { left, hanging },
     spacing: { before: 20, after: 70, line: 276 },
@@ -209,7 +209,9 @@ function bulletParagraphs(style, items) {
   const prefix = style.bulletStyle === 'round' ? '•' : '–';
   return (items || []).flatMap((item) => {
     const lines = String(item || '').split('\n');
-    return lines.map((line, index) => listParagraph(`${prefix} ${line.trim()}`, { nested: index > 0 }));
+    return lines.map((line, index) =>
+      listParagraph(index === 0 ? `${prefix} ${line.trim()}` : line.trim(), { continuation: index > 0 })
+    );
   });
 }
 

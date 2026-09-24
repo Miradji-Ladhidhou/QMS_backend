@@ -85,8 +85,9 @@ function drawStructuredParagraph(doc, text) {
       const marker = ordered ? `${ordered[1]}.` : '•';
       const value = ordered ? ordered[2] : bullet[1];
       const left = PAGE_MARGIN + (nested ? 28 : 14);
-      doc.fontSize(10).fillColor(INK).text(marker, left, doc.y, { width: 14 });
-      doc.text(value.trim(), left + 16, doc.y, { width: CONTENT_WIDTH - (left - PAGE_MARGIN) - 16, lineGap: 2 });
+      const lineY = doc.y;
+      doc.fontSize(10).fillColor(INK).text(marker, left, lineY, { width: 14 });
+      doc.text(value.trim(), left + 16, lineY, { width: CONTENT_WIDTH - (left - PAGE_MARGIN) - 16, lineGap: 2 });
     } else {
       doc.fontSize(10).fillColor(INK).text(line.trim(), PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
     }
