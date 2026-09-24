@@ -179,6 +179,28 @@ router.get('/:id/quiz/attempts', guards, async (req, res) => {
   res.json(data);
 });
 
+// GET /api/trainings/:id/quiz/invite-emails?record_ids=... — emails affichés dans la fenêtre
+// d'envoi. Une seule résolution groupée pour les comptes existants, au lieu d'attendre au clic
+// d'envoi et de masquer l'adresse à l'utilisateur.
+router.get('/:id/quiz/invite-emails', guards, async (req, res) => {
+  const training = await findTraining(req, req.params.id);
+  if (!training) return res.status(404).json({ error: 'Formation introuvable.' });
+  const recordIds = String(req.query.record_ids || '').split(',').filter(Boolean).slice(0, MAX_INVITES_PER_CALL);
+  if (recordIds.length === 0) return res.json({ emails: {} });
+  const { data: records, error } = await supabase
+    .from('training_records')
+    .select('id, user_id, employee_id, employee:employees(email)')
+    .eq('tenant_id', req.tenantId)
+    .eq('training_id', training.id)
+    .in('id', recordIds);
+  if (error) return res.status(500).json({ error: 'Impossible de récupérer les emails.' });
+  const accountIds = [...new Set((records || []).filter((record) => record.user_id).map((record) => record.user_id))];
+  const accountEntries = await Promise.all(accountIds.map(async (userId) => [userId, await getUserEmail(userId)]));
+  const accountEmails = new Map(accountEntries);
+  const emails = Object.fromEntries((records || []).map((record) => [record.id, record.user_id ? accountEmails.get(record.user_id) || '' : record.employee?.email || '']));
+  res.json({ emails });
+});
+
 // POST /api/trainings/:id/quiz/invites — envoie à chaque personne (une réalisation = une personne
 // dans une session) un lien email valable 48 h. items : [{ record_id, email? }]. Pour un salarié
 // sans compte, email est l'adresse saisie à l'envoi (enregistrée sur sa fiche) ; pour un compte,
