@@ -143,6 +143,7 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null, r
           rows_valid: p.rows_valid,
           rows_rejected: p.rows_rejected,
           matched_row_ids: p.matched_row_ids || [],
+          matched_values: p.matched_values || [],
         },
       })),
       { onConflict: 'config_id,period_date' }

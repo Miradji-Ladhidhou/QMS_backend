@@ -177,6 +177,14 @@ export function computeGroup(config, rows) {
         else value = Number(Math.max(...numbers).toFixed(2));
       }
       return { value, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: numbers.length, rejectedDetails };
+        return {
+          value,
+          matching: matched.length,
+          matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
+          matchedValues: matched.map(({ rowIndex, rowData }) => ({ row_id: rowIndex, value: rowData[config.source_column] })),
+          rowsValid: numbers.length,
+          rejectedDetails,
+        };
     }
     case 'count_grouped': {
       const groupedCounts = {};
@@ -247,6 +255,7 @@ export function summarizeGroups(config, groups) {
       rows_valid: result.rowsValid,
       rows_matched: result.matching ?? result.rowsValid,
       matched_row_ids: result.matchedRowIds || [],
+      matched_values: result.matchedValues || [],
       rows_rejected: result.rejectedDetails.length,
       rejected_details: result.rejectedDetails,
       ...(persisted
