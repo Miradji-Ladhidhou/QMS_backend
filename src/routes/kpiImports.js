@@ -8,6 +8,7 @@ import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { KPI_CALC_TYPES, RECORDS_SELECT } from './kpis.js';
 import { groupRowsByPeriod, normalizeAnyDate, summarizeGroups, validateFilters } from '../services/kpiCalculation.js';
 import { parseExcelBuffer } from '../services/excelParsing.js';
+import { generateKpiImportSuggestion } from '../services/groq.js';
 
 const router = Router();
 
@@ -105,6 +106,20 @@ router.get('/:importId', async (req, res) => {
     row_count: importRow.row_count,
     sample: (sampleRows || []).map((row) => row.row_data),
   });
+});
+
+// POST /api/kpi-imports/:importId/ai-suggestion — suggestion facultative, jamais appliquée automatiquement.
+router.post('/:importId/ai-suggestion', requireRole('admin', 'manager'), async (req, res) => {
+  const { data: importRow, error: importError } = await supabase.from('kpi_raw_imports').select('detected_columns').eq('tenant_id', req.tenantId).eq('id', req.params.importId).single();
+  if (importError || !importRow) return res.status(404).json({ error: 'Import introuvable.' });
+  const { data: sampleRows, error: rowsError } = await supabase.from('kpi_raw_rows').select('row_data').eq('tenant_id', req.tenantId).eq('import_id', req.params.importId).order('row_index', { ascending: true }).limit(8);
+  if (rowsError) return res.status(500).json({ error: 'Impossible de lire l’aperçu du fichier.' });
+  try {
+    const suggestion = await generateKpiImportSuggestion({ columns: importRow.detected_columns || [], sample: (sampleRows || []).map((row) => row.row_data) });
+    res.json(suggestion);
+  } catch (err) {
+    res.status(503).json({ error: err.message });
+  }
 });
 
 // POST /api/kpi-imports — dépose un fichier CSV/Excel de structure arbitraire. Ne calcule

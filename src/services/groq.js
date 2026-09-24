@@ -147,6 +147,29 @@ export async function generateCapaSuggestion(context) {
   return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context, 'capa_suggestion');
 }
 
+const KPI_IMPORT_SYSTEM_PROMPT = `Tu es un expert qualité et data. Analyse les colonnes et les exemples d'un fichier importé pour proposer une recette KPI simple.
+Réponds STRICTEMENT en JSON avec exactement :
+{
+  "label": "nom court en français",
+  "calc_type": "ratio|sum|average|min|max|count|count_grouped",
+  "source_column": "colonne ou null",
+  "period_column": "colonne ou null",
+  "group_by_column": "colonne ou null",
+  "filters": [{"column":"colonne","operator":"equals","value":"valeur"}],
+  "filter_logic": "all|any",
+  "confidence": 0,
+  "explanation": "explication courte en français"
+}
+N'invente jamais de colonne. Si le choix est incertain, confidence doit être inférieur à 70. Les filtres doivent utiliser uniquement equals, contains, greater_than, greater_or_equal, less_than, less_or_equal, is_empty ou is_not_empty.`;
+
+export async function generateKpiImportSuggestion({ columns, sample }) {
+  return callGroq(
+    KPI_IMPORT_SYSTEM_PROMPT,
+    `Colonnes détectées : ${JSON.stringify(columns)}\nExemples de lignes : ${JSON.stringify(sample).slice(0, 12000)}`,
+    'kpi_import_suggestion'
+  );
+}
+
 const HACCP_HAZARD_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (description, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de hazard_type reste l'un des identifiants anglais fixes ci-dessous.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
