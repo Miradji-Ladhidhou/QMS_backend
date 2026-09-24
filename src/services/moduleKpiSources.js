@@ -6,6 +6,7 @@
 import { supabase } from './supabase.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SOURCE_PAGE_SIZE = 1000;
 
 // Nombre de jours entiers entre deux dates (ISO ou timestamptz). '' si l'une manque.
 function daysBetween(start, end) {
@@ -28,13 +29,18 @@ function onTime(end, due) {
 const bool01 = (v) => (v ? '1' : '0');
 
 async function selectAll(table, columns, tenantId) {
-  const { data, error } = await supabase
-    .from(table)
-    .select(columns)
-    .eq('tenant_id', tenantId)
-    .limit(50000);
-  if (error) throw new Error(`Lecture de ${table} : ${error.message}`);
-  return data || [];
+  const rows = [];
+  for (let offset = 0; ; offset += SOURCE_PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .eq('tenant_id', tenantId)
+      .order('id', { ascending: true })
+      .range(offset, offset + SOURCE_PAGE_SIZE - 1);
+    if (error) throw new Error(`Lecture de ${table} : ${error.message}`);
+    rows.push(...(data || []));
+    if (!data || data.length < SOURCE_PAGE_SIZE) return rows;
+  }
 }
 
 function rowsFrom(records, augment) {
@@ -63,33 +69,21 @@ async function buildCompetenceCells(tenantId) {
   soon.setDate(soon.getDate() + RENEWAL_WINDOW_DAYS);
   const soonStr = soon.toISOString().slice(0, 10);
 
-  const [usersRes, employeesRes, trainingsRes, recordsRes] = await Promise.all([
-    supabase.from('users').select('id, full_name, job_title').eq('tenant_id', tenantId).eq('training_exempt', false),
-    supabase
-      .from('employees')
-      .select('id, full_name, job_title')
-      .eq('tenant_id', tenantId)
-      .eq('is_active', true)
-      .eq('training_exempt', false),
-    supabase.from('trainings').select('id, title, required_job_titles').eq('tenant_id', tenantId),
-    supabase
-      .from('training_records')
-      .select('training_id, user_id, employee_id, completed_at, next_due_date')
-      .eq('tenant_id', tenantId)
-      .limit(50000),
+  const [users, employees, trainings, records] = await Promise.all([
+    selectAll('users', 'id, full_name, job_title', tenantId),
+    selectAll('employees', 'id, full_name, job_title, is_active, training_exempt', tenantId),
+    selectAll('trainings', 'id, title, required_job_titles', tenantId),
+    selectAll('training_records', 'id, training_id, user_id, employee_id, completed_at, next_due_date', tenantId),
   ]);
 
-  const err = usersRes.error || employeesRes.error || trainingsRes.error || recordsRes.error;
-  if (err) throw new Error(`Matrice compétences : ${err.message}`);
-
   const people = [
-    ...(usersRes.data || []).map((u) => ({ key: `u:${u.id}`, name: u.full_name, job_title: u.job_title })),
-    ...(employeesRes.data || []).map((e) => ({ key: `e:${e.id}`, name: e.full_name, job_title: e.job_title })),
+    ...(users || []).filter((u) => !u.training_exempt).map((u) => ({ key: `u:${u.id}`, name: u.full_name, job_title: u.job_title })),
+    ...(employees || []).filter((e) => e.is_active && !e.training_exempt).map((e) => ({ key: `e:${e.id}`, name: e.full_name, job_title: e.job_title })),
   ];
 
   // Dernier enregistrement par couple (formation, personne).
   const latest = new Map();
-  for (const rec of recordsRes.data || []) {
+  for (const rec of records || []) {
     const pk = rec.user_id ? `u:${rec.user_id}` : `e:${rec.employee_id}`;
     const key = `${rec.training_id}:${pk}`;
     const cur = latest.get(key);
@@ -97,7 +91,7 @@ async function buildCompetenceCells(tenantId) {
   }
 
   const cells = [];
-  for (const training of trainingsRes.data || []) {
+  for (const training of trainings || []) {
     const required = training.required_job_titles || [];
     for (const person of people) {
       const record = latest.get(`${training.id}:${person.key}`);
@@ -138,24 +132,18 @@ function inDaysStr(days) {
 // buildCompetenceCells : pas de filtre de catégorie, un KPI fournisseur couvre le panel.
 async function buildSupplierRows(tenantId) {
   const today = todayStr();
-  const [supRes, evalRes] = await Promise.all([
-    supabase.from('suppliers').select('id, name, criticality, status, next_evaluation_date').eq('tenant_id', tenantId).limit(50000),
-    supabase
-      .from('supplier_evaluations')
-      .select('supplier_id, evaluation_date, overall_score, decision')
-      .eq('tenant_id', tenantId)
-      .limit(50000),
+  const [suppliers, evaluations] = await Promise.all([
+    selectAll('suppliers', 'id, name, criticality, status, next_evaluation_date', tenantId),
+    selectAll('supplier_evaluations', 'id, supplier_id, evaluation_date, overall_score, decision', tenantId),
   ]);
-  const err = supRes.error || evalRes.error;
-  if (err) throw new Error(`Fournisseurs : ${err.message}`);
 
   const latest = new Map();
-  for (const e of evalRes.data || []) {
+  for (const e of evaluations || []) {
     const cur = latest.get(e.supplier_id);
     if (!cur || e.evaluation_date > cur.evaluation_date) latest.set(e.supplier_id, e);
   }
 
-  return (supRes.data || [])
+  return (suppliers || [])
     .filter((s) => s.status === 'active')
     .map((s) => {
       const ev = latest.get(s.id);
@@ -181,16 +169,14 @@ async function buildSupplierRows(tenantId) {
 // d'un CCP est une non-conformité de la démarche (un danger jugé non significatif n'a, par
 // définition, pas besoin d'un point critique).
 async function buildHazardRows(tenantId) {
-  const [hazardsRes, ccpsRes] = await Promise.all([
-    supabase.from('haccp_hazards').select('id, is_significant').eq('tenant_id', tenantId).limit(50000),
-    supabase.from('haccp_ccps').select('hazard_id').eq('tenant_id', tenantId).limit(50000),
+  const [hazards, ccps] = await Promise.all([
+    selectAll('haccp_hazards', 'id, is_significant', tenantId),
+    selectAll('haccp_ccps', 'id, hazard_id', tenantId),
   ]);
-  const err = hazardsRes.error || ccpsRes.error;
-  if (err) throw new Error(`Dangers HACCP : ${err.message}`);
 
-  const hazardsWithCcp = new Set((ccpsRes.data || []).map((c) => c.hazard_id));
+  const hazardsWithCcp = new Set((ccps || []).map((c) => c.hazard_id));
 
-  return (hazardsRes.data || [])
+  return (hazards || [])
     .filter((h) => h.is_significant)
     .map((h) => ({
       row_index: h.id,
@@ -201,16 +187,14 @@ async function buildHazardRows(tenantId) {
 // Une ligne par action issue d'une revue de direction, croisée avec le statut de la CAPA
 // éventuellement liée (§9.3.3 : les décisions/actions de revue doivent être suivies).
 async function buildManagementReviewActionRows(tenantId) {
-  const [actionsRes, capasRes] = await Promise.all([
-    supabase.from('management_review_actions').select('id, linked_capa_id, created_at').eq('tenant_id', tenantId).limit(50000),
-    supabase.from('capas').select('id, status').eq('tenant_id', tenantId).limit(50000),
+  const [actions, capas] = await Promise.all([
+    selectAll('management_review_actions', 'id, linked_capa_id, created_at', tenantId),
+    selectAll('capas', 'id, status', tenantId),
   ]);
-  const err = actionsRes.error || capasRes.error;
-  if (err) throw new Error(`Actions de revue de direction : ${err.message}`);
 
-  const capaStatusById = new Map((capasRes.data || []).map((c) => [c.id, c.status]));
+  const capaStatusById = new Map((capas || []).map((c) => [c.id, c.status]));
 
-  return (actionsRes.data || []).map((a) => {
+  return (actions || []).map((a) => {
     const capaStatus = a.linked_capa_id ? capaStatusById.get(a.linked_capa_id) : null;
     const noCapa = !a.linked_capa_id;
     const capaOpen = Boolean(a.linked_capa_id) && capaStatus && capaStatus !== 'closed';
