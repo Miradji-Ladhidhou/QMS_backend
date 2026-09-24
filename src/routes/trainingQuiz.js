@@ -311,23 +311,24 @@ router.post(
 
       if (insertError || !attempt) return { record_id: record.id, status: 'failed', person_name: personName };
 
-      try {
-        const html = renderTemplate('trainingQuizInvite', {
-          fullName: escapeHtml(personName),
-          trainingTitle: escapeHtml(training.title),
-          tenantName: escapeHtml(tenant?.name || 'QMS SaaS'),
-          email: escapeHtml(normalizeEmail(email)),
-          quizUrl: `${process.env.FRONTEND_URL}/quiz/${token}`,
-          expiresAt: escapeHtml(formatDeadline(expiresAt, tenant?.timezone)),
-        });
-        await sendEmail(email, `QCM de la formation « ${training.title.replace(/[\r\n]+/g, ' ')} »`, html);
-        return { record_id: record.id, status: 'sent', person_name: personName, email: normalizeEmail(email), attempt_id: attempt.id };
-      } catch {
-        // Email non parti : on retire le passage pour ne pas laisser un lien valide que personne
-        // n'a reçu.
-        await supabase.from('training_quiz_attempts').delete().eq('id', attempt.id);
-        return { record_id: record.id, status: 'failed', person_name: personName };
-      }
+      void (async () => {
+        try {
+          const html = renderTemplate('trainingQuizInvite', {
+            fullName: escapeHtml(personName),
+            trainingTitle: escapeHtml(training.title),
+            tenantName: escapeHtml(tenant?.name || 'QMS SaaS'),
+            email: escapeHtml(normalizeEmail(email)),
+            quizUrl: `${process.env.FRONTEND_URL}/quiz/${token}`,
+            expiresAt: escapeHtml(formatDeadline(expiresAt, tenant?.timezone)),
+          });
+          await sendEmail(email, `QCM de la formation « ${training.title.replace(/[\r\n]+/g, ' ')} »`, html);
+        } catch {
+          // L'invitation est déjà visible dans l'historique ; supprimer le lien si le fournisseur
+          // email refuse l'envoi pour éviter de laisser un lien inutilisable.
+          await supabase.from('training_quiz_attempts').delete().eq('id', attempt.id);
+        }
+      })();
+      return { record_id: record.id, status: 'sent', person_name: personName, email: normalizeEmail(email), attempt_id: attempt.id };
     }
 
     // Par paquets de SEND_CONCURRENCY : un envoi d'email prend ~1 s, et une session peut compter des
