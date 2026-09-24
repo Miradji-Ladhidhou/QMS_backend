@@ -131,6 +131,19 @@ export async function recomputeModuleKpi({ tenantId, kpiId, recordedBy = null, r
         value: p.value,
         source: 'module',
         recorded_by: recordedBy,
+        calculation_metadata: {
+          source_module: kpi.source_module,
+          calc_type: config.calc_type,
+          period_column: config.period_column,
+          source_column: config.source_column || null,
+          filters: config.filters || [],
+          filter_logic: config.filter_logic || 'all',
+          rows_total: p.rows_total,
+          rows_matched: p.rows_matched,
+          rows_valid: p.rows_valid,
+          rows_rejected: p.rows_rejected,
+          matched_row_ids: p.matched_row_ids || [],
+        },
       })),
       { onConflict: 'config_id,period_date' }
     );

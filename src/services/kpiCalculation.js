@@ -144,12 +144,13 @@ export function computeGroup(config, rows) {
       return {
         value: rowsTotal > 0 ? Number(((matched.length / rowsTotal) * 100).toFixed(2)) : null,
         matching: matched.length,
+        matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
         rowsValid: rowsTotal,
         rejectedDetails: [],
       };
     }
     case 'count': {
-      return { value: matched.length, rowsValid: matched.length, rejectedDetails: [] };
+      return { value: matched.length, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: matched.length, rejectedDetails: [] };
     }
     case 'sum':
     case 'average':
@@ -175,7 +176,7 @@ export function computeGroup(config, rows) {
         else if (config.calc_type === 'min') value = Number(Math.min(...numbers).toFixed(2));
         else value = Number(Math.max(...numbers).toFixed(2));
       }
-      return { value, rowsValid: numbers.length, rejectedDetails };
+      return { value, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: numbers.length, rejectedDetails };
     }
     case 'count_grouped': {
       const groupedCounts = {};
@@ -183,7 +184,7 @@ export function computeGroup(config, rows) {
         const key = String(rowData[config.group_by_column] ?? '').trim() || '(vide)';
         groupedCounts[key] = (groupedCounts[key] || 0) + 1;
       });
-      return { groupedCounts, rowsValid: matched.length, rejectedDetails: [] };
+      return { groupedCounts, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: matched.length, rejectedDetails: [] };
     }
     default:
       return { value: null, rowsValid: 0, rejectedDetails: [] };
@@ -244,6 +245,8 @@ export function summarizeGroups(config, groups) {
       value: result.value,
       rows_total: groupRows.length,
       rows_valid: result.rowsValid,
+      rows_matched: result.matching ?? result.rowsValid,
+      matched_row_ids: result.matchedRowIds || [],
       rows_rejected: result.rejectedDetails.length,
       rejected_details: result.rejectedDetails,
       ...(persisted

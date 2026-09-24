@@ -30,7 +30,7 @@ const PATCHABLE_FIELDS = ['name', 'unit', 'target', 'target_direction', 'frequen
 const KPI_JOINS = 'owner_user:users!kpis_owner_fkey(id, full_name), linked_capa:capas!kpis_linked_capa_id_fkey(id, number, title, status)';
 const RECORD_PATCHABLE_FIELDS = ['period_date', 'value', 'comment'];
 export const RECORDS_SELECT =
-  'id, period_date, value, comment, source, source_import_id, config_id, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
+  'id, period_date, value, comment, source, source_import_id, config_id, calculation_metadata, recorded_by, recorded_by_user:users!kpi_records_recorded_by_fkey(id, full_name)';
 
 router.use(requireAuth);
 router.use(requireMenuVisible('kpis'));
