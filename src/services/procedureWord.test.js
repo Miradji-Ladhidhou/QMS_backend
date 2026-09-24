@@ -25,6 +25,11 @@ async function hasEmbeddedMedia(buffer) {
   return Object.keys(zip.files).some((name) => name.startsWith('word/media/'));
 }
 
+async function documentXml(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  return zip.file('word/document.xml').async('string');
+}
+
 // Somme des largeurs de <w:gridCol> pour chaque <w:tbl> du document — un Math.round colonne par
 // colonne peut décaler cette somme de quelques twips par rapport à la largeur déclarée du
 // tableau (bug réel constaté : LibreOffice tolère l'écart, Word désaligne les bordures entre
@@ -166,6 +171,19 @@ describe('buildProcedureWordDocument', () => {
     expect(text).toContain('Sommaire');
     expect(text).toContain('Processus (révisé)');
     expect(text).toContain('Annexes');
+  });
+
+  it('génère un sommaire Word actualisable avec des titres paginables', async () => {
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure: PROCEDURE,
+      version: richVersion(),
+      versions: VERSIONS,
+    });
+    const xml = await documentXml(buffer);
+    expect(xml).toContain('TOC \\o &quot;1-2&quot;');
+    expect(xml).toContain('w:val="Heading1"');
+    expect(xml).toContain('w:val="Heading2"');
   });
 
   it('un sommaire réécrit à la main (section key "sommaire") est rendu tel quel, jamais écrasé par le calcul automatique', async () => {

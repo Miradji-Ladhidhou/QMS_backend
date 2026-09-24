@@ -16,6 +16,8 @@ import {
   VerticalAlign,
   TableLayoutType,
   TabStopType,
+  HeadingLevel,
+  TableOfContents,
 } from 'docx';
 import { logoImageRun } from './wordLogo.js';
 
@@ -116,7 +118,9 @@ const BODY_PARAGRAPH_SPACING = { after: 120, line: 276 };
 function sectionTitleParagraph(text, { pageBreakBefore = false } = {}) {
   return new Paragraph({
     pageBreakBefore,
-    spacing: { before: 200, after: 100 },
+    heading: HeadingLevel.HEADING_1,
+    keepNext: true,
+    spacing: { before: 280, after: 140, line: 276 },
     border: { bottom: borderLine('999999', BorderStyle.SINGLE, 4) },
     children: [new TextRun({ text, bold: true, size: BASE_FONT_SIZE + 6 })],
   });
@@ -191,21 +195,41 @@ function photoPlaceholderParagraphs(caption) {
   ];
 }
 
+function listParagraph(text, { ordered = false, nested = false } = {}) {
+  const left = nested ? 1080 : 720;
+  const hanging = 360;
+  return new Paragraph({
+    indent: { left, hanging },
+    spacing: { before: 20, after: 70, line: 276 },
+    children: [new TextRun(text)],
+  });
+}
+
 function bulletParagraphs(style, items) {
-  const prefix = style.bulletStyle === 'round' ? '•  ' : '-  ';
-  return (items || []).map(
-    (item) => new Paragraph({ indent: { left: 240 }, spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(`${prefix}${item}`)] })
-  );
+  const prefix = style.bulletStyle === 'round' ? '•' : '–';
+  return (items || []).flatMap((item) => {
+    const lines = String(item || '').split('\n');
+    return lines.map((line, index) => listParagraph(`${prefix} ${line.trim()}`, { nested: index > 0 }));
+  });
 }
 
 function paragrapheParagraphs(text) {
-  // Une ligne vide dans le texte source (saut de paragraphe volontaire) devient un paragraphe
-  // vide plutôt que d'être avalée, pour préserver la mise en forme telle que saisie/générée.
-  return (text || '').split('\n').map((line) => new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(stripLeadingNumbering(line))] }));
+  return (text || '').split('\n').map((line) => {
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    if (bullet) return listParagraph(`– ${bullet[1]}`, { nested: /^\s{2,}/.test(line) });
+    if (ordered) return listParagraph(`${ordered[1]}. ${ordered[2]}`, { ordered: true, nested: /^\s{2,}/.test(line) });
+    return new Paragraph({ spacing: BODY_PARAGRAPH_SPACING, children: [new TextRun(stripLeadingNumbering(line.trim()))] });
+  });
 }
 
 function sousTitreParagraph(text) {
-  return new Paragraph({ spacing: { before: 160, after: 60 }, children: [new TextRun({ text, bold: true })] });
+  return new Paragraph({
+    heading: HeadingLevel.HEADING_2,
+    keepNext: true,
+    spacing: { before: 220, after: 80, line: 276 },
+    children: [new TextRun({ text, bold: true })],
+  });
 }
 
 function tableCellText(text, { header, style, width } = {}) {
@@ -332,7 +356,7 @@ function historyTable(style, versions) {
 
 function documentsAssociesParagraphs(documentsAssocies) {
   if (!documentsAssocies?.length) return [];
-  return documentsAssocies.map((name) => new Paragraph({ children: [new TextRun(`•  ${name}`)] }));
+  return documentsAssocies.map((name) => listParagraph(`– ${name}`));
 }
 
 // Bandeau de couleur pleine largeur en tête de page 1 (option, désactivée par défaut) — un seul
@@ -395,27 +419,30 @@ export async function buildProcedureWordDocument({ accentColor, visualOptions, t
   // migré depuis l'ancien format, ou tenant qui n'en a jamais ajouté) : un sommaire calculé à la
   // volée à partir de la structure réelle, comme avant cette évolution — jamais stocké, donc
   // jamais en décalage avec le contenu tant qu'aucune section "sommaire" n'existe.
-  const hasSommaireSection = sections.some((s) => s.key === 'sommaire');
-  if (!hasSommaireSection) {
-    // Contrairement au PDF, Word ne connaît pas les numéros de page au moment de la génération
-    // (la pagination réelle dépend du rendu chez le lecteur) : la liste reste donc sans numéro,
-    // comme le sommaire de l'écran lui-même.
-    const autoTocLabels = [
-      ...sections.map((s) => s.label),
-      content.documents_associes?.length > 0 && 'Documents associés',
-      'Historique des versions',
-    ].filter(Boolean);
-    if (autoTocLabels.length >= 3) {
-      body.push(sectionTitleParagraph('Sommaire'));
-      autoTocLabels.forEach((label) => body.push(new Paragraph({ children: [new TextRun(`•  ${label}`)] })));
-      body.push(new Paragraph({ text: '' }));
+const manualSommaire = sections.find((section) => section.key === 'sommaire');
+  const autoTocLabels = [
+    ...sections.filter((section) => section.key !== 'sommaire').map((s) => s.label),
+    content.documents_associes?.length > 0 && 'Documents associés',
+    'Historique des versions',
+  ].filter(Boolean);
+  if (autoTocLabels.length >= 3) {
+    body.push(new Paragraph({
+      pageBreakBefore: true,
+      spacing: { before: 160, after: 160 },
+      children: [new TextRun({ text: 'Sommaire', bold: true, size: BASE_FONT_SIZE + 8, color: '44546A' })],
+    }));
+    body.push(new TableOfContents('Sommaire', { headingStyleRange: '1-2', beginDirty: true }));
+    if (manualSommaire?.blocks?.length) {
+      body.push(new Paragraph({ spacing: { before: 180, after: 80 }, children: [new TextRun({ text: 'Notes du sommaire', bold: true, color: '44546A' })] }));
+      body.push(...blocksToDocxParagraphs(manualSommaire.blocks, style));
     }
+    body.push(new Paragraph({ text: '', spacing: { after: 120 } }));
   }
 
   // Saut de page avant le corps de la procédure : c'est la partie la plus longue du document,
   // la faire démarrer sur une page fraîche évite qu'elle s'enchaîne directement à la suite du
   // sommaire/tableau d'identité sans rupture visuelle.
-  sections.forEach((section, index) => {
+  sections.filter((section) => section.key !== 'sommaire').forEach((section, index) => {
     body.push(sectionTitleParagraph(section.label, { pageBreakBefore: index === 0 }));
     body.push(...blocksToDocxParagraphs(section.blocks, style));
   });

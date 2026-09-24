@@ -75,6 +75,25 @@ function drawPhotoPlaceholder(doc, caption) {
 // drawImportantBox (doc.rect()). Chaque ligne vérifie l'espace restant AVANT de se dessiner
 // (comme drawImportantBox) pour ne jamais couper une ligne en deux pages — pas d'équivalent
 // strict du cantSplit du renderer Word, mais le même résultat pratique par construction.
+function drawStructuredParagraph(doc, text) {
+  const lines = String(text || '').split('\n');
+  lines.forEach((line) => {
+    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
+    const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
+    const nested = /^\s{2,}/.test(line);
+    if (bullet || ordered) {
+      const marker = ordered ? `${ordered[1]}.` : '•';
+      const value = ordered ? ordered[2] : bullet[1];
+      const left = PAGE_MARGIN + (nested ? 28 : 14);
+      doc.fontSize(10).fillColor(INK).text(marker, left, doc.y, { width: 14 });
+      doc.text(value.trim(), left + 16, doc.y, { width: CONTENT_WIDTH - (left - PAGE_MARGIN) - 16, lineGap: 2 });
+    } else {
+      doc.fontSize(10).fillColor(INK).text(line.trim(), PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+    }
+    doc.moveDown(0.22);
+  });
+}
+
 function drawTableBlock(doc, headers, rows, accentColor) {
   const columnCount = Math.max(1, headers?.length || 0);
   const columnWidth = CONTENT_WIDTH / columnCount;
@@ -119,9 +138,10 @@ function drawTableBlock(doc, headers, rows, accentColor) {
 // correction manuelle dans l'éditeur (qui n'écrivait que section.content) soit silencieusement
 // ignorée par cet export parce qu'il préférait section.subsections.
 function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoBoxStyle) {
-  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  if (doc.y > PAGE_MARGIN + 35) doc.moveDown(0.8);
+  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
   doc.font('Body');
-  doc.moveDown(0.4);
+  doc.moveDown(0.55);
 
   if (!blocks?.length) {
     doc.fontSize(10).fillColor(MUTED).text('Non renseigné', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
@@ -132,16 +152,14 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
   blocks.forEach((block) => {
     switch (block.type) {
       case 'sous_titre':
-        doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-        doc.font('Body');
         doc.moveDown(0.25);
+        doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+        doc.font('Body');
+        doc.moveDown(0.35);
         break;
       case 'liste_puces':
-        (block.items || []).forEach((item) => {
-          doc.fontSize(10).fillColor(INK).text(`•  ${item}`, PAGE_MARGIN + 4, doc.y, { width: CONTENT_WIDTH - 4, lineGap: 1.5 });
-          doc.moveDown(0.1);
-        });
-        doc.moveDown(0.2);
+        (block.items || []).forEach((item) => drawStructuredParagraph(doc, `• ${item}`));
+        doc.moveDown(0.3);
         break;
       case 'tableau':
         drawTableBlock(doc, block.headers, block.rows, accentColor);
@@ -157,8 +175,8 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
         break;
       case 'paragraphe':
       default:
-        doc.fontSize(10).fillColor(INK).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
-        doc.moveDown(0.35);
+        drawStructuredParagraph(doc, block.text);
+        doc.moveDown(0.25);
         break;
     }
   });
@@ -245,7 +263,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     // Objet/domaine d'application/responsabilités ne sont plus des champs séparés (voir le plan
     // de refonte de la mise en page des procédures) : ce sont des sections ordinaires en tête de
     // "sections", numérotées et sommairées exactement comme les autres.
-    const sections = version.content?.sections || [];
+    const sections = (version.content?.sections || []).filter((section) => section.key !== 'sommaire');
     const documentsAssocies = version.content?.documents_associes || [];
 
     // Le sommaire est un bloc de contenu comme un autre (voir le plan de refonte) : une section
@@ -257,10 +275,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     // jamais les deux en même temps, sous peine de doublon. Le seuil de 3 reprend celui de
     // l'écran (ProcedureContentView.jsx) : sous 3 entrées, naviguer n'apporte rien face à un
     // document déjà court.
-    const hasSommaireSection = sections.some((s) => s.key === 'sommaire');
-    const tocLabels = hasSommaireSection
-      ? []
-      : [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(Boolean);
+    const tocLabels = [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(Boolean);
 
     let sommairePageIndex = null;
     let sommaireStartY = null;
