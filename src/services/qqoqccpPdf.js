@@ -2,9 +2,7 @@ import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
-// PURPLE reste la couleur sémantique "contenu généré par IA" (même convention que le badge
-// violet côté frontend, ex. AiRiskSuggestion.jsx) — pas une couleur de marque, volontairement
-// non touchée par le passage à l'en-tête neutre ci-dessous.
+// Couleur d'accent de la synthèse et des actions proposées dans le rapport imprimé.
 const PURPLE = '#7c3aed';
 const PURPLE_LIGHT = '#f5f3ff';
 
@@ -12,7 +10,7 @@ const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
 const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 
-const STATUS_LABELS = { draft: 'Brouillon', ai_generated: 'Généré par IA', validated: 'Validée' };
+const STATUS_LABELS = { draft: 'Brouillon', ai_generated: 'À valider', validated: 'Validée' };
 
 const QUESTIONS = [
   { key: 'qui', label: 'Qui ?' },
@@ -85,7 +83,7 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
         .stroke();
       doc.moveDown(0.8);
 
-      doc.fontSize(12).fillColor(PURPLE).text('Synthèse générée par IA', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+      doc.fontSize(12).fillColor(PURPLE).text('Synthèse', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.3);
       doc.fontSize(10).fillColor(INK).text(analysis.ai_synthesis, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       doc.moveDown(0.7);
