@@ -6,7 +6,7 @@ const HEADER_FILL_ARGB = 'FFF1F5F9';
 const BORDER_ARGB = 'FFE2E8F0';
 const THIN_BORDER = { style: 'thin', color: { argb: BORDER_ARGB } };
 const STATUS_LABELS = { draft: 'Brouillon', completed: 'Clôturée' };
-const SOURCE_LABELS = { manual: 'Manuelle', ai: 'IA' };
+const SOURCE_LABELS = { manual: 'Manuelle', ai: 'Automatique' };
 
 function style(cell, header = false) {
   cell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };

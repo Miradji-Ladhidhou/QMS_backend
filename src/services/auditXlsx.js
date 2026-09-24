@@ -81,7 +81,7 @@ export async function buildAuditXlsx({ audit, findings, checklistItems, linkedPr
       item.observation || '',
       item.answerer?.full_name || '',
       item.answered_at ? new Date(item.answered_at).toLocaleString('fr-FR') : '',
-      item.source === 'ai' ? 'IA' : 'Manuelle',
+      item.source === 'ai' ? 'Automatique' : 'Manuelle',
     ]),
     [6, 70, 16, 50, 22, 20, 12]
   );
