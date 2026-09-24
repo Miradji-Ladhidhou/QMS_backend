@@ -115,7 +115,7 @@ export async function buildManagementReviewWord({ tenantName, tenantLogo, review
       width: { size: 100, type: WidthType.PERCENTAGE },
       columnWidths: dxa([30, 70]),
       layout: TableLayoutType.FIXED,
-      rows: facts.map(([label, value]) => new TableRow({ children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70 })] })),
+      rows: facts.map(([label, value]) => new TableRow({ cantSplit: true, children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70 })] })),
     }),
 
     heading(`${number++}. Éléments d'entrée`),

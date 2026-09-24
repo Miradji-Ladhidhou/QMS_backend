@@ -86,9 +86,13 @@ function cellDisplayValue(row, key) {
 }
 
 function dataTable(columns, rows) {
-  const headerRow = new TableRow({ children: columns.map((col) => dataCellText(col.label, { header: true })) });
+  const headerRow = new TableRow({
+    tableHeader: true,
+    cantSplit: true,
+    children: columns.map((col) => dataCellText(col.label, { header: true })),
+  });
   const bodyRows = rows.map(
-    (row) => new TableRow({ children: columns.map((col) => dataCellText(cellDisplayValue(row, col.key))) })
+    (row) => new TableRow({ cantSplit: true, children: columns.map((col) => dataCellText(cellDisplayValue(row, col.key))) })
   );
   return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...bodyRows] });
 }

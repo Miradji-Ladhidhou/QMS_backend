@@ -61,7 +61,7 @@ function factsTable(rows) {
     width: { size: 100, type: WidthType.PERCENTAGE },
     columnWidths: dxa([30, 70]),
     layout: TableLayoutType.FIXED,
-    rows: rows.map(([label, value, color]) => new TableRow({ children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70, color, bold: Boolean(color) })] })),
+    rows: rows.map(([label, value, color]) => new TableRow({ cantSplit: true, children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70, color, bold: Boolean(color) })] })),
   });
 }
 
@@ -113,7 +113,7 @@ export async function buildRiskWord({ risk, assessments, links, threshold, tenan
             columnWidths: dxa([25, 75]),
             layout: TableLayoutType.FIXED,
             rows: [
-              new TableRow({ tableHeader: true, children: [cell('Type', { header: true, widthPct: 25 }), cell('Élément', { header: true, widthPct: 75 })] }),
+              new TableRow({ tableHeader: true, cantSplit: true, children: [cell('Type', { header: true, widthPct: 25 }), cell('Élément', { header: true, widthPct: 75 })] }),
               ...links.map((link) => new TableRow({ cantSplit: true, children: [cell(link.kind_label, { widthPct: 25 }), cell(link.title, { widthPct: 75 })] })),
             ],
           }),
@@ -130,6 +130,7 @@ export async function buildRiskWord({ risk, assessments, links, threshold, tenan
             rows: [
               new TableRow({
                 tableHeader: true,
+                cantSplit: true,
                 children: [
                   cell('Date', { header: true, widthPct: 16 }),
                   cell('Cotation brute', { header: true, widthPct: 20 }),

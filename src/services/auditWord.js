@@ -98,7 +98,7 @@ export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, 
       width: { size: 100, type: WidthType.PERCENTAGE },
       columnWidths: dxa([30, 70]),
       layout: TableLayoutType.FIXED,
-      rows: facts.map(([label, value]) => new TableRow({ children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70 })] })),
+      rows: facts.map(([label, value]) => new TableRow({ cantSplit: true, children: [cell(label, { header: true, widthPct: 30 }), cell(value, { widthPct: 70 })] })),
     }),
 
     heading('Périmètre'),
@@ -115,7 +115,7 @@ export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, 
             columnWidths: dxa([24, 54, 22]),
             layout: TableLayoutType.FIXED,
             rows: [
-              new TableRow({ tableHeader: true, children: [cell('Type', { header: true, widthPct: 24 }), cell('Constat', { header: true, widthPct: 54 }), cell('CAPA liée', { header: true, widthPct: 22 })] }),
+              new TableRow({ tableHeader: true, cantSplit: true, children: [cell('Type', { header: true, widthPct: 24 }), cell('Constat', { header: true, widthPct: 54 }), cell('CAPA liée', { header: true, widthPct: 22 })] }),
               ...findings.map(
                 (finding) =>
                   new TableRow({
@@ -151,6 +151,7 @@ export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, 
             rows: [
               new TableRow({
                 tableHeader: true,
+                cantSplit: true,
                 children: [cell('N°', { header: true, widthPct: 6, align: AlignmentType.CENTER }), cell('Question', { header: true, widthPct: 44 }), cell('Réponse', { header: true, widthPct: 16 }), cell('Observation', { header: true, widthPct: 34 })],
               }),
               ...checklistItems.map(

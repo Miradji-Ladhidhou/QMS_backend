@@ -66,7 +66,7 @@ function table(columns, rows, emptyLabel) {
       columnWidths: dxa(columns.map((column) => column.width)),
       layout: TableLayoutType.FIXED,
       rows: [
-        new TableRow({ tableHeader: true, children: columns.map((column) => cell(column.label, { header: true, widthPct: column.width })) }),
+        new TableRow({ tableHeader: true, cantSplit: true, children: columns.map((column) => cell(column.label, { header: true, widthPct: column.width })) }),
         ...rows.map(
           (row) =>
             new TableRow({
@@ -139,7 +139,7 @@ function planSection(plan, monitoringSummaryByCcpId) {
       width: { size: 100, type: WidthType.PERCENTAGE },
       columnWidths: dxa([20, 80]),
       layout: TableLayoutType.FIXED,
-      rows: info.map(([label, value]) => new TableRow({ children: [cell(label, { header: true, widthPct: 20 }), cell(value, { widthPct: 80 })] })),
+      rows: info.map(([label, value]) => new TableRow({ cantSplit: true, children: [cell(label, { header: true, widthPct: 20 }), cell(value, { widthPct: 80 })] })),
     }),
     ...(plan.scope ? [heading('Périmètre'), ...plan.scope.split(/\r?\n/).filter(Boolean).map((line) => new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: line.replace(/^[•\-*]\s*/, ''), size: 18 })] }))] : []),
     heading('Analyse des dangers'),
