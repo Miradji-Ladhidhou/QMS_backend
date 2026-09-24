@@ -84,6 +84,8 @@ async function sendViaGmailApi(to, subject, htmlBody, attachments) {
 // options.attachments : [{ filename, content: Buffer, contentType }] — pièces jointes (ex. le compte rendu PDF d'une
 // revue de direction, l'invitation .ics d'une convocation), transmises telles quelles à chaque transport.
 export async function sendEmail(to, subject, htmlBody, { attachments = [] } = {}) {
+  const startedAt = Date.now();
+  const maskedTo = String(to || '').replace(/^(.{2}).*(@.*)$/, '$1***$2');
   // La suite de tests n'a pas de Mailpit ni de service externe fiable à disposition ; on
   // court-circuite l'envoi plutôt que d'en dépendre pendant les tests.
   if (process.env.NODE_ENV === 'test') {
@@ -91,11 +93,14 @@ export async function sendEmail(to, subject, htmlBody, { attachments = [] } = {}
   }
 
   if (transportMode === 'gmail-api') {
-    return sendViaGmailApi(to, subject, htmlBody, attachments);
+    const result = await sendViaGmailApi(to, subject, htmlBody, attachments);
+    console.info(`[email] transport=gmail-api recipient=${maskedTo} duration_ms=${Date.now() - startedAt}`);
+    return result;
   }
 
   if (gmailSmtpTransport) {
     const info = await gmailSmtpTransport.sendMail({ from: GMAIL_FROM_ADDRESS, to, subject, html: htmlBody, attachments });
+    console.info(`[email] transport=gmail-smtp recipient=${maskedTo} duration_ms=${Date.now() - startedAt}`);
     return { id: info.messageId };
   }
 
@@ -117,8 +122,11 @@ export async function sendEmail(to, subject, htmlBody, { attachments = [] } = {}
   });
 
   if (error) {
+    console.error(`[email] transport=resend recipient=${maskedTo} duration_ms=${Date.now() - startedAt} error=${error.message}`);
     throw new Error(`Échec de l'envoi de l'email : ${error.message}`);
   }
+
+  console.info(`[email] transport=resend recipient=${maskedTo} duration_ms=${Date.now() - startedAt}`);
 
   return data;
 }

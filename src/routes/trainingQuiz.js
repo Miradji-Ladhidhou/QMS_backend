@@ -316,6 +316,7 @@ router.post(
       if (insertError || !attempt) return { record_id: record.id, status: 'failed', person_name: personName };
 
       void (async () => {
+        const dispatchStartedAt = Date.now();
         try {
           const html = renderTemplate('trainingQuizInvite', {
             fullName: escapeHtml(personName),
@@ -326,10 +327,12 @@ router.post(
             expiresAt: escapeHtml(formatDeadline(expiresAt, tenant?.timezone)),
           });
           await sendEmail(email, `QCM de la formation « ${training.title.replace(/[\r\n]+/g, ' ')} »`, html);
+          console.info(`[trainingQuiz] dispatched record_id=${record.id} account=${Boolean(record.user_id)} duration_ms=${Date.now() - dispatchStartedAt}`);
         } catch {
           // L'invitation est déjà visible dans l'historique ; supprimer le lien si le fournisseur
           // email refuse l'envoi pour éviter de laisser un lien inutilisable.
           await supabase.from('training_quiz_attempts').delete().eq('id', attempt.id);
+          console.error(`[trainingQuiz] dispatch_failed record_id=${record.id} account=${Boolean(record.user_id)} duration_ms=${Date.now() - dispatchStartedAt}`);
         }
       })();
       return { record_id: record.id, status: 'sent', person_name: personName, email: normalizeEmail(email), attempt_id: attempt.id };
