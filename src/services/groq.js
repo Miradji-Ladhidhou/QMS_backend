@@ -21,7 +21,7 @@ async function logAiFailure(feature, category, message) {
   }
 }
 
-const MODEL = 'openai/gpt-oss-120b';
+const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
 
 // Même structure de sortie pour tous les appels IA de l'app (QQOQCCP et, depuis, tous les
 // flux "créer une CAPA depuis X" — audits, revues, réclamations, risques, fournisseurs) :
@@ -147,20 +147,25 @@ export async function generateCapaSuggestion(context) {
   return callGroq(CAPA_SUGGESTION_SYSTEM_PROMPT, context, 'capa_suggestion');
 }
 
-const KPI_IMPORT_SYSTEM_PROMPT = `Tu es un expert qualité et data. Analyse les colonnes et les exemples d'un fichier importé pour proposer une recette KPI simple.
+const KPI_IMPORT_SYSTEM_PROMPT = `Tu es un expert qualité et data. Analyse la structure complète d'un fichier importé et la consigne métier. Adapte-toi à n'importe quel type de données : comptage, pourcentage, somme, moyenne, minimum, maximum ou répartition. Propose une ou plusieurs séries seulement si les données le justifient.
 Réponds STRICTEMENT en JSON avec exactement :
 {
-  "label": "nom court en français",
-  "calc_type": "ratio|sum|average|min|max|count|count_grouped",
-  "source_column": "colonne ou null",
-  "period_column": "colonne ou null",
-  "group_by_column": "colonne ou null",
-  "filters": [{"column":"colonne","operator":"equals","value":"valeur"}],
-  "filter_logic": "all|any",
+  "series": [{
+    "label": "nom court en français",
+    "calc_type": "ratio|sum|average|min|max|count|count_grouped",
+    "source_column": "colonne ou null",
+    "period_column": "colonne ou null",
+    "group_by_column": "colonne ou null",
+    "filters": [{"column":"colonne","operator":"equals","value":"valeur"}],
+    "filter_logic": "all|any",
+    "confidence": 0,
+    "explanation": "explication courte en français"
+  }],
+  "warnings": ["avertissement sur données ambiguës, doublons ou lignes ignorées"],
   "confidence": 0,
-  "explanation": "explication courte en français"
+  "explanation": "explication globale en français"
 }
-N'invente jamais de colonne. Si le choix est incertain, confidence doit être inférieur à 70. Les filtres doivent utiliser uniquement equals, contains, greater_than, greater_or_equal, less_than, less_or_equal, is_empty ou is_not_empty.`;
+N'invente jamais de colonne ni de valeur. Si le choix est incertain, la confiance doit être inférieure à 70 et warnings doit l'indiquer. Ne propose pas plusieurs séries artificiellement : chaque série doit répondre à la consigne ou représenter une catégorie réellement présente. Les filtres doivent utiliser uniquement equals, contains, greater_than, greater_or_equal, less_than, less_or_equal, is_empty ou is_not_empty.`;
 
 export async function generateKpiImportSuggestion({ columns, rowCount, profile, representativeRows, userPrompt = '' }) {
   return callGroq(
