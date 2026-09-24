@@ -58,6 +58,25 @@ function parseCsvBuffer(buffer) {
   return parse(content, { columns: true, skip_empty_lines: true, trim: true, delimiter, bom: true, from_line: headerLine });
 }
 
+function buildImportQualityReport(rows, columns) {
+  const emptyRows = rows.filter((row) => columns.every((column) => String(row[column] ?? '').trim() === '')).length;
+  const emptyColumns = columns.filter((column) => rows.every((row) => String(row[column] ?? '').trim() === ''));
+  const duplicateKeys = [];
+  const keyColumn = columns.find((column) => /^(id|numero|numéro|reference|référence|code)$/i.test(column.trim())) || columns[0];
+  if (keyColumn) {
+    const seen = new Map();
+    rows.forEach((row, index) => {
+      const value = String(row[keyColumn] ?? '').trim();
+      if (!value) return;
+      if (seen.has(value)) duplicateKeys.push({ value, first_row: seen.get(value), duplicate_row: index + 1 });
+      else seen.set(value, index + 1);
+    });
+  }
+  const statusColumn = columns.find((column) => /statut|résultat|resultat|status|conform/i.test(column));
+  const statuses = statusColumn ? [...new Set(rows.map((row) => String(row[statusColumn] ?? '').trim()).filter(Boolean))].slice(0, 100) : [];
+  return { total_rows: rows.length, empty_rows: emptyRows, empty_columns: emptyColumns, key_column: keyColumn || null, duplicate_keys: duplicateKeys.slice(0, 100), duplicate_count: duplicateKeys.length, status_column: statusColumn || null, statuses };
+}
+
 // GET /api/kpi-imports?limit=20 — imports récents du tenant, pour réutiliser un fichier déjà
 // déposé (mêmes lignes brutes) sur un autre KPI sans avoir à le réimporter. Volontairement
 // pas filtré par KPI : n'importe quel import du tenant peut être réutilisé par n'importe quel
@@ -111,6 +130,7 @@ router.get('/:importId', async (req, res) => {
     columns: importRow.detected_columns,
     row_count: importRow.row_count,
     sample: (sampleRows || []).map((row) => row.row_data),
+    quality_report: null,
   });
 });
 
@@ -223,6 +243,7 @@ router.post('/', requireRole('admin', 'manager'), upload.single('file'), async (
   // l'import générique. Les en-têtes détectées servent seulement à guider la configuration
   // du calcul côté frontend.
   const detectedColumns = Object.keys(rows[0]);
+  const qualityReport = buildImportQualityReport(rows, detectedColumns);
 
   const { data: importRow, error: importError } = await supabase
     .from('kpi_raw_imports')
@@ -262,6 +283,7 @@ router.post('/', requireRole('admin', 'manager'), upload.single('file'), async (
     columns: detectedColumns,
     row_count: rows.length,
     sample: rows.slice(0, 5),
+    quality_report: qualityReport,
     ...(sheetNames.length > 1 ? { available_sheets: sheetNames, sheet_used: sheetUsed } : {}),
   });
 });
