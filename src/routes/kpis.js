@@ -14,6 +14,7 @@ import { getModuleKpiEvidence, recomputeModuleKpi } from '../services/moduleKpiR
 import { createModuleKpiFromPreset } from '../services/moduleKpiCreate.js';
 import { buildModuleOverview, enableEssentialIndicators, parseRanges } from '../services/moduleKpiOverview.js';
 import { domainOfPreset, isEssential } from '../services/moduleKpiCatalog.js';
+import { requestedPagination } from '../utils/pagination.js';
 
 const router = Router();
 
@@ -402,6 +403,25 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+});
+
+// GET /api/kpis/:id/records?page=1&limit=50 — historique paginé, chargé à l’ouverture du panneau.
+router.get('/:id/records', async (req, res) => {
+  const { page, limit } = requestedPagination(req.query, 50, 200);
+  const { data: kpi, error: kpiError } = await supabase.from('kpis').select('id, category_id').eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
+  if (kpiError || !kpi) return res.status(404).json({ error: 'KPI introuvable.' });
+  const categoryAllowed = await hasGenericCategoryPermission({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, categoryId: kpi.category_id, permission: 'view' });
+  if (!categoryAllowed) return res.status(404).json({ error: 'KPI introuvable.' });
+  const from = (page - 1) * limit;
+  const { data, error, count } = await supabase
+    .from('kpi_records')
+    .select(RECORDS_SELECT, { count: 'exact' })
+    .eq('tenant_id', req.tenantId)
+    .eq('kpi_id', req.params.id)
+    .order('period_date', { ascending: false })
+    .range(from, from + limit - 1);
+  if (error) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
+  return res.json({ items: data || [], pagination: { page, limit, total: count || 0, total_pages: Math.max(1, Math.ceil((count || 0) / limit)) } });
 });
 
 // PATCH /api/kpis/bulk-category — déplace plusieurs KPI d'un coup vers une catégorie. Placée
