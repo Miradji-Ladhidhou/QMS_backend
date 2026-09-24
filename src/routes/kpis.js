@@ -751,6 +751,79 @@ router.post(
   }
 );
 
+// POST /api/kpis/:id/records/bulk — saisie manuelle en masse depuis un copier-coller Excel.
+router.post(
+  '/:id/records/bulk',
+  requireRole('admin', 'manager', 'member'),
+  [body('records').isArray({ min: 1, max: 5000 }).withMessage('Collez au moins une ligne et 5000 maximum.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: errors.array()[0].msg });
+
+    const { data: kpi, error: kpiError } = await supabase
+      .from('kpis')
+      .select('id, calculation_type')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+    if (kpiError || !kpi) return res.status(404).json({ error: 'KPI introuvable.' });
+    if (kpi.calculation_type === 'module' || kpi.calculation_type === 'import') {
+      return res.status(409).json({ error: 'Ce KPI est calculé automatiquement : utilisez son mode de calcul dédié.' });
+    }
+
+    const records = req.body.records.map((record, index) => ({
+      ...record,
+      period_date: record.period_date,
+      value: Number(record.value),
+      comment: record.comment || null,
+      config_id: record.config_id || null,
+      row_number: index + 1,
+    }));
+    const invalid = records.find((record) => !/^\d{4}-\d{2}-\d{2}$/.test(record.period_date) || !Number.isFinite(record.value));
+    if (invalid) return res.status(400).json({ error: `Ligne ${invalid.row_number} : période ou valeur invalide.` });
+    const configIds = [...new Set(records.map((record) => record.config_id).filter(Boolean))];
+    if (configIds.length > 0) {
+      const { data: configs, error: configError } = await supabase.from('kpi_calculation_configs').select('id').eq('tenant_id', req.tenantId).eq('kpi_id', kpi.id).in('id', configIds);
+      if (configError || (configs || []).length !== configIds.length) return res.status(400).json({ error: 'Une série sélectionnée est invalide.' });
+    }
+
+    const grouped = new Map();
+    for (const record of records) {
+      const key = `${record.config_id || ''}:${record.period_date}`;
+      if (grouped.has(key)) return res.status(400).json({ error: `Doublon à la ligne ${record.row_number} pour la période ${record.period_date}.` });
+      grouped.set(key, record);
+    }
+    const rows = records.map(({ row_number: _rowNumber, ...record }) => ({ tenant_id: req.tenantId, kpi_id: kpi.id, recorded_by: req.user.id, ...record }));
+    const withSeries = rows.filter((row) => row.config_id);
+    const withoutSeries = rows.filter((row) => !row.config_id);
+    const saved = [];
+    if (withSeries.length > 0) {
+      const { data, error } = await supabase.from('kpi_records').upsert(withSeries, { onConflict: 'config_id,period_date' }).select(RECORDS_SELECT);
+      if (error) return res.status(500).json({ error: "Impossible d'enregistrer les valeurs collées." });
+      saved.push(...(data || []));
+    }
+    if (withoutSeries.length > 0) {
+      const periods = withoutSeries.map((row) => row.period_date);
+      const { data: existing, error: existingError } = await supabase.from('kpi_records').select('id, period_date').eq('tenant_id', req.tenantId).eq('kpi_id', kpi.id).is('config_id', null).in('period_date', periods);
+      if (existingError) return res.status(500).json({ error: "Impossible de vérifier les valeurs existantes." });
+      const existingByPeriod = new Map((existing || []).map((row) => [row.period_date, row.id]));
+      const toInsert = withoutSeries.filter((row) => !existingByPeriod.has(row.period_date));
+      const toUpdate = withoutSeries.filter((row) => existingByPeriod.has(row.period_date));
+      if (toInsert.length > 0) {
+        const { data, error } = await supabase.from('kpi_records').insert(toInsert).select(RECORDS_SELECT);
+        if (error) return res.status(500).json({ error: "Impossible d'enregistrer les valeurs collées." });
+        saved.push(...(data || []));
+      }
+      for (const row of toUpdate) {
+        const { data, error } = await supabase.from('kpi_records').update({ value: row.value, comment: row.comment, recorded_by: row.recorded_by }).eq('tenant_id', req.tenantId).eq('id', existingByPeriod.get(row.period_date)).select(RECORDS_SELECT).single();
+        if (error) return res.status(500).json({ error: "Impossible de mettre à jour une valeur collée." });
+        saved.push(data);
+      }
+    }
+    res.status(201).json({ saved: saved.length || rows.length, records: saved });
+  }
+);
+
 // PATCH /api/kpis/:id/records/:recordId — corrige une valeur déjà saisie
 router.patch(
   '/:id/records/:recordId',
