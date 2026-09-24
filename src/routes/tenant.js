@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
-import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireAuth, requireRole, requireSuperAdmin } from '../middleware/auth.js';
 import { MENU_ITEM_KEYS, CONFIGURABLE_ROLES, DEFAULT_HIDDEN_FOR_ROLE, getVisibleMenuKeys } from '../middleware/menuVisibility.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
 
@@ -133,7 +133,7 @@ router.get('/data-export', requireRole('admin'), async (req, res) => {
 
 // Suppression définitive volontairement distincte de DELETE /api/tenant historique (retiré) :
 // le nom exact de l'entreprise est exigé pour éviter un clic accidentel.
-router.delete('/account', requireRole('admin'), [body('confirmation_name').trim().notEmpty().withMessage('Confirmation obligatoire.')], async (req, res) => {
+router.delete('/account', requireSuperAdmin, [body('confirmation_name').trim().notEmpty().withMessage('Confirmation obligatoire.')], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) return res.status(400).json({ error: 'Confirmation invalide.', details: errors.array() });
 
