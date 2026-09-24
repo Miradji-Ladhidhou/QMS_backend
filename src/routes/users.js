@@ -36,6 +36,12 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les utilisateurs.' });
   }
 
+  // Les listes déroulantes n'ont besoin que du profil public. Éviter dans ce mode un appel
+  // Supabase Auth par utilisateur : la gestion admin conserve la réponse complète par défaut.
+  if (req.query.basic === 'true') {
+    return res.json(data);
+  }
+
   // L'email et le statut d'invitation vivent dans auth.users, pas dans public.users —
   // un appel admin par utilisateur (liste de tenant, donc de petite taille).
   const withAuthInfo = await Promise.all(
