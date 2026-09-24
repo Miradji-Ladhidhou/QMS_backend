@@ -162,10 +162,10 @@ Réponds STRICTEMENT en JSON avec exactement :
 }
 N'invente jamais de colonne. Si le choix est incertain, confidence doit être inférieur à 70. Les filtres doivent utiliser uniquement equals, contains, greater_than, greater_or_equal, less_than, less_or_equal, is_empty ou is_not_empty.`;
 
-export async function generateKpiImportSuggestion({ columns, sample }) {
+export async function generateKpiImportSuggestion({ columns, rowCount, profile, representativeRows }) {
   return callGroq(
     KPI_IMPORT_SYSTEM_PROMPT,
-    `Colonnes détectées : ${JSON.stringify(columns)}\nExemples de lignes : ${JSON.stringify(sample).slice(0, 12000)}`,
+    `Nombre total de lignes originales : ${rowCount}\nColonnes détectées : ${JSON.stringify(columns)}\nProfil complet des colonnes : ${JSON.stringify(profile)}\nLignes représentatives début/milieu/fin : ${JSON.stringify(representativeRows).slice(0, 12000)}`,
     'kpi_import_suggestion'
   );
 }

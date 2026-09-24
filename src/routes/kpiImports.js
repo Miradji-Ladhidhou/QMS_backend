@@ -26,6 +26,12 @@ const CSV_DELIMITER_CANDIDATES = [',', ';', '\t'];
 // l'en-tête casse ces fichiers (une seule colonne détectée, aucune valeur, cf. bug signalé).
 const MAX_HEADER_SCAN_LINES = 10;
 
+function isNumericValue(value) {
+  if (value === null || value === undefined || value === '') return false;
+  const normalized = String(value).trim().replace(',', '.');
+  return normalized !== '' && Number.isFinite(Number(normalized));
+}
+
 // Cherche, parmi les premières lignes et les séparateurs plausibles, la combinaison qui
 // découpe le plus de champs : c'est presque toujours la vraie ligne d'en-têtes avec le vrai
 // séparateur, une ligne de titre n'ayant qu'un ou deux champs quel que soit le séparateur
@@ -110,13 +116,49 @@ router.get('/:importId', async (req, res) => {
 
 // POST /api/kpi-imports/:importId/ai-suggestion — suggestion facultative, jamais appliquée automatiquement.
 router.post('/:importId/ai-suggestion', requireRole('admin', 'manager'), async (req, res) => {
-  const { data: importRow, error: importError } = await supabase.from('kpi_raw_imports').select('detected_columns').eq('tenant_id', req.tenantId).eq('id', req.params.importId).single();
+  const { data: importRow, error: importError } = await supabase.from('kpi_raw_imports').select('detected_columns, row_count').eq('tenant_id', req.tenantId).eq('id', req.params.importId).single();
   if (importError || !importRow) return res.status(404).json({ error: 'Import introuvable.' });
-  const { data: sampleRows, error: rowsError } = await supabase.from('kpi_raw_rows').select('row_data').eq('tenant_id', req.tenantId).eq('import_id', req.params.importId).order('row_index', { ascending: true }).limit(8);
-  if (rowsError) return res.status(500).json({ error: 'Impossible de lire l’aperçu du fichier.' });
+
+  const pageSize = 1000;
+  const allRows = [];
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error: rowsError } = await supabase
+      .from('kpi_raw_rows')
+      .select('row_index, row_data')
+      .eq('tenant_id', req.tenantId)
+      .eq('import_id', req.params.importId)
+      .order('row_index', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (rowsError) return res.status(500).json({ error: 'Impossible de lire les lignes originales du fichier.' });
+    allRows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+
+  const columns = importRow.detected_columns || [];
+  const profile = Object.fromEntries(columns.map((column) => [column, { non_empty: 0, numeric: 0, dates: 0, distinct: [], examples: [] }]));
+  for (const row of allRows) {
+    for (const column of columns) {
+      const value = row.row_data?.[column];
+      const text = String(value ?? '').trim();
+      const entry = profile[column];
+      if (!text) continue;
+      entry.non_empty += 1;
+      if (isNumericValue(text)) entry.numeric += 1;
+      if (normalizeAnyDate(text)) entry.dates += 1;
+      if (!entry.distinct.includes(text) && entry.distinct.length < 30) entry.distinct.push(text);
+      if (entry.examples.length < 5) entry.examples.push(text.slice(0, 120));
+    }
+  }
+  for (const column of columns) {
+    profile[column].non_empty_ratio = allRows.length ? Number((profile[column].non_empty / allRows.length).toFixed(3)) : 0;
+    profile[column].numeric_ratio = allRows.length ? Number((profile[column].numeric / allRows.length).toFixed(3)) : 0;
+    profile[column].date_ratio = allRows.length ? Number((profile[column].dates / allRows.length).toFixed(3)) : 0;
+  }
+  const representativeIndexes = [...new Set([0, Math.floor(allRows.length / 2), allRows.length - 1])].filter((index) => index >= 0);
+  const representativeRows = representativeIndexes.map((index) => allRows[index]?.row_data).filter(Boolean);
   try {
-    const suggestion = await generateKpiImportSuggestion({ columns: importRow.detected_columns || [], sample: (sampleRows || []).map((row) => row.row_data) });
-    res.json(suggestion);
+    const suggestion = await generateKpiImportSuggestion({ columns, rowCount: allRows.length || importRow.row_count, profile, representativeRows });
+    res.json({ ...suggestion, analyzed_rows: allRows.length, analyzed_from_original_file: true });
   } catch (err) {
     res.status(503).json({ error: err.message });
   }
