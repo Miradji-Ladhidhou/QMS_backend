@@ -233,6 +233,7 @@ export function summarizeGroups(config, groups) {
     const periodLabel = isRawFallback ? periodKey.slice('__raw__:'.length) : periodKey;
 
     const result = computeGroup(config, groupRows);
+    const matchedIds = new Set(result.matchedRowIds || []);
     rowsProcessed += groupRows.length;
     rowsRejected += result.rejectedDetails?.length || 0;
 
@@ -243,6 +244,7 @@ export function summarizeGroups(config, groups) {
         persisted: false,
         grouped_counts: result.groupedCounts,
         rows_total: groupRows.length,
+        rows_preview: groupRows.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, included: matchedIds.has(rowIndex), row_data: rowData })),
       });
       continue;
     }
@@ -259,6 +261,7 @@ export function summarizeGroups(config, groups) {
       matched_row_ids: result.matchedRowIds || [],
       matched_rows: result.matchedRows || [],
       matched_values: result.matchedValues || [],
+      rows_preview: groupRows.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, included: matchedIds.has(rowIndex), row_data: rowData })),
       rows_rejected: result.rejectedDetails.length,
       rejected_details: result.rejectedDetails,
       ...(persisted
