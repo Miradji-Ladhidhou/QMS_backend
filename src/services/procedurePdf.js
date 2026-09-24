@@ -204,6 +204,12 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
 
     drawLetterheadHeader(doc, headerArgs);
 
+    doc.moveDown(0.8);
+    doc.font('Body-Bold').fontSize(18).fillColor(accentColor).text('PROCÉDURE', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, align: 'center' });
+    doc.font('Body-Bold').fontSize(13).fillColor(INK).text(`${procedure.number} — ${procedure.title}`, PAGE_MARGIN, doc.y + 5, { width: CONTENT_WIDTH, align: 'center' });
+    doc.font('Body').fontSize(9).fillColor(MUTED).text(`Entreprise : ${tenantName || '—'}`, PAGE_MARGIN, doc.y + 5, { width: CONTENT_WIDTH, align: 'center' });
+    doc.moveDown(1);
+
     doc
       .fontSize(9)
       .fillColor(MUTED)

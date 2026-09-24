@@ -211,10 +211,10 @@ function sousTitreParagraph(text) {
 function tableCellText(text, { header, style, width } = {}) {
   return new TableCell({
     width: width ? { size: width, type: WidthType.DXA } : undefined,
-    shading: header ? { type: ShadingType.CLEAR, fill: 'F2F2F2' } : undefined,
+    shading: header ? { type: ShadingType.CLEAR, fill: lightTint(hexColor(style.accentColor)) } : undefined,
     verticalAlign: VerticalAlign.CENTER,
-    margins: { top: 60, bottom: 60, left: 100, right: 100 },
-    children: [new Paragraph({ children: [new TextRun({ text, bold: !!header, color: header ? hexColor(style.accentColor) : undefined })] })],
+    margins: { top: 90, bottom: 90, left: 120, right: 120 },
+    children: [new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text, bold: !!header, size: header ? BASE_FONT_SIZE : BASE_FONT_SIZE - 1, color: header ? hexColor(style.accentColor) : undefined })] })],
   });
 }
 
@@ -350,12 +350,12 @@ function titleBlockParagraphs({ procedureNumber, procedureTitle }) {
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 80 },
-      children: [new TextRun({ text: 'PROCÉDURE', bold: true, size: BASE_FONT_SIZE + 12 })],
+      children: [new TextRun({ text: 'PROCÉDURE', bold: true, size: BASE_FONT_SIZE + 14, color: '44546A' })],
     }),
     new Paragraph({
       alignment: AlignmentType.CENTER,
       spacing: { after: 200 },
-      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, italics: true, size: BASE_FONT_SIZE + 4 })],
+      children: [new TextRun({ text: `${procedureNumber} — ${procedureTitle}`, italics: true, size: BASE_FONT_SIZE + 5, color: '334155' })],
     }),
   ];
 }
