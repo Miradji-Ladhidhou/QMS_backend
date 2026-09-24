@@ -17,6 +17,13 @@ import { ASSIGNABLE_ROLES, sendInviteEmail } from './users.js';
 
 const router = Router();
 const PLANS = ['free', 'starter', 'pro', 'enterprise'];
+const TENANT_EXPORT_TABLES = [
+  'users', 'document_categories', 'documents', 'document_versions', 'document_workflows', 'document_approvals',
+  'capas', 'capa_comments', 'trainings', 'training_records', 'kpis', 'kpi_records', 'groups', 'group_members',
+  'audits', 'audit_findings', 'audit_checklist_items', 'risks', 'risk_assessments', 'suppliers', 'supplier_evaluations',
+  'complaints', 'customer_satisfaction', 'pdca_projects', 'qqoqccp_analyses', 'management_reviews',
+  'management_review_actions', 'haccp_plans', 'haccp_hazards', 'haccp_ccps', 'tasks',
+];
 
 router.use(requireAuth);
 router.use(requireSuperAdmin);
@@ -47,6 +54,32 @@ router.get('/tenants', async (req, res) => {
   }
 
   res.json(tenants.map((tenant) => ({ ...tenant, user_count: userCountByTenant[tenant.id] || 0 })));
+});
+
+// Export métier d'un tenant pour le support et la portabilité — liste blanche de tables,
+// aucune donnée d'authentification Supabase ni secret de stockage n'est incluse.
+router.get('/tenants/:id/export', async (req, res) => {
+  const { data: tenant, error: tenantError } = await supabase
+    .from('tenants')
+    .select('id, name, slug, plan, is_suspended, timezone, created_at')
+    .eq('id', req.params.id)
+    .single();
+  if (tenantError || !tenant) return res.status(404).json({ error: 'Tenant introuvable.' });
+
+  const tables = {};
+  for (const table of TENANT_EXPORT_TABLES) {
+    const { data, error } = await supabase.from(table).select('*').eq('tenant_id', tenant.id);
+    if (!error) tables[table] = data || [];
+  }
+  await logSuperAdminAction({
+    actorId: req.user.id,
+    action: 'tenant_exported',
+    targetType: 'tenant',
+    targetId: tenant.id,
+    details: { tenant_name: tenant.name, table_count: Object.keys(tables).length },
+  });
+  res.setHeader('Content-Disposition', `attachment; filename="qms-tenant-${tenant.slug}.json"`);
+  res.json({ exported_at: new Date().toISOString(), tenant, tables });
 });
 
 // Comptes par module pour la fiche détaillée d'un tenant — un count(head:true) par table
