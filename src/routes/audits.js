@@ -202,6 +202,8 @@ const AUDIT_VALIDATORS = [
   body('title').trim().notEmpty().withMessage('Le titre est requis.'),
   body('audit_type').optional({ values: 'falsy' }).isIn(AUDIT_TYPES).withMessage('Type d\'audit invalide.'),
   body('scope').optional({ values: 'falsy' }).trim(),
+  body('criteria').optional({ values: 'falsy' }).trim(),
+  body('method').optional({ values: 'falsy' }).trim(),
   body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
   body('lead_auditor').optional({ values: 'falsy' }).isUUID().withMessage('Auditeur invalide.'),
   body('planned_date').isISO8601().withMessage('Date planifiée invalide.'),
@@ -220,6 +222,8 @@ router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, requireValid
     title,
     audit_type: auditType,
     scope,
+    criteria,
+    method,
     service_id: serviceId,
     lead_auditor: leadAuditor,
     planned_date: plannedDate,
@@ -233,6 +237,8 @@ router.post('/', requireRole('admin', 'manager'), AUDIT_VALIDATORS, requireValid
       title,
       audit_type: auditType || undefined,
       scope: scope || null,
+      criteria: criteria || null,
+      method: method || null,
       service_id: serviceId || null,
       lead_auditor: leadAuditor || null,
       planned_date: plannedDate,
@@ -289,6 +295,8 @@ router.patch(
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
     body('audit_type').optional({ values: 'falsy' }).isIn(AUDIT_TYPES).withMessage('Type d\'audit invalide.'),
     body('scope').optional({ values: 'falsy' }).trim(),
+    body('criteria').optional({ values: 'falsy' }).trim(),
+    body('method').optional({ values: 'falsy' }).trim(),
     body('service_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('lead_auditor').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Auditeur invalide.'),
     body('planned_date').optional().isISO8601().withMessage('Date planifiée invalide.'),
@@ -305,7 +313,7 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'audit_type', 'scope', 'planned_date', 'completed_date', 'status', 'conclusion']) {
+    for (const field of ['title', 'audit_type', 'scope', 'criteria', 'method', 'planned_date', 'completed_date', 'status', 'conclusion']) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
