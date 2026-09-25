@@ -412,6 +412,31 @@ router.get('/:id/records', async (req, res) => {
   if (kpiError || !kpi) return res.status(404).json({ error: 'KPI introuvable.' });
   const categoryAllowed = await hasGenericCategoryPermission({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, categoryId: kpi.category_id, permission: 'view' });
   if (!categoryAllowed) return res.status(404).json({ error: 'KPI introuvable.' });
+
+  if (req.query.grouped === 'true') {
+    const allRecords = [];
+    let offset = 0;
+    const chunkSize = 200;
+    while (true) {
+      const { data: chunk, error: chunkError } = await supabase
+        .from('kpi_records')
+        .select(RECORDS_SELECT)
+        .eq('tenant_id', req.tenantId)
+        .eq('kpi_id', req.params.id)
+        .order('period_date', { ascending: false })
+        .range(offset, offset + chunkSize - 1);
+      if (chunkError) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
+      allRecords.push(...(chunk || []));
+      if (!chunk || chunk.length < chunkSize) break;
+      offset += chunkSize;
+    }
+    const periods = [...new Set(allRecords.map((record) => record.period_date))];
+    const fromPeriod = (page - 1) * limit;
+    const visiblePeriods = new Set(periods.slice(fromPeriod, fromPeriod + limit));
+    const items = allRecords.filter((record) => visiblePeriods.has(record.period_date));
+    return res.json({ items, pagination: { page, limit, total: periods.length, total_pages: Math.max(1, Math.ceil(periods.length / limit)) } });
+  }
+
   const from = (page - 1) * limit;
   const { data, error, count } = await supabase
     .from('kpi_records')
