@@ -177,16 +177,17 @@ export function computeGroup(config, rows) {
         else if (config.calc_type === 'min') value = Number(Math.min(...numbers).toFixed(2));
         else value = Number(Math.max(...numbers).toFixed(2));
       }
-      return { value, matching: matched.length, matchedRowIds: matched.map(({ rowIndex }) => rowIndex), rowsValid: numbers.length, rejectedDetails };
-        return {
-          value,
-          matching: matched.length,
-          matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
-          matchedRows: matched.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, row_data: rowData })),
-          matchedValues: matched.map(({ rowIndex, rowData }) => ({ row_id: rowIndex, value: rowData[config.source_column] })),
-          rowsValid: numbers.length,
-          rejectedDetails,
-        };
+      return {
+        value,
+        matching: matched.length,
+        matchedRowIds: matched.map(({ rowIndex }) => rowIndex),
+        matchedRows: matched.map(({ rowIndex, rowData }) => ({ row_index: rowIndex, row_data: rowData })),
+        matchedValues: matched
+          .filter(({ rowData }) => !Number.isNaN(toNumber(rowData[config.source_column])))
+          .map(({ rowIndex, rowData }) => ({ row_id: rowIndex, value: rowData[config.source_column] })),
+        rowsValid: numbers.length,
+        rejectedDetails,
+      };
     }
     case 'count_grouped': {
       const groupedCounts = {};
