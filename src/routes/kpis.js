@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { buildKpiReportPdf } from '../services/kpiReportPdf.js';
 import { buildKpiReportXlsx } from '../services/kpiReportXlsx.js';
+import { buildKpiHistoryXlsx } from '../services/kpiHistoryXlsx.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { computeGroup, describeCalculation, groupRowsByPeriod, validateFilters } from '../services/kpiCalculation.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -403,6 +404,62 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
+});
+
+// GET /api/kpis/:id/records/export-xlsx — export complet respectant exactement la présentation du tableur historique
+router.get('/:id/records/export-xlsx', async (req, res) => {
+  const { data: kpi, error: kpiError } = await supabase
+    .from('kpis')
+    .select('*, calculation_configs:kpi_calculation_configs(id, label, calc_type, unit, target, target_direction)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (kpiError || !kpi) return res.status(404).json({ error: 'KPI introuvable.' });
+  const categoryAllowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: kpi.category_id,
+    permission: 'view',
+  });
+  if (!categoryAllowed) return res.status(404).json({ error: 'KPI introuvable.' });
+
+  // Récupérer tous les enregistrements sans pagination
+  const allRecords = [];
+  let offset = 0;
+  const chunkSize = 500;
+  while (true) {
+    const { data: chunk, error: chunkError } = await supabase
+      .from('kpi_records')
+      .select(RECORDS_SELECT)
+      .eq('tenant_id', req.tenantId)
+      .eq('kpi_id', req.params.id)
+      .order('period_date', { ascending: false })
+      .range(offset, offset + chunkSize - 1);
+    if (chunkError) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
+    allRecords.push(...(chunk || []));
+    if (!chunk || chunk.length < chunkSize) break;
+    offset += chunkSize;
+  }
+
+  const [{ data: tenant }, { data: userProfile }] = await Promise.all([
+    supabase.from('tenants').select('name').eq('id', req.tenantId).maybeSingle(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).maybeSingle(),
+  ]);
+
+  const buffer = await buildKpiHistoryXlsx({
+    kpi,
+    records: allRecords,
+    tenantName: tenant?.name,
+    exportedBy: userProfile?.full_name || req.user?.email,
+  });
+
+  const safeKpiName = (kpi.name || 'kpi').replace(/[^a-zA-Z0-9à-ÿÀ-Ý_-]+/g, '_');
+  const filename = `${safeKpiName}-tableur-historique.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+  res.send(buffer);
 });
 
 // GET /api/kpis/:id/records?page=1&limit=50 — historique paginé, chargé à l’ouverture du panneau.
