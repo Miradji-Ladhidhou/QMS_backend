@@ -448,14 +448,14 @@ async function exportKpiRecordsXlsx(req, res) {
     supabase.from('users').select('full_name').eq('id', req.user.id).maybeSingle(),
   ]);
 
-  const chartImage = req.body?.chartImage || req.query?.chartImage || null;
+  const chartType = req.body?.chartType || req.query?.chartType || 'line';
 
   const buffer = await buildKpiHistoryXlsx({
     kpi,
     records: allRecords,
     tenantName: tenant?.name,
     exportedBy: userProfile?.full_name || req.user?.email,
-    chartImage,
+    chartType,
   });
 
   const safeKpiName = (kpi.name || 'kpi').replace(/[^a-zA-Z0-9à-ÿÀ-Ý_-]+/g, '_');

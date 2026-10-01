@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import JSZip from 'jszip';
 
 const INK_ARGB = 'FF1E293B';
 const MUTED_ARGB = 'FF64748B';
@@ -10,10 +11,33 @@ const ROW_ALT_FILL_ARGB = 'FFF8FAFC';
 const BORDER_ARGB = 'FFCBD5E1';
 const THIN_BORDER = { style: 'thin', color: { argb: BORDER_ARGB } };
 
+const SERIES_HEX_COLORS = ['1F3864', '0D9488', 'D97706', '7C3AED', 'DB2777', '2563EB', '059669', 'DC2626'];
+
 function formatIsoDate(dateStr) {
   if (!dateStr) return '';
   const [year, month, day] = dateStr.slice(0, 10).split('-');
   return `${day}/${month}/${year}`;
+}
+
+function colIndexToLetter(col) {
+  let temp = col;
+  let letter = '';
+  while (temp > 0) {
+    const rem = (temp - 1) % 26;
+    letter = String.fromCharCode(65 + rem) + letter;
+    temp = Math.floor((temp - 1) / 26);
+  }
+  return letter;
+}
+
+function escapeXml(str) {
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }
 
 const SOURCE_LABELS = {
@@ -31,6 +55,311 @@ const FREQUENCY_LABELS = {
 };
 
 /**
+ * Génère le XML d'un graphique natif OpenXML (Line ou Bar)
+ * branché directement sur les cellules réelles de la feuille de calcul.
+ */
+function buildChartXml({
+  sheetName,
+  chartTitle,
+  chartType,
+  categories,
+  categoryRange,
+  seriesList,
+}) {
+  const isBar = chartType === 'bar';
+
+  const seriesXml = seriesList
+    .map((s, idx) => {
+      const color = s.color || SERIES_HEX_COLORS[idx % SERIES_HEX_COLORS.length];
+      const titleFormula = `'${escapeXml(sheetName)}'!$${s.valColLetter}$4`;
+      const valFormula = `'${escapeXml(sheetName)}'!$${s.valColLetter}$5:$${s.valColLetter}$${s.lastRow}`;
+      const catFormula = `'${escapeXml(sheetName)}'!${categoryRange}`;
+
+      if (isBar) {
+        return `
+        <c:ser>
+          <c:idx val="${idx}"/>
+          <c:order val="${idx}"/>
+          <c:tx>
+            <c:strRef>
+              <c:f>${titleFormula}</c:f>
+              <c:strCache>
+                <c:ptCount val="1"/>
+                <c:pt idx="0"><c:v>${escapeXml(s.label)}</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:spPr>
+            <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+            <a:ln w="9525">
+              <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+            </a:ln>
+          </c:spPr>
+          <c:cat>
+            <c:strRef>
+              <c:f>${catFormula}</c:f>
+              <c:strCache>
+                <c:ptCount val="${categories.length}"/>
+                ${categories.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('')}
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:f>${valFormula}</c:f>
+              <c:numCache>
+                <c:formatCode>General</c:formatCode>
+                <c:ptCount val="${s.values.length}"/>
+                ${s.values.map((v, i) => `<c:pt idx="${i}"><c:v>${v !== null && v !== undefined && !Number.isNaN(v) ? v : ''}</c:v></c:pt>`).join('')}
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+        </c:ser>`;
+      }
+
+      // Line chart
+      return `
+        <c:ser>
+          <c:idx val="${idx}"/>
+          <c:order val="${idx}"/>
+          <c:tx>
+            <c:strRef>
+              <c:f>${titleFormula}</c:f>
+              <c:strCache>
+                <c:ptCount val="1"/>
+                <c:pt idx="0"><c:v>${escapeXml(s.label)}</c:v></c:pt>
+              </c:strCache>
+            </c:strRef>
+          </c:tx>
+          <c:spPr>
+            <a:ln w="25400">
+              <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+            </a:ln>
+          </c:spPr>
+          <c:marker>
+            <c:symbol val="circle"/>
+            <c:size val="5"/>
+            <c:spPr>
+              <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+              <a:ln w="9525"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:ln>
+            </c:spPr>
+          </c:marker>
+          <c:cat>
+            <c:strRef>
+              <c:f>${catFormula}</c:f>
+              <c:strCache>
+                <c:ptCount val="${categories.length}"/>
+                ${categories.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('')}
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numRef>
+              <c:f>${valFormula}</c:f>
+              <c:numCache>
+                <c:formatCode>General</c:formatCode>
+                <c:ptCount val="${s.values.length}"/>
+                ${s.values.map((v, i) => `<c:pt idx="${i}"><c:v>${v !== null && v !== undefined && !Number.isNaN(v) ? v : ''}</c:v></c:pt>`).join('')}
+              </c:numCache>
+            </c:numRef>
+          </c:val>
+          <c:smooth val="0"/>
+        </c:ser>`;
+    })
+    .join('');
+
+  const chartBody = isBar
+    ? `
+      <c:barChart>
+        <c:barDir val="col"/>
+        <c:grouping val="clustered"/>
+        <c:varyColors val="0"/>
+        ${seriesXml}
+        <c:gapWidth val="150"/>
+        <c:axId val="148921104"/>
+        <c:axId val="148922640"/>
+      </c:barChart>`
+    : `
+      <c:lineChart>
+        <c:grouping val="standard"/>
+        <c:varyColors val="0"/>
+        ${seriesXml}
+        <c:axId val="148921104"/>
+        <c:axId val="148922640"/>
+      </c:lineChart>`;
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <c:lang val="fr-FR"/>
+  <c:chart>
+    <c:title>
+      <c:tx>
+        <c:rich>
+          <a:bodyPr/>
+          <a:lstStyle/>
+          <a:p>
+            <a:pPr><a:defRPr sz="1200" b="1"/></a:pPr>
+            <a:r>
+              <a:rPr lang="fr-FR"/>
+              <a:t>${escapeXml(chartTitle)}</a:t>
+            </a:r>
+          </a:p>
+        </c:rich>
+      </c:tx>
+      <c:overlay val="0"/>
+    </c:title>
+    <c:plotArea>
+      <c:layout/>
+      ${chartBody}
+      <c:catAx>
+        <c:axId val="148921104"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="b"/>
+        <c:majorTickMark val="none"/>
+        <c:minorTickMark val="none"/>
+        <c:tickLblPos val="nextTo"/>
+        <c:crossAx val="148922640"/>
+        <c:crosses val="autoZero"/>
+        <c:auto val="1"/>
+        <c:lblAlgn val="ctr"/>
+        <c:lblOffset val="100"/>
+      </c:catAx>
+      <c:valAx>
+        <c:axId val="148922640"/>
+        <c:scaling><c:orientation val="minMax"/></c:scaling>
+        <c:delete val="0"/>
+        <c:axPos val="l"/>
+        <c:majorGridlines>
+          <c:spPr>
+            <a:ln w="9525"><a:solidFill><a:srgbClr val="E2E8F0"/></a:solidFill></a:ln>
+          </c:spPr>
+        </c:majorGridlines>
+        <c:numFmt formatCode="General" sourceLinked="1"/>
+        <c:majorTickMark val="none"/>
+        <c:minorTickMark val="none"/>
+        <c:tickLblPos val="nextTo"/>
+        <c:crossAx val="148921104"/>
+        <c:crosses val="autoZero"/>
+        <c:crossBetween val="between"/>
+      </c:valAx>
+    </c:plotArea>
+    <c:legend>
+      <c:legendPos val="b"/>
+      <c:layout/>
+      <c:overlay val="0"/>
+    </c:legend>
+    <c:plotVisOnly val="1"/>
+    <c:dispBlanksAs val="gap"/>
+    <c:showDLblsOverMax val="0"/>
+  </c:chart>
+</c:chartSpace>`;
+}
+
+/**
+ * Injecte le graphique natif OpenXML dans le classeur Excel via JSZip
+ */
+async function injectNativeChartIntoZip(baseBuffer, chartConfig) {
+  const zip = await JSZip.loadAsync(baseBuffer);
+
+  // Trouver le chemin exact de la feuille de calcul
+  const sheetPath = Object.keys(zip.files).find(
+    (p) => p.startsWith('xl/worksheets/sheet') && p.endsWith('.xml') && !p.includes('_rels')
+  ) || 'xl/worksheets/sheet1.xml';
+
+  const sheetFilename = sheetPath.split('/').pop();
+  const sheetRelsPath = `xl/worksheets/_rels/${sheetFilename}.rels`;
+
+  const chartXml = buildChartXml(chartConfig);
+
+  const { fromCol, toCol, fromRow, toRow } = chartConfig.placement;
+
+  const drawingXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <xdr:twoCellAnchor>
+    <xdr:from>
+      <xdr:col>${fromCol}</xdr:col>
+      <xdr:colOff>0</xdr:colOff>
+      <xdr:row>${fromRow}</xdr:row>
+      <xdr:rowOff>0</xdr:rowOff>
+    </xdr:from>
+    <xdr:to>
+      <xdr:col>${toCol}</xdr:col>
+      <xdr:colOff>0</xdr:colOff>
+      <xdr:row>${toRow}</xdr:row>
+      <xdr:rowOff>0</xdr:rowOff>
+    </xdr:to>
+    <xdr:graphicFrame macro="">
+      <xdr:nvGraphicFramePr>
+        <xdr:cNvPr id="2" name="Graphique 1"/>
+        <xdr:cNvGraphicFramePr/>
+      </xdr:nvGraphicFramePr>
+      <xdr:xfrm>
+        <a:off x="0" y="0"/>
+        <a:ext cx="0" cy="0"/>
+      </xdr:xfrm>
+      <a:graphic>
+        <a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">
+          <c:chart r:id="rIdChart1"/>
+        </a:graphicData>
+      </a:graphic>
+    </xdr:graphicFrame>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>`;
+
+  const drawingRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/>
+</Relationships>`;
+
+  // 1. Enregistrer chart1.xml, drawing1.xml et drawing1.xml.rels
+  zip.file('xl/charts/chart1.xml', chartXml);
+  zip.file('xl/drawings/drawing1.xml', drawingXml);
+  zip.file('xl/drawings/_rels/drawing1.xml.rels', drawingRelsXml);
+
+  // 2. Lier drawing1.xml dans la feuille de calcul
+  let sheetRelsXml = '';
+  if (zip.file(sheetRelsPath)) {
+    sheetRelsXml = await zip.file(sheetRelsPath).async('string');
+    if (!sheetRelsXml.includes('Target="../drawings/drawing1.xml"')) {
+      sheetRelsXml = sheetRelsXml.replace(
+        '</Relationships>',
+        '<Relationship Id="rIdDrawing1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/></Relationships>'
+      );
+    }
+  } else {
+    sheetRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdDrawing1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>`;
+  }
+  zip.file(sheetRelsPath, sheetRelsXml);
+
+  // 3. Ajouter <drawing r:id="rIdDrawing1"/> dans le XML de la feuille
+  let sheetXml = await zip.file(sheetPath).async('string');
+  if (!sheetXml.includes('<drawing')) {
+    sheetXml = sheetXml.replace(
+      '</worksheet>',
+      '<drawing xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="rIdDrawing1"/></worksheet>'
+    );
+    zip.file(sheetPath, sheetXml);
+  }
+
+  // 4. Déclarer les types de contenu dans [Content_Types].xml
+  let contentTypes = await zip.file('[Content_Types].xml').async('string');
+  if (!contentTypes.includes('/xl/charts/chart1.xml')) {
+    contentTypes = contentTypes.replace(
+      '</Types>',
+      '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/><Override PartName="/xl/charts/chart1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>'
+    );
+    zip.file('[Content_Types].xml', contentTypes);
+  }
+
+  return zip.generateAsync({ type: 'nodebuffer' });
+}
+
+/**
  * Génère un classeur Excel respectant exactement la présentation du « Tableur historique »
  * affiché à l'écran :
  * - Bandeau titre Excel vert
@@ -41,9 +370,9 @@ const FREQUENCY_LABELS = {
  * - Données formatées (dates JJ/MM/AAAA, valeurs avec unité, source, commentaire, saisie par)
  * - Support mono-série et multi-séries (matrice par période)
  * - En-têtes figés et filtres automatiques natifs Excel
- * - Insertion du graphique d'évolution à côté du tableau si une image est fournie
+ * - Graphique NATIF Excel généré à partir des données réelles de la feuille
  */
-export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy, chartImage }) {
+export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy, chartType = 'line' }) {
   const workbook = new ExcelJS.Workbook();
   const sheetTitle = (kpi.name || 'Historique').replace(/[\\/?*[\]]/g, '').slice(0, 31);
   const sheet = workbook.addWorksheet(sheetTitle);
@@ -167,6 +496,8 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
   const sortedRecords = [...records].sort((a, b) => (a.period_date < b.period_date ? 1 : -1));
 
   let currentRowNumber = 5;
+  const categories = [];
+  const seriesValuesMap = new Map(); // seriesKey -> array of values
 
   if (showSeriesColumn) {
     // Regroupement par période pour le cas multi-séries
@@ -176,6 +507,10 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       recordsByPeriod.get(record.period_date).push(record);
     });
 
+    seriesConfigs.forEach((series) => {
+      seriesValuesMap.set(series.id, []);
+    });
+
     let rowIdx = 1;
     recordsByPeriod.forEach((periodRecords, period) => {
       const row = sheet.getRow(currentRowNumber);
@@ -183,6 +518,9 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       const rowFill = isAlt
         ? { type: 'pattern', pattern: 'solid', fgColor: { argb: ROW_ALT_FILL_ARGB } }
         : { type: 'pattern', pattern: 'solid', fgColor: { argb: WHITE_ARGB } };
+
+      const formattedPeriod = formatIsoDate(period);
+      categories.push(formattedPeriod);
 
       // Colonne Ligne
       const lineCell = row.getCell(1);
@@ -194,7 +532,7 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
 
       // Colonne Période
       const periodCell = row.getCell(2);
-      periodCell.value = formatIsoDate(period);
+      periodCell.value = formattedPeriod;
       periodCell.alignment = { horizontal: 'center', vertical: 'middle' };
       periodCell.font = { size: 10, color: { argb: INK_ARGB } };
       periodCell.fill = rowFill;
@@ -204,13 +542,16 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       let colIdx = 3;
       seriesConfigs.forEach((series) => {
         const item = periodRecords.find((r) => r.config_id === series.id);
+        const val = item ? item.value : null;
+        seriesValuesMap.get(series.id).push(val);
+
         const valCell = row.getCell(colIdx);
-        valCell.value = item ? item.value : null;
+        valCell.value = val;
         valCell.alignment = { horizontal: 'right', vertical: 'middle' };
         valCell.font = { size: 10, bold: true, color: { argb: INK_ARGB } };
         valCell.fill = rowFill;
         valCell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
-        if (typeof item?.value === 'number') valCell.numFmt = '#,##0.00';
+        if (typeof val === 'number') valCell.numFmt = '#,##0.00';
 
         const comCell = row.getCell(colIdx + 1);
         comCell.value = item?.comment || null;
@@ -228,12 +569,18 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       rowIdx += 1;
     });
   } else {
+    seriesValuesMap.set('single', []);
+
     sortedRecords.forEach((record, index) => {
       const row = sheet.getRow(currentRowNumber);
       const isAlt = (index + 1) % 2 === 0;
       const rowFill = isAlt
         ? { type: 'pattern', pattern: 'solid', fgColor: { argb: ROW_ALT_FILL_ARGB } }
         : { type: 'pattern', pattern: 'solid', fgColor: { argb: WHITE_ARGB } };
+
+      const formattedPeriod = formatIsoDate(record.period_date);
+      categories.push(formattedPeriod);
+      seriesValuesMap.get('single').push(record.value);
 
       // Colonne Ligne (#)
       const lineCell = row.getCell(1);
@@ -245,7 +592,7 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
 
       // Colonne Période
       const periodCell = row.getCell(2);
-      periodCell.value = formatIsoDate(record.period_date);
+      periodCell.value = formattedPeriod;
       periodCell.alignment = { horizontal: 'center', vertical: 'middle' };
       periodCell.font = { size: 10, color: { argb: INK_ARGB } };
       periodCell.fill = rowFill;
@@ -305,48 +652,71 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
     };
   }
 
-  // Insertion du graphique à côté du tableau
-  if (chartImage) {
-    let imageBase64 = null;
-    if (typeof chartImage === 'string' && chartImage.includes('base64,')) {
-      imageBase64 = chartImage.split('base64,')[1];
-    } else if (typeof chartImage === 'string' && chartImage.length > 50) {
-      imageBase64 = chartImage;
+  // Colonne de séparation (vide) à côté du tableau
+  const spacerCol = totalCols + 1;
+  sheet.getColumn(spacerCol).width = 4;
+
+  const baseBuffer = await workbook.xlsx.writeBuffer();
+
+  // Si au moins un relevé est présent, générer et injecter le graphique natif
+  const dataRowCount = currentRowNumber - 5;
+  if (dataRowCount >= 1) {
+    const lastRow = currentRowNumber - 1;
+    const categoryRange = `$B$5:$B$${lastRow}`;
+
+    let seriesList = [];
+    if (showSeriesColumn) {
+      seriesList = seriesConfigs.map((series, sIdx) => {
+        const valColLetter = colIndexToLetter(3 + sIdx * 2);
+        return {
+          label: series.label,
+          valColLetter,
+          lastRow,
+          values: seriesValuesMap.get(series.id) || [],
+          color: SERIES_HEX_COLORS[sIdx % SERIES_HEX_COLORS.length],
+        };
+      });
+    } else {
+      seriesList = [
+        {
+          label: kpi.name || 'Valeur',
+          valColLetter: 'C',
+          lastRow,
+          values: seriesValuesMap.get('single') || [],
+          color: '1F3864',
+        },
+      ];
     }
 
-    if (imageBase64) {
-      try {
-        const imageId = workbook.addImage({
-          base64: imageBase64,
-          extension: 'png',
-        });
+    let targetDesc = '';
+    if (kpi.target !== null && kpi.target !== undefined) {
+      const dir = kpi.target_direction === 'max' ? '≤' : '≥';
+      targetDesc = ` (Objectif : ${dir} ${kpi.target} ${defaultUnit})`.trim();
+    }
 
-        // Colonne de séparation (vide)
-        const spacerCol = totalCols + 1;
-        sheet.getColumn(spacerCol).width = 4;
+    const chartTitle = `Évolution — ${kpi.name}${targetDesc}`;
 
-        // Position de départ du graphique (1-indexed pour getCell, 0-indexed pour tl)
-        const chartStartCol1 = totalCols + 2;
-        const chartStartCol0 = totalCols + 1;
+    // Emplacement à côté du tableau (0-indexed pour OpenXML: col totalCols + 1)
+    const fromCol = totalCols + 1; // Col après le spacer
+    const toCol = fromCol + 11; // Largeur d'environ 11 colonnes
+    const fromRow = 3; // Ligne 4 (en face de l'en-tête)
+    const toRow = Math.max(20, 4 + dataRowCount + 1); // Hauteur adaptée
 
-        // En-tête au-dessus du graphique
-        const chartHeaderCell = sheet.getRow(3).getCell(chartStartCol1);
-        chartHeaderCell.value = 'Graphique d’évolution';
-        chartHeaderCell.font = { bold: true, size: 10, color: { argb: INK_ARGB } };
-        chartHeaderCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEADER_FILL_ARGB } };
-        chartHeaderCell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
-
-        // Position de l'image (0-indexed) : tl = { col: chartStartCol0, row: 3 }
-        // démarre à la ligne 4 (juste sous le titre du graphique, en face des en-têtes et données)
-        sheet.addImage(imageId, {
-          tl: { col: chartStartCol0, row: 3 },
-          ext: { width: 580, height: 300 },
-        });
-      } catch (imgError) {
-        console.warn("Impossible d'insérer le graphique dans l'export Excel:", imgError.message);
-      }
+    try {
+      return await injectNativeChartIntoZip(baseBuffer, {
+        sheetName: sheetTitle,
+        chartTitle,
+        chartType,
+        categories,
+        categoryRange,
+        seriesList,
+        placement: { fromCol, toCol, fromRow, toRow },
+      });
+    } catch (err) {
+      console.warn("Erreur lors de l'injection du graphique natif Excel :", err);
+      return baseBuffer;
     }
   }
 
-  return workbook.xlsx.writeBuffer();
+  return baseBuffer;
 }
