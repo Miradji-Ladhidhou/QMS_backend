@@ -940,6 +940,7 @@ router.patch(
     body('period_date').optional({ values: 'falsy' }).isISO8601().withMessage('Date de période invalide.'),
     body('value').optional({ values: 'falsy' }).isFloat().withMessage('Valeur invalide.'),
     body('comment').optional({ values: 'falsy' }).trim(),
+    body('config_id').optional({ nullable: true }).isUUID().withMessage('Série invalide.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -970,18 +971,19 @@ router.patch(
         update[field] = req.body[field];
       }
     }
+    if ('config_id' in req.body && req.body.config_id !== undefined) {
+      update.config_id = req.body.config_id || null;
+    }
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
-    // Un humain qui corrige une valeur calculée en fait, de fait, une valeur saisie
-    // manuellement, détachée de la série qui l'avait produite — elle ne doit plus être
-    // présentée comme issue de l'import.
+    // Un humain qui corrige une valeur la marque comme modifiée manuellement,
+    // mais elle conserve son rattachement à sa série (config_id préservé).
     if ('value' in update) {
       update.source = 'manual';
       update.source_import_id = null;
-      update.config_id = null;
     }
 
     const { data, error } = await supabase
