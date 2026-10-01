@@ -492,8 +492,8 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
   headerRow.height = 22;
   headerRow.commit();
 
-  // Lignes de données — triées par period_date desc (comme dans le tableau web)
-  const sortedRecords = [...records].sort((a, b) => (a.period_date < b.period_date ? 1 : -1));
+  // Lignes de données — triées par period_date asc (ordre chronologique des saisies)
+  const sortedRecords = [...records].sort((a, b) => (a.period_date > b.period_date ? 1 : -1));
 
   let currentRowNumber = 5;
   const categories = [];

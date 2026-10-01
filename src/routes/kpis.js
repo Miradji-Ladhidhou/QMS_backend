@@ -425,7 +425,7 @@ async function exportKpiRecordsXlsx(req, res) {
   });
   if (!categoryAllowed) return res.status(404).json({ error: 'KPI introuvable.' });
 
-  // Récupérer tous les enregistrements sans pagination
+  // Récupérer tous les enregistrements sans pagination dans l'ordre chronologique des saisies
   const allRecords = [];
   let offset = 0;
   const chunkSize = 500;
@@ -435,7 +435,7 @@ async function exportKpiRecordsXlsx(req, res) {
       .select(RECORDS_SELECT)
       .eq('tenant_id', req.tenantId)
       .eq('kpi_id', req.params.id)
-      .order('period_date', { ascending: false })
+      .order('period_date', { ascending: true })
       .range(offset, offset + chunkSize - 1);
     if (chunkError) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
     allRecords.push(...(chunk || []));
@@ -486,7 +486,7 @@ router.get('/:id/records', async (req, res) => {
         .select(RECORDS_SELECT)
         .eq('tenant_id', req.tenantId)
         .eq('kpi_id', req.params.id)
-        .order('period_date', { ascending: false })
+        .order('period_date', { ascending: true })
         .range(offset, offset + chunkSize - 1);
       if (chunkError) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
       allRecords.push(...(chunk || []));
@@ -506,7 +506,7 @@ router.get('/:id/records', async (req, res) => {
     .select(RECORDS_SELECT, { count: 'exact' })
     .eq('tenant_id', req.tenantId)
     .eq('kpi_id', req.params.id)
-    .order('period_date', { ascending: false })
+    .order('period_date', { ascending: true })
     .range(from, from + limit - 1);
   if (error) return res.status(500).json({ error: "Impossible de récupérer l'historique." });
   return res.json({ items: data || [], pagination: { page, limit, total: count || 0, total_pages: Math.max(1, Math.ceil((count || 0) / limit)) } });
