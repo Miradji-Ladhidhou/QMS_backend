@@ -1188,6 +1188,31 @@ create table document_acknowledgments (
   unique (document_id, user_id, version)
 );
 
+-- Registres documentaires personnalisables (lignes, colonnes dynamiques, suivi dans le planning)
+create table document_registers (
+  id          uuid primary key default gen_random_uuid(),
+  tenant_id   uuid not null references tenants (id) on delete cascade,
+  title       text not null,
+  description text,
+  folder      text,
+  columns     jsonb not null default '[]'::jsonb,
+  created_by  uuid references users (id) on delete set null,
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now()
+);
+
+create table document_register_rows (
+  id              uuid primary key default gen_random_uuid(),
+  tenant_id       uuid not null references tenants (id) on delete cascade,
+  register_id     uuid not null references document_registers (id) on delete cascade,
+  data            jsonb not null default '{}'::jsonb,
+  planning_date   date,
+  planning_title  text,
+  created_by      uuid references users (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  updated_at      timestamptz not null default now()
+);
+
 -- Module Procédures : contenu structuré (jsonb), versionné, avec gabarit par tenant et
 -- accusés de lecture — distinct du module Documents (fichiers uploadés) : ici le contenu est
 -- édité/généré (IA) directement dans l'app, pas un fichier binaire.
@@ -2485,6 +2510,8 @@ alter table document_workflows enable row level security;
 alter table document_approvals enable row level security;
 alter table document_audit_log enable row level security;
 alter table document_acknowledgments enable row level security;
+alter table document_registers enable row level security;
+alter table document_register_rows enable row level security;
 alter table procedures enable row level security;
 alter table procedure_versions enable row level security;
 alter table procedure_templates enable row level security;
@@ -2782,6 +2809,16 @@ create policy document_audit_log_insert on document_audit_log
   with check (tenant_id = auth_tenant_id());
 
 create policy document_acknowledgments_isolation on document_acknowledgments
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy document_registers_isolation on document_registers
+  for all
+  using (tenant_id = auth_tenant_id())
+  with check (tenant_id = auth_tenant_id());
+
+create policy document_register_rows_isolation on document_register_rows
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());

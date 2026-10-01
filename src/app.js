@@ -47,6 +47,7 @@ import reportsRoutes from './routes/reports.js';
 import driveIntegrationRoutes from './routes/driveIntegration.js';
 import proceduresRoutes from './routes/procedures.js';
 import procedureTemplatesRoutes from './routes/procedureTemplates.js';
+import registersRoutes from './routes/registers.js';
 import qualityPolicyRoutes from './routes/qualityPolicy.js';
 import nonconformingOutputsRoutes from './routes/nonconformingOutputs.js';
 import customerSatisfactionRoutes from './routes/customerSatisfaction.js';
@@ -89,7 +90,11 @@ app.use(
     },
   })
 );
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+const frontendUrl = new URL(process.env.FRONTEND_URL);
+const allowedOrigins = ['localhost', '127.0.0.1'].includes(frontendUrl.hostname)
+  ? ['localhost', '127.0.0.1'].map((host) => `${frontendUrl.protocol}//${host}${frontendUrl.port ? `:${frontendUrl.port}` : ''}`)
+  : process.env.FRONTEND_URL;
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 // Compresse les réponses JSON (gzip) — les listes (CAPA, documents, risques...) peuvent
 // dépasser plusieurs centaines de Ko décompressées ; sur une connexion mobile, réduire le
 // volume transféré compte au moins autant que le nombre d'allers-retours réseau déjà réduit
@@ -106,6 +111,7 @@ app.get('/health', (req, res) => {
 
 app.use('/api/auth', authLimiter, authRoutes);
 app.use('/api/documents', documentsRoutes);
+app.use('/api/registers', registersRoutes);
 app.use('/api/shares', sharesRoutes);
 app.use('/api/categories', categoriesRoutes);
 app.use('/api/module-categories', moduleCategoriesRoutes);

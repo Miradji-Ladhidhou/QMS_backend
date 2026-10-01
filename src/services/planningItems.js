@@ -462,3 +462,27 @@ export async function fetchManagementReviewItems(tenantId, { userId, userRole })
   }
   return items;
 }
+
+// Lignes de registres documentaires ayant une date d'échéance à suivre dans le planning
+export async function fetchRegisterItems(tenantId) {
+  const { data, error } = await supabase
+    .from('document_register_rows')
+    .select('id, register_id, planning_date, planning_title, data, register:document_registers(id, title)')
+    .eq('tenant_id', tenantId)
+    .not('planning_date', 'is', null);
+
+  if (error || !data) return [];
+
+  return data.map((row) => {
+    const rawData = row.data || {};
+    const defaultTitle = row.planning_title || Object.values(rawData)[0] || 'Ligne de registre';
+    const registerPrefix = row.register?.title ? `[${row.register.title}] ` : '';
+    return withOverdue({
+      type: 'register',
+      id: row.id,
+      title: `${registerPrefix}${defaultTitle}`,
+      date: row.planning_date,
+      link: `/documents?tab=registers&register_id=${row.register_id}`,
+    });
+  });
+}
