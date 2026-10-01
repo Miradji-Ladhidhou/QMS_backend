@@ -406,8 +406,8 @@ router.get('/:id', async (req, res) => {
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
-// GET /api/kpis/:id/records/export-xlsx — export complet respectant exactement la présentation du tableur historique
-router.get('/:id/records/export-xlsx', async (req, res) => {
+// GET & POST /api/kpis/:id/records/export-xlsx — export complet respectant exactement la présentation du tableur historique
+async function exportKpiRecordsXlsx(req, res) {
   const { data: kpi, error: kpiError } = await supabase
     .from('kpis')
     .select('*, calculation_configs:kpi_calculation_configs(id, label, calc_type, unit, target, target_direction)')
@@ -448,11 +448,14 @@ router.get('/:id/records/export-xlsx', async (req, res) => {
     supabase.from('users').select('full_name').eq('id', req.user.id).maybeSingle(),
   ]);
 
+  const chartImage = req.body?.chartImage || req.query?.chartImage || null;
+
   const buffer = await buildKpiHistoryXlsx({
     kpi,
     records: allRecords,
     tenantName: tenant?.name,
     exportedBy: userProfile?.full_name || req.user?.email,
+    chartImage,
   });
 
   const safeKpiName = (kpi.name || 'kpi').replace(/[^a-zA-Z0-9à-ÿÀ-Ý_-]+/g, '_');
@@ -460,7 +463,10 @@ router.get('/:id/records/export-xlsx', async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
   res.send(buffer);
-});
+}
+
+router.get('/:id/records/export-xlsx', exportKpiRecordsXlsx);
+router.post('/:id/records/export-xlsx', exportKpiRecordsXlsx);
 
 // GET /api/kpis/:id/records?page=1&limit=50 — historique paginé, chargé à l’ouverture du panneau.
 router.get('/:id/records', async (req, res) => {

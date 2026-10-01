@@ -41,8 +41,9 @@ const FREQUENCY_LABELS = {
  * - Données formatées (dates JJ/MM/AAAA, valeurs avec unité, source, commentaire, saisie par)
  * - Support mono-série et multi-séries (matrice par période)
  * - En-têtes figés et filtres automatiques natifs Excel
+ * - Insertion du graphique d'évolution à côté du tableau si une image est fournie
  */
-export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy }) {
+export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy, chartImage }) {
   const workbook = new ExcelJS.Workbook();
   const sheetTitle = (kpi.name || 'Historique').replace(/[\\/?*[\]]/g, '').slice(0, 31);
   const sheet = workbook.addWorksheet(sheetTitle);
@@ -302,6 +303,49 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       from: { row: 4, column: 1 },
       to: { row: currentRowNumber - 1, column: totalCols },
     };
+  }
+
+  // Insertion du graphique à côté du tableau
+  if (chartImage) {
+    let imageBase64 = null;
+    if (typeof chartImage === 'string' && chartImage.includes('base64,')) {
+      imageBase64 = chartImage.split('base64,')[1];
+    } else if (typeof chartImage === 'string' && chartImage.length > 50) {
+      imageBase64 = chartImage;
+    }
+
+    if (imageBase64) {
+      try {
+        const imageId = workbook.addImage({
+          base64: imageBase64,
+          extension: 'png',
+        });
+
+        // Colonne de séparation (vide)
+        const spacerCol = totalCols + 1;
+        sheet.getColumn(spacerCol).width = 4;
+
+        // Position de départ du graphique (1-indexed pour getCell, 0-indexed pour tl)
+        const chartStartCol1 = totalCols + 2;
+        const chartStartCol0 = totalCols + 1;
+
+        // En-tête au-dessus du graphique
+        const chartHeaderCell = sheet.getRow(3).getCell(chartStartCol1);
+        chartHeaderCell.value = 'Graphique d’évolution';
+        chartHeaderCell.font = { bold: true, size: 10, color: { argb: INK_ARGB } };
+        chartHeaderCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SUBHEADER_FILL_ARGB } };
+        chartHeaderCell.border = { top: THIN_BORDER, left: THIN_BORDER, bottom: THIN_BORDER, right: THIN_BORDER };
+
+        // Position de l'image (0-indexed) : tl = { col: chartStartCol0, row: 3 }
+        // démarre à la ligne 4 (juste sous le titre du graphique, en face des en-têtes et données)
+        sheet.addImage(imageId, {
+          tl: { col: chartStartCol0, row: 3 },
+          ext: { width: 580, height: 300 },
+        });
+      } catch (imgError) {
+        console.warn("Impossible d'insérer le graphique dans l'export Excel:", imgError.message);
+      }
+    }
   }
 
   return workbook.xlsx.writeBuffer();
