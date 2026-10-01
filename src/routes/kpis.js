@@ -376,6 +376,101 @@ router.post(
   }
 );
 
+// POST /api/kpis/:id/copy — duplique un KPI avec ses séries/configurations sans aucune donnée
+router.post(
+  '/:id/copy',
+  requireRole('admin', 'manager'),
+  [
+    body('name').optional({ values: 'falsy' }).trim(),
+  ],
+  async (req, res) => {
+    const { data: sourceKpi, error: kpiError } = await supabase
+      .from('kpis')
+      .select('*')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (kpiError || !sourceKpi) {
+      return res.status(404).json({ error: 'KPI source introuvable.' });
+    }
+
+    const categoryAllowed = await hasGenericCategoryPermission({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      categoryId: sourceKpi.category_id,
+      permission: 'view',
+    });
+    if (!categoryAllowed) {
+      return res.status(404).json({ error: 'KPI source introuvable.' });
+    }
+
+    const newName = req.body?.name?.trim() || `${sourceKpi.name} (copie)`;
+
+    // 1. Créer le nouveau KPI (sans relevés, sans lien CAPA)
+    const { data: newKpi, error: insertError } = await supabase
+      .from('kpis')
+      .insert({
+        tenant_id: req.tenantId,
+        name: newName,
+        unit: sourceKpi.unit,
+        target: sourceKpi.target,
+        target_direction: sourceKpi.target_direction,
+        frequency: sourceKpi.frequency,
+        calculation_type: sourceKpi.calculation_type,
+        folder_id: sourceKpi.folder_id,
+        category_id: sourceKpi.category_id,
+        owner: sourceKpi.owner,
+        module_preset_id: sourceKpi.module_preset_id || null,
+      })
+      .select(`*, ${KPI_JOINS}`)
+      .single();
+
+    if (insertError || !newKpi) {
+      return res.status(500).json({ error: 'Erreur lors de la copie du KPI.' });
+    }
+
+    // 2. Dupliquer les séries (kpi_calculation_configs)
+    const { data: sourceConfigs, error: configsError } = await supabase
+      .from('kpi_calculation_configs')
+      .select('*')
+      .eq('tenant_id', req.tenantId)
+      .eq('kpi_id', sourceKpi.id);
+
+    if (!configsError && sourceConfigs?.length > 0) {
+      const newConfigs = sourceConfigs.map((cfg) => ({
+        tenant_id: req.tenantId,
+        kpi_id: newKpi.id,
+        label: cfg.label,
+        calc_type: cfg.calc_type,
+        source_column: cfg.source_column,
+        filters: cfg.filters || [],
+        filter_logic: cfg.filter_logic || 'all',
+        group_by_column: cfg.group_by_column,
+        period_column: cfg.period_column,
+        unit: cfg.unit,
+        target: cfg.target,
+        target_direction: cfg.target_direction,
+      }));
+
+      await supabase.from('kpi_calculation_configs').insert(newConfigs);
+    }
+
+    // 3. Renvoyer le KPI complet avec ses calculation_configs et records vides
+    const { data: fullKpi } = await supabase
+      .from('kpis')
+      .select(
+        `*, records:kpi_records(${RECORDS_SELECT}), calculation_configs:kpi_calculation_configs(id, label, calc_type, group_by_column, period_column, unit, target, target_direction), category:categories(id, name, color, is_restricted, owner_user_id), ${KPI_JOINS}`
+      )
+      .eq('tenant_id', req.tenantId)
+      .eq('id', newKpi.id)
+      .single();
+
+    res.status(201).json(fullKpi || { ...newKpi, records: [], calculation_configs: [] });
+  }
+);
+
 // GET /api/kpis/:id — détail avec l'historique des valeurs, trié par période croissante
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase
