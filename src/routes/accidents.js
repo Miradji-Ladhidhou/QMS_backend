@@ -10,6 +10,7 @@ const router = Router();
 
 const SEVERITIES = ['minor', 'moderate', 'severe', 'fatal'];
 const STATUSES = ['open', 'investigating', 'closed'];
+const INCIDENT_TYPES = ['accident', 'near_miss'];
 // Mêmes niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans risks.js/complaints.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
 
@@ -25,6 +26,7 @@ const ACCIDENT_SELECT =
 router.get('/', async (req, res) => {
   let query = supabase.from('accidents').select(ACCIDENT_SELECT).eq('tenant_id', req.tenantId).order('occurred_at', { ascending: false });
 
+  if (INCIDENT_TYPES.includes(req.query.incident_type)) query = query.eq('incident_type', req.query.incident_type);
   if (req.query.status) query = query.eq('status', req.query.status);
   if (req.query.severity) query = query.eq('severity', req.query.severity);
   if (req.query.service_id) query = query.eq('service_id', req.query.service_id);
@@ -61,7 +63,7 @@ router.get('/:id', async (req, res) => {
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
-// POST /api/accidents — ouvert à tous les rôles : déclarer un accident du travail doit rester
+// POST /api/accidents — ouvert à tous les rôles : déclarer un événement SST doit rester
 // simple pour quiconque en est témoin, contrairement à la création d'une CAPA/d'un risque qui
 // reste une activité de pilotage réservée admin/manager. root_cause et status ne sont pas
 // acceptés ici : la cause vient d'une investigation ultérieure, le statut démarre à 'open'.
@@ -69,10 +71,15 @@ router.post(
   '/',
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
+    body('incident_type').optional().isIn(INCIDENT_TYPES).withMessage('Type d’événement invalide.'),
     body('occurred_at').isISO8601().withMessage("Date de l'accident invalide."),
+    body('occurred_time').optional({ values: 'falsy' }).matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/).withMessage("Heure de l'événement invalide."),
     body('location').optional({ values: 'falsy' }).trim(),
     body('injured_user_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne concernée invalide.'),
     body('injured_employee_id').optional({ values: 'falsy' }).isUUID().withMessage('Personne concernée invalide.'),
+    body('injury_type').optional({ values: 'falsy' }).trim(),
+    body('injury_location').optional({ values: 'falsy' }).trim(),
+    body('witness_name').optional({ values: 'falsy' }).trim(),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('description').optional({ values: 'falsy' }).trim(),
     body('immediate_cause').optional({ values: 'falsy' }).trim(),
@@ -91,10 +98,15 @@ router.post(
 
     const {
       title,
+      incident_type: incidentType,
       occurred_at: occurredAt,
+      occurred_time: occurredTime,
       location,
       injured_user_id: injuredUserId,
       injured_employee_id: injuredEmployeeId,
+      injury_type: injuryType,
+      injury_location: injuryLocation,
+      witness_name: witnessName,
       service_id: serviceId,
       description,
       immediate_cause: immediateCause,
@@ -108,16 +120,24 @@ router.post(
     if (injuredUserId && injuredEmployeeId) {
       return res.status(400).json({ error: 'Choisissez une seule personne concernée.' });
     }
+    if (incidentType === 'near_miss' && (injuredUserId || injuredEmployeeId || injuryType || injuryLocation || withLostTime)) {
+      return res.status(400).json({ error: 'Un presqu’accident ne peut pas comporter de blessure ni d’arrêt de travail.' });
+    }
 
     const { data, error } = await supabase
       .from('accidents')
       .insert({
         tenant_id: req.tenantId,
         title,
+        incident_type: incidentType || 'accident',
         occurred_at: occurredAt,
+        occurred_time: occurredTime || null,
         location: location || null,
         injured_user_id: injuredUserId || null,
         injured_employee_id: injuredEmployeeId || null,
+        injury_type: injuryType || null,
+        injury_location: injuryLocation || null,
+        witness_name: witnessName || null,
         service_id: serviceId || null,
         description: description || null,
         immediate_cause: immediateCause || null,
@@ -132,7 +152,7 @@ router.post(
       .single();
 
     if (error) {
-      return res.status(500).json({ error: "Erreur lors de la création de l'accident." });
+      return res.status(500).json({ error: "Erreur lors de l'enregistrement du signalement." });
     }
 
     res.status(201).json(data);
@@ -178,10 +198,15 @@ router.patch(
   requireRole('admin', 'manager'),
   [
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
+    body('incident_type').optional().isIn(INCIDENT_TYPES).withMessage('Type d’événement invalide.'),
     body('occurred_at').optional().isISO8601().withMessage("Date de l'accident invalide."),
+    body('occurred_time').optional({ nullable: true, values: 'falsy' }).matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/).withMessage("Heure de l'événement invalide."),
     body('location').optional({ nullable: true, values: 'falsy' }).trim(),
     body('injured_user_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Personne concernée invalide.'),
     body('injured_employee_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Personne concernée invalide.'),
+    body('injury_type').optional({ nullable: true, values: 'falsy' }).trim(),
+    body('injury_location').optional({ nullable: true, values: 'falsy' }).trim(),
+    body('witness_name').optional({ nullable: true, values: 'falsy' }).trim(),
     body('service_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('description').optional({ nullable: true, values: 'falsy' }).trim(),
     body('immediate_cause').optional({ nullable: true, values: 'falsy' }).trim(),
@@ -216,8 +241,16 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['title', 'location', 'description', 'immediate_cause', 'immediate_actions', 'root_cause', 'occurred_at', 'severity', 'status']) {
+    for (const field of ['title', 'incident_type', 'occurred_time', 'location', 'injury_type', 'injury_location', 'witness_name', 'description', 'immediate_cause', 'immediate_actions', 'root_cause', 'occurred_at', 'severity', 'status']) {
       if (field in req.body) update[field] = req.body[field] || null;
+    }
+    if (update.incident_type === 'near_miss') {
+      update.injured_user_id = null;
+      update.injured_employee_id = null;
+      update.injury_type = null;
+      update.injury_location = null;
+      update.with_lost_time = false;
+      update.lost_days = null;
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;

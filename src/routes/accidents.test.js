@@ -46,6 +46,32 @@ describe('POST /api/accidents — création ouverte à tous les rôles', () => {
     expect(adminAttempt.status).toBe(201);
   });
 
+  it('enregistre un presqu’accident avec son heure et son témoin, et refuse une heure invalide', async () => {
+    tenant = await createTenant();
+
+    const nearMiss = await makeAccident(tenant.admin.token, {
+      incident_type: 'near_miss',
+      occurred_time: '09:35',
+      witness_name: 'Camille Martin',
+    });
+    expect(nearMiss.status).toBe(201);
+    expect(nearMiss.body.incident_type).toBe('near_miss');
+    expect(nearMiss.body.occurred_time).toMatch(/^09:35/);
+    expect(nearMiss.body.witness_name).toBe('Camille Martin');
+
+    const invalidTime = await makeAccident(tenant.admin.token, { occurred_time: '28:70' });
+    expect(invalidTime.status).toBe(400);
+  });
+
+  it('refuse une blessure ou un arrêt de travail sur un presqu’accident', async () => {
+    tenant = await createTenant();
+    const res = await makeAccident(tenant.admin.token, {
+      incident_type: 'near_miss',
+      injury_type: 'Coupure',
+    });
+    expect(res.status).toBe(400);
+  });
+
   it('rejette un titre ou une date manquante', async () => {
     tenant = await createTenant();
 
