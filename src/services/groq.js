@@ -312,7 +312,7 @@ export async function generateHaccpCcpSuggestion(data) {
   return callGroq(HACCP_CCP_SYSTEM_PROMPT, buildCcpUserPrompt(data), 'haccp_ccp');
 }
 
-const RISK_SUGGESTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (title, category, suggested_controls) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de type reste l'un des identifiants anglais fixes ci-dessous.
+const RISK_SUGGESTION_RESPONSE_CONTRACT = `Rédige TOUTES les valeurs textuelles (title, category, description, existing_controls, suggested_controls, rationale, missing_information) en français, quelle que soit la langue du contexte fourni en entrée. Seule la valeur de type reste l'un des identifiants anglais fixes ci-dessous. Les extraits de evidence_used doivent être recopiés exactement depuis les faits observés fournis.
 
 Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette structure :
 {
@@ -321,9 +321,14 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette 
       "type": "risk",
       "title": "string",
       "category": "string",
+      "description": "string",
+      "existing_controls": "string",
       "likelihood": 3,
       "impact": 3,
-      "suggested_controls": "string"
+      "suggested_controls": "string",
+      "rationale": "string",
+      "evidence_used": ["string"],
+      "missing_information": ["string"]
     }
   ]
 }
@@ -331,15 +336,16 @@ Où type vaut exactement 'risk' ou 'opportunity', et likelihood/impact sont des 
 
 const RISK_SUGGESTION_SYSTEM_PROMPT = `Tu es un expert qualité (ISO 9001:2015 §6.1 — approche par les risques) qui aide à identifier les risques et opportunités d'un service ou d'une activité pour le registre des risques.
 
-À partir du nom et de la description d'un service/d'une activité fournis par l'utilisateur, identifie les risques ET opportunités raisonnablement susceptibles de le concerner, avec pour chacun une évaluation de probabilité (likelihood) et de gravité/impact (impact) sur une échelle de 1 à 5, ainsi que des mesures de maîtrise usuelles.
+À partir du nom, de la description de l'activité et des faits observés fournis par l'utilisateur, identifie les risques ET opportunités raisonnablement susceptibles de le concerner. Pour chaque élément, formule un scénario précisant l'événement, ses causes possibles et ses conséquences, distingue les contrôles explicitement déjà en place des actions de traitement proposées, propose une probabilité et une gravité/impact sur une échelle de 1 à 5 et justifie brièvement la cotation. Indique les extraits exacts des faits qui étayent l'analyse dans evidence_used et les informations à confirmer dans missing_information. Si aucun fait ne soutient explicitement un contrôle existant, laisse existing_controls vide.
 
-Ne propose que des risques/opportunités pertinents pour l'activité décrite — pas une liste générique. Limite-toi à 5 éléments maximum, les plus significatifs.
+Ne propose que des risques/opportunités pertinents pour l'activité décrite — pas une liste générique. Limite-toi à 5 éléments maximum, les plus significatifs. N'invente pas de faits ni de sources internes; evidence_used doit contenir uniquement des citations exactes des faits saisis, et rester vide si aucun fait précis n'est fourni.
 
 ${RISK_SUGGESTION_RESPONSE_CONTRACT}`;
 
-function buildRiskSuggestionUserPrompt({ serviceName, context }) {
+function buildRiskSuggestionUserPrompt({ serviceName, context, evidence }) {
   return `Service : ${serviceName}
-Description de l'activité : ${context}`;
+Description de l'activité : ${context}
+Faits observés communiqués par l'utilisateur : ${evidence || 'aucun fait observé renseigné'}`;
 }
 
 // { serviceName, context } — voir POST /risks/service-suggestion. Rien n'est persisté par cet

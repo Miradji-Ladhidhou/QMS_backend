@@ -229,6 +229,8 @@ router.post(
     body('type').optional({ values: 'falsy' }).isIn(RISK_TYPES).withMessage('Type invalide.'),
     body('category').optional({ values: 'falsy' }).trim(),
     body('description').optional({ values: 'falsy' }).trim(),
+    body('current_controls').optional({ values: 'falsy' }).trim(),
+    body('treatment_plan').optional({ values: 'falsy' }).trim(),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('owner').optional({ values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
     body('likelihood').isInt({ min: 1, max: 5 }).withMessage('Probabilité invalide (1 à 5).'),
@@ -249,6 +251,8 @@ router.post(
       type,
       category,
       description,
+      current_controls: currentControls,
+      treatment_plan: treatmentPlan,
       service_id: serviceId,
       owner,
       likelihood,
@@ -266,6 +270,8 @@ router.post(
         type: type || undefined,
         category: category || null,
         description: description || null,
+        current_controls: currentControls || null,
+        treatment_plan: treatmentPlan || null,
         service_id: serviceId || null,
         owner: owner || null,
         likelihood,
@@ -298,6 +304,7 @@ router.post(
   [
     body('service_name').trim().notEmpty().withMessage('Le nom du service est requis.'),
     body('context').trim().isLength({ min: 10 }).withMessage('Décrivez l’activité du service (10 caractères minimum).'),
+    body('evidence').optional({ values: 'falsy' }).trim().isLength({ max: 5000 }).withMessage('Les faits observés ne peuvent pas dépasser 5 000 caractères.'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -306,7 +313,7 @@ router.post(
     }
 
     try {
-      const suggestion = await generateRiskSuggestion({ serviceName: req.body.service_name, context: req.body.context });
+      const suggestion = await generateRiskSuggestion({ serviceName: req.body.service_name, context: req.body.context, evidence: req.body.evidence });
       res.json(suggestion);
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer une suggestion IA : ${err.message}` });

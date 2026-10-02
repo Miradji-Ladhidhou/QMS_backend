@@ -41,6 +41,20 @@ describe('POST /api/risks — création réservée à admin/manager, score calcu
     const res = await makeRisk(tenant.admin.token, { likelihood: 6, impact: 3 });
     expect(res.status).toBe(400);
   });
+
+  it('conserve le scénario, les contrôles actuels et le plan de traitement', async () => {
+    tenant = await createTenant();
+    const res = await makeRisk(tenant.admin.token, {
+      description: 'Une panne lors du dépannage peut retarder les expéditions.',
+      current_controls: 'Inspection hebdomadaire',
+      treatment_plan: 'Former un technicien de relève',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.description).toBe('Une panne lors du dépannage peut retarder les expéditions.');
+    expect(res.body.current_controls).toBe('Inspection hebdomadaire');
+    expect(res.body.treatment_plan).toBe('Former un technicien de relève');
+  });
 });
 
 describe('GET /api/risks — visible à tous les rôles, filtrable', () => {
@@ -116,6 +130,12 @@ describe('POST /api/risks/service-suggestion — permissions et validation', () 
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ context: 'Réception et expédition de marchandises.' });
     expect(missingService.status).toBe(400);
+
+    const excessiveEvidence = await request(app)
+      .post('/api/risks/service-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ service_name: 'Logistique', context: 'Réception et expédition de marchandises.', evidence: 'x'.repeat(5001) });
+    expect(excessiveEvidence.status).toBe(400);
   });
 });
 
