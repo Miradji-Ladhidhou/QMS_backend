@@ -150,6 +150,7 @@ describe('GET /api/planning — agrégation chronologique par rôle', () => {
     const managerCapaIds = managerRes.body.items.filter((i) => i.type === 'capa').map((i) => i.id);
     expect(managerCapaIds).toContain(capaA.body.id);
     expect(managerCapaIds).not.toContain(capaB.body.id);
+    expect(managerRes.body.items.find((item) => item.id === capaA.body.id && item.type === 'capa').assignee_id).toBe(memberA.id);
 
     // Member A : uniquement sa propre CAPA assignée, jamais de documents.
     const categoryRes = await admin.from('document_categories').insert({ tenant_id: tenant.tenantId, name: 'Cat' }).select().single();

@@ -21,7 +21,7 @@ function withOverdue(item) {
 export async function fetchCapaItems(tenantId, { assignedTo, serviceIds, userId, userRole }) {
   let query = supabase
     .from('capas')
-    .select('id, number, title, due_date, category_id, category:categories(id, is_restricted)')
+    .select('id, number, title, due_date, assigned_to, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('due_date', 'is', null)
     .neq('status', 'closed');
@@ -45,6 +45,7 @@ export async function fetchCapaItems(tenantId, { assignedTo, serviceIds, userId,
       title: `${capa.number} — ${capa.title}`,
       date: capa.due_date,
       link: `/capas/${capa.id}`,
+      assignee_id: capa.assigned_to,
     })
   );
 }
@@ -195,7 +196,7 @@ export async function fetchTrainingItems(tenantId, { userId, userIds }) {
 export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds, userId, userRole }) {
   let query = supabase
     .from('complaints')
-    .select('id, customer_name, due_date, category_id, category:categories(id, is_restricted)')
+    .select('id, customer_name, due_date, assigned_to, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('due_date', 'is', null)
     .not('status', 'in', '(resolved,closed)');
@@ -219,6 +220,7 @@ export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds, us
       title: `Réclamation — ${complaint.customer_name}`,
       date: complaint.due_date,
       link: `/complaints/${complaint.id}`,
+      assignee_id: complaint.assigned_to,
     })
   );
 }
@@ -230,7 +232,7 @@ export async function fetchComplaintItems(tenantId, { assignedTo, serviceIds, us
 export async function fetchRiskItems(tenantId, { ownerId, serviceIds, userId, userRole }) {
   let query = supabase
     .from('risks')
-    .select('id, title, review_date, category_id, category:categories(id, is_restricted)')
+    .select('id, title, review_date, owner, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .not('review_date', 'is', null)
     .not('status', 'in', '(accepted,closed)');
@@ -254,6 +256,7 @@ export async function fetchRiskItems(tenantId, { ownerId, serviceIds, userId, us
       title: risk.title,
       date: risk.review_date,
       link: `/risks/${risk.id}`,
+      assignee_id: risk.owner,
     })
   );
 }
@@ -265,7 +268,7 @@ export async function fetchRiskItems(tenantId, { ownerId, serviceIds, userId, us
 export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, userId, userRole }) {
   let query = supabase
     .from('audits')
-    .select('id, title, planned_date, category_id, category:categories(id, is_restricted)')
+    .select('id, title, planned_date, lead_auditor, category_id, category:categories(id, is_restricted)')
     .eq('tenant_id', tenantId)
     .in('status', ['planned', 'in_progress']);
 
@@ -288,6 +291,7 @@ export async function fetchAuditItems(tenantId, { leadAuditorId, serviceIds, use
       title: audit.title,
       date: audit.planned_date,
       link: `/audits/${audit.id}`,
+      assignee_id: audit.lead_auditor,
     })
   );
 }
@@ -304,7 +308,7 @@ export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, us
   let query = supabase
     .from('pdca_projects')
     .select(
-      'id, title, status, target_date, plan_due_date, do_due_date, check_due_date, act_due_date, category_id, category:categories(id, is_restricted)'
+      'id, title, status, owner, target_date, plan_due_date, do_due_date, check_due_date, act_due_date, category_id, category:categories(id, is_restricted)'
     )
     .eq('tenant_id', tenantId)
     .neq('status', 'closed')
@@ -337,6 +341,7 @@ export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, us
           title: pdca.title,
           date: pdca.target_date,
           link: `/pdca/${pdca.id}`,
+          assignee_id: pdca.owner,
         })
       );
     }
@@ -349,6 +354,7 @@ export async function fetchPdcaItems(tenantId, { ownerId, serviceIds, userId, us
           title: `${pdca.title} — Échéance ${PDCA_PHASE_LABELS[pdca.status] || pdca.status}`,
           date: phaseDueDate,
           link: `/pdca/${pdca.id}`,
+          assignee_id: pdca.owner,
         })
       );
     }

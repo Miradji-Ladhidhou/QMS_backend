@@ -441,6 +441,14 @@ describe('PATCH /api/capas/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('closed');
     expect(res.body.closed_at).not.toBeNull();
+
+    const reopened = await request(app)
+      .patch(`/api/capas/${created.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ status: 'open' });
+    expect(reopened.status).toBe(200);
+    expect(reopened.body.status).toBe('open');
+    expect(reopened.body.closed_at).toBeNull();
   });
 
   it('autorise la clôture quand action corrective et efficacité vérifiée sont envoyées dans la même requête', async () => {

@@ -558,6 +558,8 @@ router.patch(
       }
 
       update.closed_at = new Date().toISOString();
+    } else if (update.status && existingCapa.status === 'closed') {
+      update.closed_at = null;
     }
 
     const { data, error } = await supabase
