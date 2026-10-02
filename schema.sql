@@ -446,6 +446,7 @@ create table management_reviews (
   period_end               date,
   status                   text not null default 'draft' check (status in ('draft', 'completed')),
   participants             text,
+  participant_attendance   jsonb not null default '{}'::jsonb,
   previous_actions_status  text,
   context_changes          text,
   resource_adequacy        text,

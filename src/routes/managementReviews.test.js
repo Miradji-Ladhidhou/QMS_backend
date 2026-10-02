@@ -45,9 +45,70 @@ describe('GET /api/management-reviews — visible à tous les rôles', () => {
     expect(res.status).toBe(200);
     expect(res.body.some((review) => review.title === 'Revue visible par tous')).toBe(true);
   });
+
+  it('inclut le résumé des actions ouvertes et échues pour chaque revue', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token, { title: 'Revue avec actions' });
+    await request(app)
+      .post(`/api/management-reviews/${review.body.id}/actions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ description: 'Action échue', due_date: '2020-01-01' });
+    await request(app)
+      .post(`/api/management-reviews/${review.body.id}/actions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ description: 'Action à venir', due_date: '2099-01-01' });
+    await request(app)
+      .post(`/api/management-reviews/${review.body.id}/actions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ description: 'Action réalisée', status: 'done' });
+
+    const res = await request(app).get('/api/management-reviews').set('Authorization', `Bearer ${tenant.admin.token}`);
+    const listedReview = res.body.find((item) => item.id === review.body.id);
+
+    expect(res.status).toBe(200);
+    expect(listedReview.action_summary).toMatchObject({ total: 3, open: 2, overdue: 1 });
+    expect(listedReview.action_summary.next_due).toMatchObject({ due_date: '2099-01-01' });
+  });
 });
 
 describe('PATCH /api/management-reviews/:id — clôture et snapshot', () => {
+  it('calcule les données d’entrée quand une période est ajoutée à une ancienne revue brouillon', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token);
+
+    const updated = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ period_start: '2026-01-01', period_end: '2026-06-30' });
+
+    expect(updated.status).toBe(200);
+    expect(updated.body.input_snapshot).toMatchObject({ period: { start: '2026-01-01', end: '2026-06-30' } });
+  });
+
+  it('enregistre la présence des participants et refuse les noms ou statuts invalides', async () => {
+    tenant = await createTenant();
+    const review = await makeReview(tenant.admin.token, { participants: 'Direction, Qualité' });
+
+    const updated = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ participant_attendance: { Direction: 'present' } });
+    expect(updated.status).toBe(200);
+    expect(updated.body.participant_attendance).toEqual({ Direction: 'present' });
+
+    const invalidName = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ participant_attendance: { Inconnu: 'present' } });
+    expect(invalidName.status).toBe(400);
+
+    const invalidStatus = await request(app)
+      .patch(`/api/management-reviews/${review.body.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ participant_attendance: { Direction: 'late' } });
+    expect(invalidStatus.status).toBe(400);
+  });
+
   it('403 pour un member ; passer en "completed" capture un snapshot du SMQ, une seule fois', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];

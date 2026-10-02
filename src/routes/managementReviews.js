@@ -23,6 +23,7 @@ import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCat
 const router = Router();
 
 const REVIEW_STATUSES = ['draft', 'completed'];
+const PARTICIPANT_ATTENDANCE_STATUSES = ['pending', 'present', 'absent', 'excused'];
 // Même niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans audits.js/qqoqccp.js,
 // pas de couplage utile entre ces fichiers indépendants.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
@@ -112,14 +113,46 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les revues de direction.' });
   }
 
-  if (req.userRole === 'admin') {
-    return res.json(data);
-  }
-
   // Catégorie restreinte (voir Paramètres > Catégories modules) — opt-in, ne change rien tant
   // qu'aucune catégorie revue n'est marquée restreinte.
-  const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
-  res.json(viewable);
+  const viewable = req.userRole === 'admin'
+    ? data
+    : await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
+  const reviewIds = viewable.map((review) => review.id);
+  if (reviewIds.length === 0) return res.json([]);
+
+  const { data: actions, error: actionsError } = await supabase
+    .from('management_review_actions')
+    .select(ACTION_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .in('review_id', reviewIds);
+
+  if (actionsError) {
+    return res.status(500).json({ error: 'Impossible de récupérer les actions des revues.' });
+  }
+
+  const summaries = new Map();
+  for (const action of enrichActions(actions || [])) {
+    const summary = summaries.get(action.review_id) || { total: 0, open: 0, overdue: 0, next_due: null };
+    const status = action.effective_status || action.status;
+    summary.total += 1;
+    if (status !== 'done' && status !== 'cancelled') {
+      summary.open += 1;
+      if (action.is_overdue) summary.overdue += 1;
+      if (!action.is_overdue && action.due_date && (!summary.next_due || action.due_date < summary.next_due.due_date)) {
+        summary.next_due = {
+          due_date: action.due_date,
+          owner: action.owner_user?.full_name || null,
+        };
+      }
+    }
+    summaries.set(action.review_id, summary);
+  }
+
+  res.json(viewable.map((review) => ({
+    ...review,
+    action_summary: summaries.get(review.id) || { total: 0, open: 0, overdue: 0, next_due: null },
+  })));
 });
 
 // GET /api/management-reviews/schedule — planification : fréquence choisie, dernière revue clôturée, date attendue de
@@ -614,6 +647,7 @@ router.patch(
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
     body('period_start').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de début de période invalide.'),
     body('period_end').optional({ nullable: true, values: 'falsy' }).isISO8601().withMessage('Date de fin de période invalide.'),
+    body('participant_attendance').optional().isObject().withMessage('Le suivi des participants doit être un objet.'),
   ],
   requireValidCategoryId('management_review'),
   async (req, res) => {
@@ -624,7 +658,7 @@ router.patch(
 
     const { data: existing, error: fetchError } = await supabase
       .from('management_reviews')
-      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status, review_date, validated_at')
+      .select('id, status, snapshot, period_start, period_end, conclusions, previous_actions_status, review_date, validated_at, participants, participant_attendance')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
       .single();
@@ -634,6 +668,17 @@ router.patch(
     }
     if (existing.validated_at) {
       return res.status(409).json({ error: VALIDATED_MESSAGE, code: 'review_validated' });
+    }
+
+    if ('participant_attendance' in req.body) {
+      const participantText = req.body.participants ?? existing.participants;
+      const participantNames = new Set(String(participantText || '').split(/[,;\n]+/).map((name) => name.trim()).filter(Boolean));
+      const invalidAttendance = Object.entries(req.body.participant_attendance).some(
+        ([name, status]) => !participantNames.has(name) || !PARTICIPANT_ATTENDANCE_STATUSES.includes(status)
+      );
+      if (invalidAttendance) {
+        return res.status(400).json({ error: 'Le suivi doit concerner un participant déclaré et utiliser un statut valide.' });
+      }
     }
 
     // Une revue clôturée ne doit plus jamais voir sa période bouger : ce serait invalider
@@ -657,6 +702,22 @@ router.patch(
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
     if ('period_start' in req.body) update.period_start = req.body.period_start || null;
     if ('period_end' in req.body) update.period_end = req.body.period_end || null;
+    if ('participant_attendance' in req.body) {
+      update.participant_attendance = req.body.participant_attendance;
+    } else if ('participants' in req.body) {
+      const participantNames = new Set(String(req.body.participants || '').split(/[,;\n]+/).map((name) => name.trim()).filter(Boolean));
+      update.participant_attendance = Object.fromEntries(
+        Object.entries(existing.participant_attendance || {}).filter(([name]) => participantNames.has(name))
+      );
+    }
+
+    if (periodChanged && existing.status === 'draft') {
+      const periodStart = 'period_start' in update ? update.period_start : existing.period_start;
+      const periodEnd = 'period_end' in update ? update.period_end : existing.period_end;
+      update.input_snapshot = periodStart && periodEnd
+        ? await buildQmsSnapshot(req.tenantId, { periodStart, periodEnd })
+        : null;
+    }
 
     // Clôturer une revue est sa sortie formelle (§9.3.3) : la performance chiffrée vient du
     // snapshot automatique, mais la synthèse elle-même doit être écrite. On relit l'existant
