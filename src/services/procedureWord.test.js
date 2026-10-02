@@ -212,6 +212,27 @@ describe('buildProcedureWordDocument', () => {
     expect(text.match(/Sommaire/g)).toHaveLength(1);
   });
 
+  it('conserve les notes d’un sommaire manuel même sans sommaire automatique', async () => {
+    const version = {
+      ...richVersion(),
+      content: {
+        sections: [
+          { key: 'sommaire', label: 'Sommaire', blocks: [{ type: 'liste_puces', id: 'toc-note', items: ['Note personnalisée courte'] }] },
+          { key: 'processus', label: 'Processus', blocks: [{ type: 'paragraphe', id: 'p1', text: 'Étape de test.' }] },
+        ],
+        documents_associes: [],
+      },
+    };
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure: PROCEDURE,
+      version,
+      versions: [version],
+    });
+
+    expect(await textOf(buffer)).toContain('Note personnalisée courte');
+  });
+
   it('table à colonnes libres : cantSplit sur chaque ligne (identité + historique + tableau manuel)', async () => {
     const buffer = await buildProcedureWordDocument({
       tenantName: 'Entreprise Test',

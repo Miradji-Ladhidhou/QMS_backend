@@ -441,6 +441,9 @@ const manualSommaire = sections.find((section) => section.key === 'sommaire');
       body.push(...blocksToDocxParagraphs(manualSommaire.blocks, style));
     }
     body.push(new Paragraph({ text: '', spacing: { after: 120 } }));
+  } else if (manualSommaire?.blocks?.length) {
+    body.push(sectionTitleParagraph(manualSommaire.label || 'Sommaire'));
+    body.push(...blocksToDocxParagraphs(manualSommaire.blocks, style));
   }
 
   // Saut de page avant le corps de la procédure : c'est la partie la plus longue du document,

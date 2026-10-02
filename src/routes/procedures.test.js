@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import request from 'supertest';
+import pdfParse from 'pdf-parse';
 import app from '../app.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
 
@@ -1062,6 +1063,32 @@ describe('GET /api/procedures/:id/pdf', () => {
       .get(`/api/procedures/${procedure.id}/pdf`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.status).toBe(400);
+  });
+
+  it('conserve le sommaire personnalisé dans le PDF en plus du sommaire automatique', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-090A');
+    await createVersion(tenant.admin.token, procedure.id, {
+      content: {
+        sections: [
+          { key: 'sommaire', label: 'Sommaire', blocks: [{ type: 'liste_puces', id: 'toc-note', items: ['Note personnalisée du sommaire'] }] },
+          { key: 'objectif', label: 'Objectifs', blocks: [{ type: 'paragraphe', id: 'p1', text: 'Objectif de test.' }] },
+          { key: 'processus', label: 'Processus', blocks: [{ type: 'paragraphe', id: 'p2', text: 'Processus de test.' }] },
+        ],
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    const { text } = await pdfParse(Buffer.from(res.body));
+    expect(text).toContain('Notes du sommaire');
+    expect(text).toContain('Note personnalisée du sommaire');
+    expect(text).toContain('Objectifs');
+    expect(text).toContain('Processus');
   });
 
   it('génère un PDF pour la version courante, avec sections du gabarit, documents associés, et encadré obsolescence', async () => {

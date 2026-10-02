@@ -480,7 +480,7 @@ router.get('/:id/pdf', async (req, res) => {
     // devenait périmé dès qu'un tenant changeait sa couleur sans réappliquer un preset ; boxBackground/
     // boxBorder ne sont plus des réglages distincts (voir services/procedurePdf.js#buildProcedurePdf),
     // le défaut neutre HEADER_FILL/RULE s'applique donc à tous les tenants personnalisés.
-    renderStyle: { accentColor: template.accent_color },
+    renderStyle: { accentColor: template.accent_color, visualOptions: template.visual_options },
   });
 
   res.setHeader('Content-Type', 'application/pdf');

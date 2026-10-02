@@ -15,6 +15,7 @@ const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 
 const PROCEDURE_STATUS_LABELS = { draft: 'Brouillon', in_review: 'En revue', approved: 'Approuvé', obsolete: 'Obsolète' };
 const VERSION_STATUS_LABELS = { draft: 'Brouillon', pending: 'En attente', approved: 'Approuvé', rejected: 'Rejeté' };
+const DEFAULT_VISUAL_OPTIONS = { band: false, bulletStyle: 'dash', calloutStyle: 'left-border' };
 
 function formatDate(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '—';
@@ -22,6 +23,13 @@ function formatDate(dateStr) {
 
 function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
+}
+
+function lightTint(color) {
+  const hex = String(color || '').replace(/^#/, '');
+  if (!/^[\da-f]{6}$/i.test(hex)) return HEADER_FILL;
+  const channels = [0, 2, 4].map((index) => parseInt(hex.slice(index, index + 2), 16));
+  return `#${channels.map((channel) => Math.round(channel + (255 - channel) * 0.88).toString(16).padStart(2, '0')).join('')}`;
 }
 
 // Même esprit que les encadrés "Important" d'un gabarit de procédure imprimé : un bandeau de
@@ -75,14 +83,14 @@ function drawPhotoPlaceholder(doc, caption) {
 // drawImportantBox (doc.rect()). Chaque ligne vérifie l'espace restant AVANT de se dessiner
 // (comme drawImportantBox) pour ne jamais couper une ligne en deux pages — pas d'équivalent
 // strict du cantSplit du renderer Word, mais le même résultat pratique par construction.
-function drawStructuredParagraph(doc, text) {
+function drawStructuredParagraph(doc, text, bulletStyle = DEFAULT_VISUAL_OPTIONS.bulletStyle) {
   const lines = String(text || '').split('\n');
   lines.forEach((line) => {
     const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
     const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
     const nested = /^\s{2,}/.test(line);
     if (bullet || ordered) {
-      const marker = ordered ? `${ordered[1]}.` : '•';
+      const marker = ordered ? `${ordered[1]}.` : bulletStyle === 'round' ? '•' : '–';
       const value = ordered ? ordered[2] : bullet[1];
       if (!value.trim()) return;
       const left = PAGE_MARGIN + (nested ? 28 : 14);
@@ -120,7 +128,7 @@ function drawTableBlock(doc, headers, rows, accentColor) {
     cells.forEach((cell, i) => {
       const x = PAGE_MARGIN + i * columnWidth;
       if (header) {
-        doc.rect(x, rowTop, columnWidth, height).fillAndStroke(HEADER_FILL, RULE);
+        doc.rect(x, rowTop, columnWidth, height).fillAndStroke(lightTint(accentColor), RULE);
       } else {
         doc.rect(x, rowTop, columnWidth, height).stroke(RULE);
       }
@@ -144,9 +152,28 @@ function drawTableBlock(doc, headers, rows, accentColor) {
 // une section n'a plus qu'UNE représentation possible (section.blocks), plus de risque qu'une
 // correction manuelle dans l'éditeur (qui n'écrivait que section.content) soit silencieusement
 // ignorée par cet export parce qu'il préférait section.subsections.
-function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoBoxStyle) {
+function drawCalloutBox(doc, text, accentColor, calloutStyle) {
+  doc.moveDown(0.3);
+  const background = calloutStyle === 'full-tint' ? lightTint(accentColor) : '#F5F5F5';
+  const height = doc.heightOfString(text, { width: CONTENT_WIDTH - 24 }) + 34;
+  if (doc.y + height > doc.page.height - doc.page.margins.bottom) doc.addPage();
+
+  const boxTop = doc.y;
+  doc.rect(PAGE_MARGIN, boxTop, CONTENT_WIDTH, height).fill(background);
+  if (calloutStyle === 'full-tint') {
+    doc.rect(PAGE_MARGIN, boxTop, CONTENT_WIDTH, height).lineWidth(0.75).stroke(accentColor);
+  } else {
+    doc.rect(PAGE_MARGIN, boxTop, 3, height).fill(accentColor);
+  }
+  doc.font('Body-Bold').fontSize(9).fillColor(accentColor).text("Point d'attention :", PAGE_MARGIN + 10, boxTop + 8, { width: CONTENT_WIDTH - 20 });
+  doc.font('Body').fontSize(9).fillColor(INK).text(text, PAGE_MARGIN + 10, doc.y + 2, { width: CONTENT_WIDTH - 20 });
+  doc.y = boxTop + height + 10;
+}
+
+function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visualOptions) {
   if (doc.y > PAGE_MARGIN + 35) doc.moveDown(0.8);
-  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(`${sectionNumber}. ${sectionLabel}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+  const heading = sectionNumber ? `${sectionNumber}. ${sectionLabel}` : sectionLabel;
+  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(heading, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
   doc.font('Body');
   doc.moveDown(0.55);
 
@@ -167,7 +194,7 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
       case 'liste_puces':
         (block.items || [])
           .filter((item) => String(item || '').trim())
-          .forEach((item) => drawStructuredParagraph(doc, `• ${item}`));
+          .forEach((item) => drawStructuredParagraph(doc, `• ${item}`, visualOptions.bulletStyle));
         doc.moveDown(0.3);
         break;
       case 'tableau':
@@ -177,14 +204,14 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
       // ci-dessus reste réservé aux 2 bannières d'état réellement affichées à l'écran
       // (obsolescence/retard), jamais à un encadré rédigé.
       case 'encadre':
-        drawImportantBox(doc, { color: infoBoxStyle.border, background: infoBoxStyle.background, label: 'IMPORTANT', text: block.text });
+        drawCalloutBox(doc, block.text, accentColor, visualOptions.calloutStyle);
         break;
       case 'photo_placeholder':
         drawPhotoPlaceholder(doc, block.caption);
         break;
       case 'paragraphe':
       default:
-        drawStructuredParagraph(doc, block.text);
+        drawStructuredParagraph(doc, block.text, visualOptions.bulletStyle);
         doc.moveDown(0.25);
         break;
     }
@@ -209,7 +236,7 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, infoB
 // mutable ferait fuiter le thème d'un tenant vers le PDF d'un autre.
 export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions, renderStyle }) {
   const accentColor = renderStyle?.accentColor || INK;
-  const infoBoxStyle = { background: HEADER_FILL, border: RULE };
+  const visualOptions = { ...DEFAULT_VISUAL_OPTIONS, ...(renderStyle?.visualOptions || {}) };
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
@@ -230,6 +257,12 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     });
 
     drawLetterheadHeader(doc, headerArgs);
+
+    if (visualOptions.band) {
+      const bandTop = doc.y + 4;
+      doc.rect(PAGE_MARGIN, bandTop, CONTENT_WIDTH, 4).fill(accentColor);
+      doc.y = bandTop + 12;
+    }
 
     doc.moveDown(0.8);
     doc.font('Body-Bold').fontSize(18).fillColor(accentColor).text('PROCÉDURE', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, align: 'center' });
@@ -272,6 +305,7 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     // Objet/domaine d'application/responsabilités ne sont plus des champs séparés (voir le plan
     // de refonte de la mise en page des procédures) : ce sont des sections ordinaires en tête de
     // "sections", numérotées et sommairées exactement comme les autres.
+    const manualSommaire = (version.content?.sections || []).find((section) => section.key === 'sommaire');
     const sections = (version.content?.sections || []).filter((section) => section.key !== 'sommaire');
     const documentsAssocies = version.content?.documents_associes || [];
 
@@ -297,9 +331,14 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
     }
 
     doc.moveDown(0.5);
+    if (manualSommaire?.blocks?.length) {
+      const label = tocLabels.length >= 3 ? 'Notes du sommaire' : manualSommaire.label || 'Sommaire';
+      drawBlocks(doc, null, label, manualSommaire.blocks, accentColor, visualOptions);
+    }
+
     sections.forEach((section, index) => {
       tocEntries.push({ label: section.label, page: currentPageNumber });
-      drawBlocks(doc, index + 1, section.label, section.blocks, accentColor, infoBoxStyle);
+      drawBlocks(doc, index + 1, section.label, section.blocks, accentColor, visualOptions);
     });
 
     if (documentsAssocies.length > 0) {
