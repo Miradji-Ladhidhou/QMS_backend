@@ -50,7 +50,7 @@ router.get('/my-services', async (req, res) => {
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('services')
-    .select('id, name, is_active')
+    .select('id, name, description, is_active')
     .eq('tenant_id', req.tenantId)
     .order('name', { ascending: true });
 
@@ -65,7 +65,10 @@ router.get('/', async (req, res) => {
 router.post(
   '/',
   requireRole('admin'),
-  [body('name').trim().notEmpty().withMessage('Le nom du service est requis.')],
+  [
+    body('name').trim().notEmpty().withMessage('Le nom du service est requis.'),
+    body('description').optional().trim().isLength({ max: 500 }).withMessage('La description ne peut pas dépasser 500 caractères.'),
+  ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -74,8 +77,8 @@ router.post(
 
     const { data, error } = await supabase
       .from('services')
-      .insert({ tenant_id: req.tenantId, name: req.body.name })
-      .select('id, name, is_active')
+      .insert({ tenant_id: req.tenantId, name: req.body.name, description: req.body.description || '' })
+      .select('id, name, description, is_active')
       .single();
 
     if (error) {
@@ -120,6 +123,7 @@ router.patch(
   requireRole('admin'),
   [
     body('name').optional().trim().notEmpty().withMessage('Le nom du service ne peut pas être vide.'),
+    body('description').optional().trim().isLength({ max: 500 }).withMessage('La description ne peut pas dépasser 500 caractères.'),
     body('is_active').optional().isBoolean().withMessage('Valeur invalide.'),
   ],
   async (req, res) => {
@@ -128,12 +132,13 @@ router.patch(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    if (!('name' in req.body) && !('is_active' in req.body)) {
+    if (!('name' in req.body) && !('description' in req.body) && !('is_active' in req.body)) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
     const update = {};
     if ('name' in req.body) update.name = req.body.name;
+    if ('description' in req.body) update.description = req.body.description;
     if ('is_active' in req.body) update.is_active = req.body.is_active;
 
     const { data, error } = await supabase
@@ -141,7 +146,7 @@ router.patch(
       .update(update)
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.id)
-      .select('id, name, is_active')
+      .select('id, name, description, is_active')
       .single();
 
     if (error || !data) {

@@ -13,6 +13,36 @@ afterEach(async () => {
 });
 
 describe('Services CRUD — admin only, read open to all roles', () => {
+  it('crée et met à jour une description facultative', async () => {
+    tenant = await createTenant();
+    const authorization = `Bearer ${tenant.admin.token}`;
+    const created = await request(app)
+      .post('/api/services')
+      .set('Authorization', authorization)
+      .send({ name: 'Production', description: 'Fabrication et contrôle des produits.' });
+
+    expect(created.status).toBe(201);
+    expect(created.body.description).toBe('Fabrication et contrôle des produits.');
+
+    const updated = await request(app)
+      .patch(`/api/services/${created.body.id}`)
+      .set('Authorization', authorization)
+      .send({ description: 'Fabrication, contrôle et expédition.' });
+
+    expect(updated.status).toBe(200);
+    expect(updated.body.description).toBe('Fabrication, contrôle et expédition.');
+  });
+
+  it('refuse une description de plus de 500 caractères', async () => {
+    tenant = await createTenant();
+    const created = await request(app)
+      .post('/api/services')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ name: 'Production', description: 'a'.repeat(501) });
+
+    expect(created.status).toBe(400);
+  });
+
   it('member/manager bloqués en écriture, lecture ouverte à tous', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }, { role: 'member' }] });
     const [manager, member] = tenant.users;
