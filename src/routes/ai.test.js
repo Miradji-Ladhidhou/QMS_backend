@@ -124,3 +124,50 @@ describe('POST /api/ai/haccp-ccp-suggestion — authentification et validation',
     expect(res.body.error).toBeTruthy();
   });
 });
+
+describe('POST /api/ai/haccp-plan-review — authentification et validation', () => {
+  it('401 sans authentification', async () => {
+    const res = await request(app).post('/api/ai/haccp-plan-review').send({ planTitle: 'Plan HACCP', steps: [] });
+    expect(res.status).toBe(401);
+  });
+
+  it('400 si le plan ne contient pas d’étape', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+
+    const res = await request(app)
+      .post('/api/ai/haccp-plan-review')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ planTitle: 'Plan HACCP', steps: [] });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+
+  it('400 si un danger contient un type ou une cotation invalide', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/ai/haccp-plan-review')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        planTitle: 'Plan HACCP',
+        steps: [
+          {
+            name: 'Stockage',
+            hazards: [
+              {
+                hazard_type: 'radiologique',
+                description: 'Danger non reconnu',
+                likelihood: 8,
+                severity: 3,
+                is_significant: false,
+                ccp: null,
+              },
+            ],
+          },
+        ],
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBeTruthy();
+  });
+});

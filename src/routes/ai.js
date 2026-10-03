@@ -6,6 +6,7 @@ import {
   generateRiskTreatmentSuggestion,
   generateHaccpSignificanceSuggestion,
   generateHaccpCcpSuggestion,
+  generateHaccpPlanReview,
 } from '../services/groq.js';
 
 const router = Router();
@@ -69,6 +70,45 @@ router.post(
 );
 
 const HAZARD_TYPES = ['biological', 'chemical', 'physical', 'allergen'];
+
+// POST /api/ai/haccp-plan-review — relecture ponctuelle des dangers et de leur maîtrise
+// depuis l'onglet Surveillance. La requête contient uniquement les données du plan déjà chargé
+// côté frontend ; rien n'est persisté par cet appel.
+router.post(
+  '/haccp-plan-review',
+  [
+    body('planTitle').trim().notEmpty().isLength({ max: 200 }).withMessage('Titre du plan invalide.'),
+    body('productDescription').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('scope').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps').isArray({ min: 1, max: 50 }).withMessage('Étapes du plan invalides.'),
+    body('steps.*.name').trim().notEmpty().isLength({ max: 200 }),
+    body('steps.*.description').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps.*.hazards').isArray({ max: 30 }),
+    body('steps.*.hazards.*.hazard_type').isIn(HAZARD_TYPES),
+    body('steps.*.hazards.*.description').trim().notEmpty().isLength({ max: 1000 }),
+    body('steps.*.hazards.*.existing_controls').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps.*.hazards.*.likelihood').isInt({ min: 1, max: 5 }),
+    body('steps.*.hazards.*.severity').isInt({ min: 1, max: 5 }),
+    body('steps.*.hazards.*.is_significant').isBoolean(),
+    body('steps.*.hazards.*.justification').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps.*.hazards.*.ccp').optional({ values: 'null' }).isObject(),
+    body('steps.*.hazards.*.ccp.critical_limits').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps.*.hazards.*.ccp.monitoring_procedure').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    try {
+      const review = await generateHaccpPlanReview(req.body);
+      res.json(review);
+    } catch (err) {
+      res.status(503).json({ error: `Impossible de générer une analyse IA : ${err.message}` });
+    }
+  }
+);
 
 // POST /api/ai/haccp-significance-suggestion — complète la couverture IA du module HACCP aux
 // côtés de POST /haccp/plans/:planId/steps/:stepId/hazard-suggestion (identification des
