@@ -8,6 +8,7 @@ export const DEVIATION_ALERT_DAYS = 7;
 // Fenêtre horaire (heure locale de l'entreprise) dans laquelle les rappels de relevé sont envoyés :
 // jamais en pleine nuit pour un site qui ne travaille pas.
 export const REMINDER_HOURS = { from: 6, to: 20 };
+const CCP_OPERATIONAL_STATUSES = ['approved', 'legacy'];
 
 const HOUR_MS = 3600000;
 const DAY_MS = 24 * HOUR_MS;
@@ -112,8 +113,8 @@ export function isWithinReminderHours(now, timeZone) {
 }
 
 const CCP_SELECT =
-  'id, ccp_number, critical_limits, limit_min, limit_max, limit_unit, monitoring_procedure, monitoring_frequency, monitoring_interval_hours, monitoring_responsible, corrective_action_procedure, verification_procedure, verification_frequency, record_keeping_procedure, created_at, ' +
-  'monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name), ' +
+  'id, ccp_number, status, critical_limits, validation_source, validation_evidence, approved_by, approved_at, ai_generated, limit_min, limit_max, limit_unit, monitoring_procedure, monitoring_frequency, monitoring_interval_hours, monitoring_responsible, corrective_action_procedure, verification_procedure, verification_frequency, record_keeping_procedure, created_at, ' +
+  'monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name), approved_by_user:users!haccp_ccps_approved_by_fkey(id, full_name), ' +
   'hazard:haccp_hazards(id, description, step:haccp_process_steps(id, name, step_number, plan:haccp_plans(id, title, status, created_by, service_id, category_id, category:categories(id, is_restricted))))';
 
 // Tous les CCP du tenant (ou des plans demandés) avec leur plan, leur dernier relevé, leur état de surveillance
@@ -129,7 +130,13 @@ export async function fetchCcpStatuses(tenantId, { planIds, ccpIds: onlyCcpIds, 
       if (!plan) return null;
       return { ...row, hazard_description: row.hazard.description, step_name: step.name, step_number: step.step_number, plan };
     })
-    .filter((ccp) => ccp && (!planIds || planIds.includes(ccp.plan.id)) && (!onlyCcpIds || onlyCcpIds.includes(ccp.id)) && (!activeOnly || ccp.plan.status === 'active'));
+    .filter((ccp) =>
+      ccp &&
+      CCP_OPERATIONAL_STATUSES.includes(ccp.status) &&
+      (!planIds || planIds.includes(ccp.plan.id)) &&
+      (!onlyCcpIds || onlyCcpIds.includes(ccp.id)) &&
+      (!activeOnly || ccp.plan.status === 'active')
+    );
   if (ccps.length === 0) return [];
 
   const since = new Date(now.getTime() - DEVIATION_ALERT_DAYS * DAY_MS).toISOString();

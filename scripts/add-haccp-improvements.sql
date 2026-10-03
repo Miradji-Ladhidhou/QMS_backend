@@ -36,7 +36,7 @@ end $$;
 alter table haccp_monitoring_logs add column if not exists numeric_value numeric;
 create index if not exists idx_haccp_monitoring_logs_ccp_recorded on haccp_monitoring_logs (ccp_id, recorded_at desc);
 
--- Revue annuelle du plan (principe 6 : validation).
+-- Revue annuelle du plan (principe 6 : vérification de l'efficacité du système HACCP).
 alter table haccp_plans add column if not exists review_date date;
 alter table haccp_plans add column if not exists last_reviewed_at timestamptz;
 alter table haccp_plans add column if not exists last_reviewed_by uuid references users (id) on delete set null;

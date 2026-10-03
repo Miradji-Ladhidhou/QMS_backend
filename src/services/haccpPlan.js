@@ -30,7 +30,7 @@ export async function loadPlanSteps(tenantId, plan) {
   if (hazardIds.length > 0) {
     const { data, error } = await supabase
       .from('haccp_ccps')
-      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name)')
+      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name), approved_by_user:users!haccp_ccps_approved_by_fkey(id, full_name)')
       .eq('tenant_id', tenantId)
       .in('hazard_id', hazardIds);
     if (error) throw new Error('Impossible de récupérer les points critiques.');

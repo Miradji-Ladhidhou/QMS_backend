@@ -65,7 +65,8 @@ describe('POST /api/procedures/:id/versions/:versionId/attachment — upload ver
       .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure-officielle.pdf');
 
     expect(upload.status).toBe(201);
-    expect(upload.body.attachment_drive_file_id).toBe('mocked-drive-file-id-123');
+    expect(upload.body.attachment_file_path).toBe('mocked-drive-file-id-123');
+    expect(upload.body.attachment_storage_provider).toBe('google_drive');
     expect(upload.body.attachment_file_name).toBe('procedure-officielle.pdf');
 
     expect(googleDrive.uploadFile).toHaveBeenCalledTimes(1);
@@ -77,7 +78,7 @@ describe('POST /api/procedures/:id/versions/:versionId/attachment — upload ver
     const detail = await request(app)
       .get(`/api/procedures/${procedure.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(detail.body.versions.find((v) => v.id === version.body.id).attachment_drive_file_id).toBe(
+    expect(detail.body.versions.find((v) => v.id === version.body.id).attachment_file_path).toBe(
       'mocked-drive-file-id-123'
     );
 
@@ -109,6 +110,46 @@ describe('POST /api/procedures/:id/versions/:versionId/attachment — upload ver
     const detail = await request(app)
       .get(`/api/procedures/${procedure.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(detail.body.versions.find((v) => v.id === version.body.id).attachment_drive_file_id).toBeNull();
+    expect(detail.body.versions.find((v) => v.id === version.body.id).attachment_file_path).toBeNull();
+  });
+});
+
+describe("POST /api/procedures/:id/versions/:versionId/attachment — stockage Supabase", () => {
+  it('stocke le fichier dans le bucket documentaire et fournit un lien de récupération', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-S01');
+    const version = await request(app)
+      .post(`/api/procedures/${procedure.id}/versions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({});
+    expect(version.status).toBe(201);
+
+    let filePath;
+    try {
+      const upload = await request(app)
+        .post(`/api/procedures/${procedure.id}/versions/${version.body.id}/attachment`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .attach('file', Buffer.from('contenu de procédure'), 'procedure-interne.pdf');
+
+      expect(upload.status).toBe(201);
+      filePath = upload.body.attachment_file_path;
+      expect(filePath).toContain(`${tenant.tenantId}/procedures/${procedure.id}/${version.body.id}/`);
+      expect(upload.body.attachment_storage_provider).toBeNull();
+
+      const link = await request(app)
+        .get(`/api/procedures/${procedure.id}/versions/${version.body.id}/attachment`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`);
+      expect(link.status).toBe(200);
+      expect(link.body.url).toContain(filePath);
+
+      const { data, error } = await admin.storage.from('qms-documents').download(filePath);
+      expect(error).toBeNull();
+      expect(data).not.toBeNull();
+    } finally {
+      if (filePath) {
+        const { error } = await admin.storage.from('qms-documents').remove([filePath]);
+        expect(error).toBeNull();
+      }
+    }
   });
 });

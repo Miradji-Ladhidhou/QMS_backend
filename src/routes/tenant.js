@@ -124,7 +124,11 @@ router.get('/data-export', requireRole('admin'), async (req, res) => {
     const { data, error } = await supabase.from(table).select('*').eq('tenant_id', req.tenantId);
     if (!error) result.tables[table] = data || [];
   }
-  const { data: tenant, error: tenantError } = await supabase.from('tenants').select('id, name, slug, plan, timezone').eq('id', req.tenantId).single();
+  const { data: tenant, error: tenantError } = await supabase
+    .from('tenants')
+    .select('id, name, slug, plan, timezone, company_address, company_phone, company_legal_mentions')
+    .eq('id', req.tenantId)
+    .single();
   if (tenantError || !tenant) return res.status(404).json({ error: 'Entreprise introuvable.' });
   result.tenant = tenant;
   res.setHeader('Content-Disposition', `attachment; filename="qms-export-${req.tenantId}.json"`);
@@ -153,7 +157,7 @@ router.delete('/account', requireSuperAdmin, [body('confirmation_name').trim().n
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
+    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
     .eq('id', req.tenantId)
     .single();
 
@@ -180,6 +184,9 @@ router.patch(
   requireRole('admin'),
   [
     body('name').optional().trim().notEmpty().withMessage("Le nom de l'entreprise ne peut pas être vide."),
+    body('company_address').optional({ nullable: true }).trim().isLength({ max: 300 }).withMessage("L'adresse de l'entreprise ne peut pas dépasser 300 caractères."),
+    body('company_phone').optional({ nullable: true }).trim().isLength({ max: 80 }).withMessage('Le téléphone ne peut pas dépasser 80 caractères.'),
+    body('company_legal_mentions').optional({ nullable: true }).trim().isLength({ max: 300 }).withMessage('Les mentions légales ne peuvent pas dépasser 300 caractères.'),
     body('timezone').optional().custom((value) => VALID_TIMEZONES.has(value)).withMessage('Fuseau horaire invalide.'),
     body('management_review_frequency_months')
       .optional({ nullable: true, values: 'falsy' })
@@ -205,6 +212,9 @@ router.patch(
 
     const update = {};
     if ('name' in req.body) update.name = req.body.name;
+    if ('company_address' in req.body) update.company_address = req.body.company_address || null;
+    if ('company_phone' in req.body) update.company_phone = req.body.company_phone || null;
+    if ('company_legal_mentions' in req.body) update.company_legal_mentions = req.body.company_legal_mentions || null;
     if ('timezone' in req.body) update.timezone = req.body.timezone;
     if ('document_review_frequency_months' in req.body) {
       update.document_review_frequency_months = req.body.document_review_frequency_months || null;
@@ -222,7 +232,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
+      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
       .single();
 
     if (error) {
@@ -258,7 +268,7 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
     .from('tenants')
     .update({ logo_url: logoPath })
     .eq('id', req.tenantId)
-    .select('id, name, slug, plan, logo_url, timezone, document_review_frequency_months, management_review_frequency_months')
+    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
     .single();
 
   if (error) {

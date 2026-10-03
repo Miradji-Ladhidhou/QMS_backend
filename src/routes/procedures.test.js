@@ -1,12 +1,15 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import pdfParse from 'pdf-parse';
+import { Document, HeadingLevel, Packer, Paragraph, Table, TableCell, TableRow, TextRun } from 'docx';
 import app from '../app.js';
+import { supabase } from '../services/supabase.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (tenant) {
     await tenant.cleanup();
     tenant = undefined;
@@ -60,6 +63,390 @@ describe('POST /api/procedures', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ number: 'PROC-002', title: 'Doublon' });
     expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /api/procedures/from-document', () => {
+  it('reprend le contenu, la version et la date en brouillon, sans modifier le document source', async () => {
+    tenant = await createTenant();
+    const { data: source } = await admin
+      .from('documents')
+      .insert({
+        tenant_id: tenant.tenantId,
+        number: 'PR-LEGACY-1',
+        title: 'Procédure interne existante',
+        description: 'Objectif et périmètre.',
+        extracted_text: 'Étape 1 : vérifier le lot.\nÉtape 2 : enregistrer le résultat.',
+        version: '3.2',
+        status: 'approved',
+        review_date: '2027-01-15',
+        file_path: `${tenant.tenantId}/documents/procedure-interne.pdf`,
+        file_name: 'procedure-interne.pdf',
+      })
+      .select('id')
+      .single();
+
+    const res = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ document_id: source.id, number: 'PR-LEGACY-1', title: 'Procédure interne existante' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.procedure.status).toBe('draft');
+    expect(res.body.procedure.current_version_id).toBeNull();
+
+    const { data: procedure } = await admin.from('procedures').select('*').eq('id', res.body.procedure.id).single();
+    expect(procedure.source_document_id).toBe(source.id);
+    expect(procedure.next_review_date).toBe('2027-01-15');
+
+    const { data: version } = await admin
+      .from('procedure_versions')
+      .select('id, version, status, content, attachment_file_path, attachment_file_name, attachment_storage_provider')
+      .eq('procedure_id', procedure.id)
+      .single();
+    expect(version.version).toBe('3.2');
+    expect(version.status).toBe('draft');
+    expect(version.attachment_file_path).toBe(`${tenant.tenantId}/documents/procedure-interne.pdf`);
+    expect(version.attachment_file_name).toBe('procedure-interne.pdf');
+    expect(version.attachment_storage_provider).toBeNull();
+    const acknowledgment = await request(app)
+      .post(`/api/procedures/${procedure.id}/acknowledge`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(acknowledgment.status).toBe(400);
+    expect(version.content.sections[0].blocks.map((block) => block.text)).toEqual([
+      'Objectif et périmètre.',
+      'Étape 1 : vérifier le lot.',
+      'Étape 2 : enregistrer le résultat.',
+    ]);
+
+    const { data: unchangedSource } = await admin.from('documents').select('status').eq('id', source.id).single();
+    expect(unchangedSource.status).toBe('approved');
+
+    const detail = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.source_document).toMatchObject({
+      id: source.id,
+      number: 'PR-LEGACY-1',
+      version: '3.2',
+    });
+
+    const attachment = await request(app)
+      .get(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(attachment.status).toBe(200);
+    expect(attachment.body.url).toContain(version.attachment_file_path);
+
+    const documents = await request(app)
+      .get('/api/documents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(documents.status).toBe(200);
+    const listedSource = documents.body.find((document) => document.id === source.id);
+    expect(listedSource.source_procedure[0].id).toBe(procedure.id);
+
+    const repeated = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ document_id: source.id, number: 'PR-LEGACY-1', title: 'Procédure interne existante' });
+    expect(repeated.status).toBe(200);
+    expect(repeated.body.already_exists).toBe(true);
+    expect(repeated.body.procedure.id).toBe(procedure.id);
+  });
+
+  it('conserve les titres et tableaux du Word source dans la procédure convertie', async () => {
+    tenant = await createTenant();
+    const sourceBuffer = await Packer.toBuffer(
+      new Document({
+        sections: [
+          {
+            children: [
+              new Paragraph({ text: '1. Objectifs de la procédure', heading: HeadingLevel.HEADING_1 }),
+              new Paragraph('Décrire le processus.'),
+              new Paragraph({ text: '3. Responsabilités', heading: HeadingLevel.HEADING_1 }),
+              new Table({
+                rows: [
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'Poste', bold: true })] })] }),
+                      new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: 'Responsabilités', bold: true })] })] }),
+                    ],
+                  }),
+                  new TableRow({
+                    children: [
+                      new TableCell({ children: [new Paragraph('Responsable')] }),
+                      new TableCell({ children: [new Paragraph('Pilote la procédure.')] }),
+                    ],
+                  }),
+                ],
+              }),
+            ],
+          },
+        ],
+      })
+    );
+    const filePath = `${tenant.tenantId}/documents/procedure-source.docx`;
+    const { data: source } = await admin
+      .from('documents')
+      .insert({
+        tenant_id: tenant.tenantId,
+        number: 'PR-LEGACY-DOCX',
+        title: 'Procédure Word source',
+        description: 'Résumé conservé.',
+        extracted_text: 'Texte indexé utilisé pour la recherche.',
+        file_path: filePath,
+        file_name: 'procedure-source.docx',
+        storage_provider: 'supabase',
+      })
+      .select('id')
+      .single();
+    const download = vi.fn().mockResolvedValue({ data: new Blob([sourceBuffer]), error: null });
+    vi.spyOn(supabase.storage, 'from').mockReturnValue({ download });
+
+    const converted = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ document_id: source.id, number: 'PR-LEGACY-DOCX', title: 'Procédure Word source' });
+
+    expect(converted.status).toBe(201);
+    expect(download).toHaveBeenCalledWith(filePath);
+
+    const { data: version } = await admin
+      .from('procedure_versions')
+      .select('content')
+      .eq('procedure_id', converted.body.procedure.id)
+      .single();
+    expect(version.content.sections.map((section) => section.label)).toEqual([
+      'Objectifs de la procédure',
+      'Responsabilités',
+    ]);
+    expect(version.content.sections[0].blocks[0]).toMatchObject({
+      type: 'paragraphe',
+      text: 'Résumé conservé.',
+    });
+    expect(version.content.sections[1].blocks[0]).toMatchObject({
+      type: 'tableau',
+      headers: ['Poste', 'Responsabilités'],
+      rows: [['Responsable', 'Pilote la procédure.']],
+    });
+  });
+
+  describe('POST /api/procedures/:id/reimport-source', () => {
+    it('crée une nouvelle version brouillon structurée sans modifier la version existante', async () => {
+      tenant = await createTenant();
+      const sourceBuffer = await Packer.toBuffer(
+        new Document({
+          sections: [
+            {
+              children: [
+                new Paragraph({ text: '1. Contrôle du produit', heading: HeadingLevel.HEADING_1 }),
+                new Paragraph('Vérifier chaque lot avant libération.'),
+                new Paragraph({ text: '2. Responsabilités', heading: HeadingLevel.HEADING_1 }),
+                new Table({
+                  rows: [
+                    new TableRow({
+                      children: [
+                        new TableCell({
+                          children: [new Paragraph({ children: [new TextRun({ text: 'Rôle', bold: true })] })],
+                        }),
+                        new TableCell({
+                          children: [new Paragraph({ children: [new TextRun({ text: 'Responsabilité', bold: true })] })],
+                        }),
+                      ],
+                    }),
+                    new TableRow({
+                      children: [
+                        new TableCell({ children: [new Paragraph('Qualité')] }),
+                        new TableCell({ children: [new Paragraph('Enregistrer la décision.')] }),
+                      ],
+                    }),
+                  ],
+                }),
+              ],
+            },
+          ],
+        })
+      );
+      const filePath = `${tenant.tenantId}/documents/procedure-source.docx`;
+      const { data: source } = await admin
+        .from('documents')
+        .insert({
+          tenant_id: tenant.tenantId,
+          number: 'PR-REIMPORT',
+          title: 'Procédure importée',
+          description: 'Description de la source.',
+          extracted_text: 'Texte aplati utilisé avant la reprise.',
+          version: '4.1',
+          file_path: filePath,
+          file_name: 'procedure-source.docx',
+          storage_provider: 'supabase',
+        })
+        .select('id')
+        .single();
+      const download = vi.fn().mockResolvedValue({ data: new Blob([sourceBuffer]), error: null });
+      vi.spyOn(supabase.storage, 'from').mockReturnValue({ download });
+
+      const procedure = await createProcedure(tenant.admin.token, 'PR-REIMPORT');
+      await admin.from('procedures').update({ source_document_id: source.id }).eq('id', procedure.id);
+      const legacyContent = {
+        sections: [
+          {
+            key: 'contenu_importe',
+            label: 'Contenu repris du document source',
+            blocks: [{ type: 'paragraphe', text: 'Texte déjà aplati.' }],
+          },
+        ],
+        documents_associes: [],
+      };
+      await admin.from('procedure_versions').insert({
+        tenant_id: tenant.tenantId,
+        procedure_id: procedure.id,
+        version: '4.1',
+        status: 'draft',
+        content: legacyContent,
+        author_id: tenant.admin.id,
+      });
+
+      const reimported = await request(app)
+        .post(`/api/procedures/${procedure.id}/reimport-source`)
+        .set('Authorization', `Bearer ${tenant.admin.token}`)
+        .send();
+
+      expect(reimported.status).toBe(201);
+      expect(reimported.body.version).toBe('4.2');
+      expect(reimported.body.status).toBe('draft');
+      expect(reimported.body.content.sections.map((section) => section.label)).toEqual([
+        'Contrôle du produit',
+        'Responsabilités',
+      ]);
+      expect(reimported.body.content.sections[1].blocks[0]).toMatchObject({
+        type: 'tableau',
+        headers: ['Rôle', 'Responsabilité'],
+        rows: [['Qualité', 'Enregistrer la décision.']],
+      });
+
+      const { data: previousVersion } = await admin
+        .from('procedure_versions')
+        .select('version, content')
+        .eq('procedure_id', procedure.id)
+        .eq('version', '4.1')
+        .single();
+      expect(previousVersion.content).toEqual(legacyContent);
+      expect(download).toHaveBeenCalledTimes(1);
+      expect(download).toHaveBeenCalledWith(filePath);
+    });
+
+    it('réserve le réimport aux rôles de gestion', async () => {
+      tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+      const member = tenant.users[0];
+      const procedure = await createProcedure(tenant.admin.token, 'PR-REIMPORT-ACCESS');
+
+      const res = await request(app)
+        .post(`/api/procedures/${procedure.id}/reimport-source`)
+        .set('Authorization', `Bearer ${member.token}`)
+        .send();
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('réserve la conversion aux rôles de gestion', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const { data: source } = await admin
+      .from('documents')
+      .insert({ tenant_id: tenant.tenantId, number: 'PR-LEGACY-2', title: 'Procédure' })
+      .select('id')
+      .single();
+
+    const res = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${member.token}`)
+      .send({ document_id: source.id, number: 'PR-LEGACY-2', title: 'Procédure' });
+    expect(res.status).toBe(403);
+  });
+
+  it('garde le provider Google Drive du fichier source lors de la reprise', async () => {
+    tenant = await createTenant();
+    const { data: source } = await admin
+      .from('documents')
+      .insert({
+        tenant_id: tenant.tenantId,
+        number: 'PR-LEGACY-DRIVE',
+        title: 'Procédure Drive',
+        file_path: 'existing-drive-file-id',
+        file_name: 'procedure-drive.pdf',
+        storage_provider: 'google_drive',
+      })
+      .select('id')
+      .single();
+
+    const converted = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ document_id: source.id, number: 'PR-LEGACY-DRIVE', title: 'Procédure Drive' });
+    expect(converted.status).toBe(201);
+
+    const version = await admin
+      .from('procedure_versions')
+      .select('id, attachment_file_path, attachment_file_name, attachment_storage_provider')
+      .eq('procedure_id', converted.body.procedure.id)
+      .single();
+    expect(version.data).toMatchObject({
+      attachment_file_path: 'existing-drive-file-id',
+      attachment_file_name: 'procedure-drive.pdf',
+      attachment_storage_provider: 'google_drive',
+    });
+
+    const attachment = await request(app)
+      .get(`/api/procedures/${converted.body.procedure.id}/versions/${version.data.id}/attachment`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(attachment.status).toBe(200);
+    expect(attachment.body.url).toContain('/api/documents/drive-file?ticket=');
+  });
+
+  it('conserve les restrictions du document source sur la liste, la fiche et le fichier de la procédure', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
+    const member = tenant.users[0];
+    const { data: category } = await admin
+      .from('document_categories')
+      .insert({ tenant_id: tenant.tenantId, name: 'Procédures confidentielles', is_restricted: true })
+      .select('id')
+      .single();
+    const { data: source } = await admin
+      .from('documents')
+      .insert({
+        tenant_id: tenant.tenantId,
+        category_id: category.id,
+        number: 'PR-SECRET',
+        title: 'Procédure confidentielle',
+        file_path: `${tenant.tenantId}/private/procedure.pdf`,
+        file_name: 'procedure.pdf',
+      })
+      .select('id')
+      .single();
+
+    const converted = await request(app)
+      .post('/api/procedures/from-document')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ document_id: source.id, number: 'PR-SECRET', title: 'Procédure confidentielle' });
+    expect(converted.status).toBe(201);
+    const procedureId = converted.body.procedure.id;
+    const versionId = converted.body.procedure.current_version_id;
+
+    const list = await request(app).get('/api/procedures').set('Authorization', `Bearer ${member.token}`);
+    expect(list.status).toBe(200);
+    expect(list.body.some((procedure) => procedure.id === procedureId)).toBe(false);
+
+    const detail = await request(app)
+      .get(`/api/procedures/${procedureId}`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(detail.status).toBe(404);
+
+    const attachment = await request(app)
+      .get(`/api/procedures/${procedureId}/versions/${versionId}/attachment`)
+      .set('Authorization', `Bearer ${member.token}`);
+    expect(attachment.status).toBe(404);
   });
 });
 
@@ -416,7 +803,7 @@ describe('Workflow submit / validate / reject', () => {
     expect(procedureAfter.body.current_version_id).toBe(version.id);
   });
 
-  it('un admin/manager ne peut pas valider une version qu’il a lui-même rédigée', async () => {
+  it('un admin peut approuver sa propre version quand il travaille seul', async () => {
     tenant = await createTenant();
     const procedure = await createProcedure(tenant.admin.token, 'PROC-022b');
     const version = await createVersion(tenant.admin.token, procedure.id);
@@ -428,7 +815,16 @@ describe('Workflow submit / validate / reject', () => {
     const res = await request(app)
       .post(`/api/procedures/${procedure.id}/versions/${version.id}/validate`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('approved');
+    expect(res.body.author_id).toBe(tenant.admin.id);
+    expect(res.body.validator_id).toBe(tenant.admin.id);
+
+    const procedureAfter = await request(app)
+      .get(`/api/procedures/${procedure.id}`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(procedureAfter.body.status).toBe('approved');
+    expect(procedureAfter.body.current_version_id).toBe(version.id);
   });
 
   it('rejet : commentaire obligatoire, la procédure repasse "draft"', async () => {
@@ -1091,6 +1487,69 @@ describe('GET /api/procedures/:id/pdf', () => {
     expect(text).toContain('Processus');
   });
 
+  it('conserve les tableaux de formulaire sans en-tête dans le PDF', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-090AA');
+    await createVersion(tenant.admin.token, procedure.id, {
+      content: {
+        sections: [
+          {
+            key: 'formulaire',
+            label: 'Formulaire',
+            blocks: [
+              {
+                type: 'tableau',
+                hasHeader: false,
+                headers: ['Colonne 1', 'Colonne 2'],
+                rows: [['Date', ''], ['Référence produit', '']],
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    const { text } = await pdfParse(Buffer.from(res.body));
+    expect(text).toContain('Date');
+    expect(text).toContain('Référence produit');
+    expect(text).not.toContain('Colonne 1');
+  });
+
+  it('signale un brouillon et une révision échue, avec une couverture, un sommaire et le corps sur une page distincte', async () => {
+    tenant = await createTenant();
+    const procedure = await createProcedure(tenant.admin.token, 'PROC-090B', { next_review_date: '2020-01-01' });
+    await createVersion(tenant.admin.token, procedure.id, {
+      content: {
+        sections: [
+          { key: 'objectif', label: 'Objectif', blocks: [{ type: 'paragraphe', id: 'p1', text: 'Objectif de test.' }] },
+          { key: 'champ', label: 'Champ', blocks: [{ type: 'paragraphe', id: 'p2', text: 'Champ de test.' }] },
+          { key: 'processus', label: 'Processus', blocks: [{ type: 'paragraphe', id: 'p3', text: 'Processus de test.' }] },
+        ],
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/procedures/${procedure.id}/pdf`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .responseType('blob');
+
+    expect(res.status).toBe(200);
+    const { text, numpages } = await pdfParse(Buffer.from(res.body));
+    expect(text).toContain('Version non approuvée');
+    expect(text).toContain('Révision en retard');
+    expect(text).toContain('Sommaire');
+    expect(text).toContain('Page 1 sur 3');
+    expect(text.indexOf('DATE DE CRÉATION')).toBeLessThan(text.indexOf('Sommaire'));
+    expect(text.indexOf('Sommaire')).toBeLessThan(text.indexOf('Objectif de test.'));
+    expect(numpages).toBe(3);
+  });
+
   it('génère un PDF pour la version courante, avec sections du gabarit, documents associés, et encadré obsolescence', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
     const validator = tenant.users[0];
@@ -1209,20 +1668,6 @@ describe('Pièce jointe de version (attachment)', () => {
     return res.body;
   }
 
-  it('400 explicite quand Google Drive n’est pas activé pour le tenant (pas de repli Supabase)', async () => {
-    tenant = await createTenant();
-    const procedure = await createProcedure(tenant.admin.token, 'PROC-100');
-    const version = await createVersion(tenant.admin.token, procedure.id);
-
-    const res = await request(app)
-      .post(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure-officielle.pdf');
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/Google Drive/);
-  });
-
   it('refusée pour un autre rédacteur, et une fois la version soumise', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }, { role: 'member' }] });
     const [author, other] = tenant.users;
@@ -1258,7 +1703,11 @@ describe('Pièce jointe de version (attachment)', () => {
     // pièce jointe déjà attachée ressort bien de l'API de détail, dans les deux sens.
     const { error: seedError } = await admin
       .from('procedure_versions')
-      .update({ attachment_drive_file_id: 'fake-drive-file-id', attachment_file_name: 'procedure-officielle.pdf' })
+      .update({
+        attachment_file_path: 'fake-drive-file-id',
+        attachment_file_name: 'procedure-officielle.pdf',
+        attachment_storage_provider: 'google_drive',
+      })
       .eq('id', version.id);
     expect(seedError).toBeNull();
 
@@ -1268,7 +1717,7 @@ describe('Pièce jointe de version (attachment)', () => {
     expect(detail.status).toBe(200);
     const versionInDetail = detail.body.versions.find((v) => v.id === version.id);
     expect(versionInDetail.attachment_file_name).toBe('procedure-officielle.pdf');
-    expect(versionInDetail.attachment_drive_file_id).toBe('fake-drive-file-id');
+    expect(versionInDetail.attachment_file_path).toBe('fake-drive-file-id');
 
     const removed = await request(app)
       .delete(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
@@ -1294,7 +1743,11 @@ describe('Pièce jointe de version (attachment)', () => {
 
     await admin
       .from('procedure_versions')
-      .update({ attachment_drive_file_id: 'fake-drive-file-id', attachment_file_name: 'procedure-officielle.pdf' })
+      .update({
+        attachment_file_path: 'fake-drive-file-id',
+        attachment_file_name: 'procedure-officielle.pdf',
+        attachment_storage_provider: 'google_drive',
+      })
       .eq('id', version.id);
 
     const res = await request(app)

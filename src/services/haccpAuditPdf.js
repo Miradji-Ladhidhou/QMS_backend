@@ -146,6 +146,13 @@ function drawScopeList(doc, scope) {
   doc.moveDown(0.3);
 }
 
+function drawTextSection(doc, title, text) {
+  if (!text) return;
+  doc.font('Body-Bold').fontSize(9).fillColor(INK).text(title, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body').fontSize(8.5).text(text, PAGE_MARGIN, doc.y + 2, { width: CONTENT_WIDTH });
+  doc.moveDown(0.55);
+}
+
 // Un plan par section : titre + infos générales, puis 3 tableaux (analyse des dangers, points
 // critiques, synthèse de la surveillance). monitoringSummaryByCcpId : Map ccpId -> { total,
 // outOfLimits, linkedCapas, lastRecordedAt } — calculée par l'appelant (voir routes/haccp.js),
@@ -167,6 +174,17 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
   if (plan.scope) {
     drawScopeList(doc, plan.scope);
   }
+  for (const [field, label] of [
+    ['prerequisites', 'Programmes prérequis'],
+    ['intended_use', 'Usage prévu'],
+    ['consumer_groups', 'Consommateurs visés'],
+    ['product_characteristics', 'Caractéristiques produit'],
+    ['flow_diagram_reference', 'Diagramme de fabrication — référence'],
+    ['flow_diagram_verification', 'Diagramme de fabrication — vérification et preuves'],
+    ['no_ccp_justification', 'Justification de l’absence de CCP'],
+    ['validation_review_notes', 'Revue de validation — preuves de capacité des mesures de maîtrise'],
+    ['verification_review_notes', 'Revue de vérification — preuves de bonne application'],
+  ]) drawTextSection(doc, label, plan[field]);
   doc.moveDown(0.3);
 
   const hazardRows = [];
@@ -179,6 +197,8 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
         description: hazard.description,
         score: `P${hazard.likelihood} × G${hazard.severity} = ${hazard.risk_score}`,
         significant: hazard.is_significant ? 'Oui' : 'Non',
+        control_type: hazard.control_type || 'undetermined',
+        decision_justification: hazard.decision_justification || '',
         existing_controls: hazard.existing_controls || '',
         _highlight: hazard.is_significant,
       });
@@ -186,14 +206,21 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
       if (hazard.ccp) {
         ccpRows.push({
           ccp_number: hazard.ccp.ccp_number || '—',
+          status: { draft: 'Brouillon', approved: 'Approuvé', legacy: 'Historique (legacy)' }[hazard.ccp.status] || hazard.ccp.status,
           hazard: hazard.description,
-          critical_limits: `${hazard.ccp.critical_limits}${numericLimitsOf(hazard.ccp) ? ` [${describeLimits(numericLimitsOf(hazard.ccp))}]` : ''}`,
-          monitoring: `${hazard.ccp.monitoring_procedure}${hazard.ccp.monitoring_frequency ? ` (${hazard.ccp.monitoring_frequency})` : ''}${
+          critical_limits: `${hazard.ccp.critical_limits || 'À définir'}${numericLimitsOf(hazard.ccp) ? ` [${describeLimits(numericLimitsOf(hazard.ccp))}]` : ''}`,
+          monitoring: `${hazard.ccp.monitoring_procedure || 'À définir'}${hazard.ccp.monitoring_frequency ? ` (${hazard.ccp.monitoring_frequency})` : ''}${
             hazard.ccp.monitoring_responsible_user ? ` — ${hazard.ccp.monitoring_responsible_user.full_name}` : ''
           }`,
           corrective_action: hazard.ccp.corrective_action_procedure || '',
           verification: `${hazard.ccp.verification_procedure || ''}${hazard.ccp.verification_frequency ? ` (${hazard.ccp.verification_frequency})` : ''}`,
           record_keeping: hazard.ccp.record_keeping_procedure || '',
+          validation: [
+            hazard.ccp.validation_source,
+            hazard.ccp.validation_evidence,
+            hazard.ccp.approved_by_user?.full_name ? `Approuvé par ${hazard.ccp.approved_by_user.full_name}` : '',
+            hazard.ccp.approved_at ? `Approuvé le ${formatDate(hazard.ccp.approved_at)}` : '',
+          ].filter(Boolean).join('\n'),
           _ccpId: hazard.ccp.id,
         });
       }
@@ -203,12 +230,14 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
   drawTable(doc, {
     sectionTitle: 'Analyse des dangers',
     columns: [
-      { key: 'step', label: 'Étape', width: 0.12 },
-      { key: 'hazard_type', label: 'Type', width: 0.09 },
-      { key: 'description', label: 'Danger', width: 0.27 },
-      { key: 'score', label: 'P × G', width: 0.12 },
-      { key: 'significant', label: 'Significatif', width: 0.1 },
-      { key: 'existing_controls', label: 'Maîtrise existante', width: 0.3 },
+      { key: 'step', label: 'Étape', width: 0.1 },
+      { key: 'hazard_type', label: 'Type', width: 0.07 },
+      { key: 'description', label: 'Danger', width: 0.18 },
+      { key: 'score', label: 'P × G', width: 0.08 },
+      { key: 'significant', label: 'Significatif', width: 0.08 },
+      { key: 'control_type', label: 'Décision de maîtrise', width: 0.11 },
+      { key: 'decision_justification', label: 'Justification', width: 0.19 },
+      { key: 'existing_controls', label: 'Maîtrise existante', width: 0.19 },
     ],
     rows: hazardRows,
     emptyLabel: 'Aucun danger identifié pour l’instant.',
@@ -230,13 +259,15 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
   drawTable(doc, {
     sectionTitle: 'Points critiques (CCP)',
     columns: [
-      { key: 'ccp_number', label: 'CCP', width: 0.06 },
-      { key: 'hazard', label: 'Danger associé', width: 0.18 },
-      { key: 'critical_limits', label: 'Limites critiques', width: 0.17 },
-      { key: 'monitoring', label: 'Surveillance', width: 0.22 },
-      { key: 'corrective_action', label: 'Actions correctives', width: 0.17 },
-      { key: 'verification', label: 'Vérification', width: 0.12 },
-      { key: 'record_keeping', label: 'Registres', width: 0.08 },
+      { key: 'ccp_number', label: 'CCP', width: 0.04 },
+      { key: 'status', label: 'Statut', width: 0.07 },
+      { key: 'hazard', label: 'Danger associé', width: 0.12 },
+      { key: 'critical_limits', label: 'Limites critiques', width: 0.14 },
+      { key: 'monitoring', label: 'Surveillance', width: 0.18 },
+      { key: 'corrective_action', label: 'Actions correctives', width: 0.12 },
+      { key: 'verification', label: 'Vérification', width: 0.1 },
+      { key: 'record_keeping', label: 'Enregistrements', width: 0.1 },
+      { key: 'validation', label: 'Validation / preuves', width: 0.13 },
     ],
     rows: ccpRows,
     emptyLabel: 'Aucun point critique défini pour l’instant.',

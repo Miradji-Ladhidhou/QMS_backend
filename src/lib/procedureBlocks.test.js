@@ -78,4 +78,12 @@ describe('blocksToPlainText', () => {
     expect(blocksToPlainText([])).toBe('');
     expect(blocksToPlainText(undefined)).toBe('');
   });
+
+  it('n’ajoute pas de faux en-têtes au texte des tableaux de formulaire sans en-tête', () => {
+    expect(
+      blocksToPlainText([
+        { type: 'tableau', hasHeader: false, headers: ['Colonne 1', 'Colonne 2'], rows: [['Date', ''], ['Référence', '']] },
+      ])
+    ).toBe('Date | \nRéférence | ');
+  });
 });

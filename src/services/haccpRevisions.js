@@ -4,7 +4,22 @@ import { loadPlanSteps } from './haccpPlan.js';
 const HAZARD_TYPE_LABELS = { biological: 'biologique', chemical: 'chimique', physical: 'physique', allergen: 'allergène' };
 const PLAN_STATUS_LABELS = { draft: 'Brouillon', active: 'Actif', under_review: 'En revue', archived: 'Archivé' };
 
-const PLAN_FIELDS = { title: 'Titre', product_description: 'Produit', scope: 'Périmètre', team: 'Équipe HACCP', status: 'Statut' };
+const PLAN_FIELDS = {
+  title: 'Titre',
+  product_description: 'Produit',
+  scope: 'Périmètre',
+  team: 'Équipe HACCP',
+  prerequisites: 'prérequis',
+  intended_use: 'usage prévu',
+  consumer_groups: 'consommateurs visés',
+  product_characteristics: 'caractéristiques produit',
+  flow_diagram_reference: 'référence du diagramme',
+  flow_diagram_verification: 'vérification du diagramme',
+  no_ccp_justification: 'justification sans CCP',
+  validation_review_notes: 'preuves de revue de validation',
+  verification_review_notes: 'preuves de revue de vérification',
+  status: 'Statut',
+};
 const HAZARD_FIELDS = {
   hazard_type: 'type',
   description: 'description',
@@ -13,9 +28,17 @@ const HAZARD_FIELDS = {
   severity: 'gravité',
   is_significant: 'caractère significatif',
   justification: 'justification',
+  control_type: 'décision de maîtrise',
+  decision_justification: 'justification de la décision',
 };
 const CCP_FIELDS = {
   ccp_number: 'numéro',
+  status: 'statut de validation',
+  validation_source: 'source de validation',
+  validation_evidence: 'preuves de validation',
+  approved_by: 'approbateur',
+  approved_at: 'date d’approbation',
+  ai_generated: 'généré par IA',
   critical_limits: 'limites critiques',
   limit_min: 'limite min',
   limit_max: 'limite max',

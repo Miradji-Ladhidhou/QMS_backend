@@ -44,12 +44,23 @@ export function buildHaccpCcpPdf({ ccp, stats, logs, days, tenantName, tenantLog
     drawTable(doc, [{ width: 0.3 }, { width: 0.7 }], ['Information', 'Valeur'], [
       ['Plan', ccp.plan.title],
       ['Étape', `${ccp.step_number}. ${ccp.step_name}`],
+      ['Statut', { draft: 'Brouillon', approved: 'Approuvé', legacy: 'Historique (legacy)' }[ccp.status] || ccp.status],
       ['Limites critiques', ccp.critical_limits],
       ['Limites chiffrées', ccp.limits_text || 'Non définies (verdict saisi à la main)'],
       ['Fréquence de surveillance', ccp.monitoring_frequency || '—'],
       ['Rappel de relevé', ccp.monitoring_interval_hours ? `toutes les ${Number(ccp.monitoring_interval_hours)} h` : 'Aucun'],
       ['Responsable', ccp.monitoring_responsible_user?.full_name || 'À désigner'],
     ].map(([a, b]) => [{ text: a, bold: true }, { text: b }]));
+
+    if (ccp.validation_source || ccp.validation_evidence) {
+      drawSectionTitle(doc, 'Validation des limites critiques');
+      drawParagraph(doc, [
+        ccp.validation_source ? `Source : ${ccp.validation_source}` : '',
+        ccp.validation_evidence ? `Éléments de preuve : ${ccp.validation_evidence}` : '',
+        ccp.approved_by_user?.full_name ? `Approuvé par : ${ccp.approved_by_user.full_name}` : '',
+        ccp.approved_at ? `Approbation enregistrée le ${formatRiskDateTime(ccp.approved_at, tenantTimezone)}.` : '',
+      ].filter(Boolean).join('\n'));
+    }
 
     drawSectionTitle(doc, 'Procédure de surveillance');
     drawParagraph(doc, ccp.monitoring_procedure);
@@ -80,12 +91,21 @@ export function buildHaccpCcpPdf({ ccp, stats, logs, days, tenantName, tenantLog
       drawTable(
         doc,
         [{ width: 0.2 }, { width: 0.14 }, { width: 0.17 }, { width: 0.31 }, { width: 0.18 }],
-        ['Date', 'Valeur', 'Verdict', 'Action corrective', 'Par'],
+        ['Date', 'Valeur', 'Verdict', 'Correction et dispositions', 'Par'],
         logs.map((log) => [
           { text: formatRiskDateTime(log.recorded_at, tenantTimezone) },
           { text: log.recorded_value },
           { text: log.within_limits ? 'Conforme' : 'Hors limites', bold: true, color: log.within_limits ? GOOD : BAD },
-          { text: log.corrective_action_taken || '' },
+          {
+            text: [
+              log.corrective_action_taken,
+              log.lot_reference ? `Lot : ${log.lot_reference}` : '',
+              log.product_disposition ? `Produit : ${log.product_disposition}` : '',
+              log.disposition_decision ? `Décision : ${log.disposition_decision}` : '',
+              log.return_to_control ? `Retour à la maîtrise : ${log.return_to_control}` : '',
+              log.effectiveness_verification ? `Efficacité : ${log.effectiveness_verification}` : '',
+            ].filter(Boolean).join('\n'),
+          },
           { text: log.recorded_by_user?.full_name || '' },
         ])
       );

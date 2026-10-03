@@ -1,6 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
-import { INK, MUTED, RULE, HEADER_FILL, drawLetterheadHeader } from './pdfTheme.js';
+import { INK, MUTED, HEADER_FILL } from './pdfTheme.js';
 
 // RED/AMBER restent des couleurs sémantiques (obsolescence/retard), pas des couleurs de
 // marque — volontairement non touchées par le passage à l'en-tête neutre.
@@ -9,13 +9,12 @@ const RED_LIGHT = '#fef2f2';
 const AMBER = '#b45309';
 const AMBER_LIGHT = '#fffbeb';
 
-const PAGE_MARGIN = 50;
+const PAGE_MARGIN = 36;
 const PAGE_WIDTH = 595.28; // A4
 const CONTENT_WIDTH = PAGE_WIDTH - PAGE_MARGIN * 2;
 
-const PROCEDURE_STATUS_LABELS = { draft: 'Brouillon', in_review: 'En revue', approved: 'Approuvé', obsolete: 'Obsolète' };
 const VERSION_STATUS_LABELS = { draft: 'Brouillon', pending: 'En attente', approved: 'Approuvé', rejected: 'Rejeté' };
-const DEFAULT_VISUAL_OPTIONS = { band: false, bulletStyle: 'dash', calloutStyle: 'left-border' };
+const DEFAULT_VISUAL_OPTIONS = { band: false, bulletStyle: 'round', calloutStyle: 'left-border' };
 
 function formatDate(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleDateString('fr-FR') : '—';
@@ -23,6 +22,146 @@ function formatDate(dateStr) {
 
 function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
+}
+
+function versionStatusLabel(procedure, version) {
+  const status = VERSION_STATUS_LABELS[version.status] || version.status;
+  return version.status === 'approved' && version.id === procedure.current_version_id ? `${status} — en vigueur` : status;
+}
+
+function drawProcedureControlHeader(doc, { procedure, version }) {
+  const x = PAGE_MARGIN;
+  const width = CONTENT_WIDTH;
+  const leftWidth = width * 0.52;
+  const rightX = x + leftWidth;
+  const rightWidth = width - leftWidth;
+  const rowHeights = [22, 68, 22];
+  const top = PAGE_MARGIN;
+  const rows = [
+    [
+      { text: 'PROCÉDURE DU SYSTÈME DE GESTION DE LA QUALITÉ', bold: true },
+      { text: `DATE DE CRÉATION : ${formatDate(procedure.created_at)}` },
+    ],
+    [
+      { text: `TITRE : ${procedure.title}`, bold: true, size: 10 },
+      {
+        text: `DOCUMENT N° : ${procedure.number}\nVERSION N° : ${version.version} (${versionStatusLabel(
+          procedure,
+          version
+        )})\nDATE DE RÉVISION : ${formatDate(version.validated_at || version.created_at || procedure.updated_at)}\nPROCHAINE RÉVISION : ${formatDate(
+          procedure.next_review_date
+        )}`,
+      },
+    ],
+    [
+      { text: `RÉVISÉ PAR : ${version.author?.full_name || '—'}` },
+      { text: `VALIDÉ PAR : ${version.validator?.full_name || '—'}` },
+    ],
+  ];
+
+  let rowTop = top;
+  rows.forEach((cells, rowIndex) => {
+    const height = rowHeights[rowIndex];
+    const cellBounds = [
+      { x, width: leftWidth, ...cells[0] },
+      { x: rightX, width: rightWidth, ...cells[1] },
+    ];
+    cellBounds.forEach((cell) => {
+      doc.rect(cell.x, rowTop, cell.width, height).lineWidth(0.6).strokeColor(INK).stroke();
+      doc
+        .font(cell.bold ? 'Body-Bold' : 'Body')
+        .fontSize(cell.size || 8)
+        .fillColor(INK)
+        .text(cell.text, cell.x + 6, rowTop + 5, {
+          width: cell.width - 12,
+          height: height - 8,
+          lineGap: 1,
+          ellipsis: true,
+        });
+    });
+    rowTop += height;
+  });
+
+  doc.font('Body').fillColor(INK);
+  doc.y = rowTop + 12;
+}
+
+function drawCompanyBand(doc, tenantName) {
+  const top = PAGE_MARGIN;
+  const height = 58;
+  doc.rect(PAGE_MARGIN, top, CONTENT_WIDTH, height).fill('#E7E6E6');
+  doc.font('Body').fontSize(18).fillColor(INK).text(tenantName || 'PROCÉDURE QUALITÉ', PAGE_MARGIN + 8, top + 18, {
+    width: CONTENT_WIDTH - 16,
+    align: 'center',
+  });
+  doc.y = top + height + 24;
+}
+
+function tableColumnFractions(headers, rows) {
+  const count = Math.max(1, headers?.length || 0);
+  if (count === 2) return [0.28, 0.72];
+  if (count === 1) return [1];
+
+  const weights = Array.from({ length: count }, (_, column) => {
+    const maxLength = Math.max(
+      String(headers?.[column] || '').length,
+      ...(rows || []).map((row) => String(row?.[column] || '').length)
+    );
+    return Math.sqrt(Math.min(Math.max(maxLength, 12), 120));
+  });
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map((weight) => weight / totalWeight);
+}
+
+function sectionSubheadings(section) {
+  return (section.blocks || []).flatMap((block) => {
+    if (block.type === 'sous_titre' && block.text?.trim()) return [block.text.trim()];
+    if (block.type !== 'paragraphe') return [];
+    return String(block.text || '')
+      .split('\n')
+      .flatMap((line) => {
+        const match = line.match(/^\s*\d+\.\d+\s+(.+)$/);
+        return match ? [match[1].trim()] : [];
+      });
+  });
+}
+
+function tocPageLabel(entry) {
+  if (!entry.startPage) return '';
+  if (entry.endPage > entry.startPage) return `pages ${entry.startPage} à ${entry.endPage}`;
+  return `page ${entry.startPage}`;
+}
+
+function drawTableOfContents(doc, entries, manualSommaire, accentColor, visualOptions) {
+  doc.font('Body-Bold').fontSize(14).fillColor(INK).text('Sommaire', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+  doc.font('Body').moveDown(0.8);
+  entries.forEach((entry) => {
+    const nested = entry.nested;
+    const left = PAGE_MARGIN + (nested ? 22 : 0);
+    const labelWidth = CONTENT_WIDTH - (nested ? 22 : 0) - 86;
+    const label = nested ? `•  ${entry.label}` : `${entry.number}.  ${entry.label}`;
+    const y = doc.y;
+    doc.font(nested ? 'Body' : 'Body-Bold').fontSize(nested ? 9 : 10).fillColor(INK);
+    doc.text(label, left, y, { width: labelWidth, lineGap: 1 });
+    if (!nested) {
+      doc.font('Body').fontSize(9).fillColor(MUTED).text(tocPageLabel(entry), PAGE_MARGIN, y, {
+        width: CONTENT_WIDTH,
+        align: 'right',
+      });
+    }
+    doc.moveDown(nested ? 0.25 : 0.45);
+  });
+  if (manualSommaire?.blocks?.length) {
+    doc.moveDown(0.35);
+    drawBlocks(
+      doc,
+      null,
+      entries.length ? 'Notes du sommaire' : manualSommaire.label || 'Sommaire',
+      manualSommaire.blocks,
+      accentColor,
+      visualOptions
+    );
+  }
 }
 
 function lightTint(color) {
@@ -86,9 +225,15 @@ function drawPhotoPlaceholder(doc, caption) {
 function drawStructuredParagraph(doc, text, bulletStyle = DEFAULT_VISUAL_OPTIONS.bulletStyle) {
   const lines = String(text || '').split('\n');
   lines.forEach((line) => {
+    const subsection = line.match(/^\s*(\d+\.\d+)\s+(.+)$/);
     const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
     const ordered = line.match(/^\s*(\d+)[.)]\s+(.*)$/);
     const nested = /^\s{2,}/.test(line);
+    if (subsection) {
+      doc.font('Body-Bold').fontSize(10).fillColor(INK).text(`${subsection[1]}    ${subsection[2]}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+      doc.font('Body').moveDown(0.22);
+      return;
+    }
     if (bullet || ordered) {
       const marker = ordered ? `${ordered[1]}.` : bulletStyle === 'round' ? '•' : '–';
       const value = ordered ? ordered[2] : bullet[1];
@@ -109,14 +254,15 @@ function drawStructuredParagraph(doc, text, bulletStyle = DEFAULT_VISUAL_OPTIONS
   });
 }
 
-function drawTableBlock(doc, headers, rows, accentColor) {
+function drawTableBlock(doc, headers, rows, accentColor, fixedColumnFractions = null, hasHeader = true) {
   const columnCount = Math.max(1, headers?.length || 0);
-  const columnWidth = CONTENT_WIDTH / columnCount;
+  const fractions = fixedColumnFractions || tableColumnFractions(headers, rows);
+  const columnWidths = fractions.map((fraction) => CONTENT_WIDTH * fraction);
   const cellPadding = 6;
 
   function cellsHeight(cells, header) {
     doc.font(header ? 'Body-Bold' : 'Body').fontSize(9);
-    return Math.max(...cells.map((c) => doc.heightOfString(c || '', { width: columnWidth - cellPadding * 2 }))) + cellPadding * 2;
+    return Math.max(...cells.map((cell, index) => doc.heightOfString(cell || '', { width: columnWidths[index] - cellPadding * 2 }))) + cellPadding * 2;
   }
 
   function drawRow(cells, header) {
@@ -126,22 +272,23 @@ function drawTableBlock(doc, headers, rows, accentColor) {
     }
     const rowTop = doc.y;
     cells.forEach((cell, i) => {
-      const x = PAGE_MARGIN + i * columnWidth;
+      const x = PAGE_MARGIN + columnWidths.slice(0, i).reduce((sum, width) => sum + width, 0);
+      const columnWidth = columnWidths[i];
       if (header) {
-        doc.rect(x, rowTop, columnWidth, height).fillAndStroke(lightTint(accentColor), RULE);
+        doc.rect(x, rowTop, columnWidth, height).fillAndStroke('#D9D9D9', INK);
       } else {
-        doc.rect(x, rowTop, columnWidth, height).stroke(RULE);
+        doc.rect(x, rowTop, columnWidth, height).stroke(INK);
       }
       doc
-        .font(header ? 'Body-Bold' : 'Body')
+        .font(header || (columnCount === 2 && i === 0) ? 'Body-Bold' : 'Body')
         .fontSize(9)
-        .fillColor(header ? accentColor : INK)
+        .fillColor(INK)
         .text(cell || '', x + cellPadding, rowTop + cellPadding, { width: columnWidth - cellPadding * 2 });
     });
     doc.y = rowTop + height;
   }
 
-  drawRow(headers || [], true);
+  if (hasHeader !== false) drawRow(headers || [], true);
   (rows || []).forEach((row) => drawRow((headers || []).map((_, i) => row[i] || ''), false));
   doc.moveDown(0.5);
 }
@@ -170,10 +317,16 @@ function drawCalloutBox(doc, text, accentColor, calloutStyle) {
   doc.y = boxTop + height + 10;
 }
 
-function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visualOptions) {
+function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visualOptions, onFirstContentPage) {
   if (doc.y > PAGE_MARGIN + 35) doc.moveDown(0.8);
-  const heading = sectionNumber ? `${sectionNumber}. ${sectionLabel}` : sectionLabel;
-  doc.font('Body-Bold').fontSize(12).fillColor(accentColor).text(heading, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+  const headingY = doc.y;
+  doc.font('Body-Bold').fontSize(11).fillColor(INK);
+  if (sectionNumber) {
+    doc.text(`${sectionNumber}.`, PAGE_MARGIN, headingY, { width: 24, lineGap: 2 });
+    doc.text(sectionLabel, PAGE_MARGIN + 36, headingY, { width: CONTENT_WIDTH - 36, lineGap: 2 });
+  } else {
+    doc.text(sectionLabel, PAGE_MARGIN, headingY, { width: CONTENT_WIDTH, lineGap: 2 });
+  }
   doc.font('Body');
   doc.moveDown(0.55);
 
@@ -183,11 +336,12 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visua
     return;
   }
 
-  blocks.forEach((block) => {
+  blocks.forEach((block, blockIndex) => {
+    const blockStartPage = doc.bufferedPageRange().count;
     switch (block.type) {
       case 'sous_titre':
         doc.moveDown(0.25);
-        doc.font('Body-Bold').fontSize(11).fillColor(accentColor).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
+        doc.font('Body-Bold').fontSize(10).fillColor(INK).text(block.text, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, lineGap: 2 });
         doc.font('Body');
         doc.moveDown(0.35);
         break;
@@ -198,7 +352,7 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visua
         doc.moveDown(0.3);
         break;
       case 'tableau':
-        drawTableBlock(doc, block.headers, block.rows, accentColor);
+        drawTableBlock(doc, block.headers, block.rows, accentColor, null, block.hasHeader);
         break;
       // Aucun champ severity : un seul traitement visuel (voir plan de refonte), le rouge/ambre
       // ci-dessus reste réservé aux 2 bannières d'état réellement affichées à l'écran
@@ -215,6 +369,10 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visua
         doc.moveDown(0.25);
         break;
     }
+    if (blockIndex === 0 && onFirstContentPage) {
+      const pageAfterBlock = doc.bufferedPageRange().count;
+      onFirstContentPage(block.type === 'sous_titre' ? pageAfterBlock : blockStartPage);
+    }
   });
 
   doc.moveDown(0.4);
@@ -230,59 +388,100 @@ function drawBlocks(doc, sectionNumber, sectionLabel, blocks, accentColor, visua
 // depuis la refonte de la mise en page (accent_color/visual_options, voir services/
 // procedureWord.js) — ce module PDF reste une adaptation minimale de compatibilité (voir
 // drawBlocks) qui n'a PAS été réécrit pour suivre le nouveau système de style, contrairement au
-// renderer Word ; il retombe donc toujours sur le défaut neutre HEADER_FILL/RULE pour l'encadré.
+// renderer Word ; il retombe donc toujours sur les styles neutres pour l'encadré.
 // Calculé en variables LOCALES (jamais en constante de module) : plusieurs requêtes de tenants
 // différents peuvent s'exécuter en concurrence dans le même process Node, une couleur globale
 // mutable ferait fuiter le thème d'un tenant vers le PDF d'un autre.
-export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, versions, renderStyle }) {
+export function buildProcedurePdf({
+  tenantName,
+  tenantAddress,
+  tenantPhone,
+  tenantLegalMentions,
+  tenantLogo,
+  procedure,
+  version,
+  versions,
+  renderStyle,
+}) {
   const accentColor = renderStyle?.accentColor || INK;
   const visualOptions = { ...DEFAULT_VISUAL_OPTIONS, ...(renderStyle?.visualOptions || {}) };
 
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
+    const doc = new PDFDocument({
+      margins: { top: PAGE_MARGIN, bottom: 92, left: PAGE_MARGIN, right: PAGE_MARGIN },
+      size: 'A4',
+      bufferPages: true,
+    });
     const chunks = [];
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end', () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
     useUnicodeFont(doc);
 
-    const headerArgs = { pageWidth: PAGE_WIDTH, marginX: PAGE_MARGIN, tenantName, tenantLogo, title: `${procedure.number} — ${procedure.title}` };
-
-    // Suit la page courante pour construire le sommaire (voir plus bas) — incrémenté au même
-    // rythme que les pages réellement ajoutées, y compris la page réservée au sommaire lui-même.
+    const drawPageHeader = () => drawProcedureControlHeader(doc, { procedure, version });
     let currentPageNumber = 1;
     doc.on('pageAdded', () => {
       currentPageNumber += 1;
-      drawLetterheadHeader(doc, headerArgs);
+      if (currentPageNumber >= 3) drawPageHeader();
     });
 
-    drawLetterheadHeader(doc, headerArgs);
+    const manualSommaire = (version.content?.sections || []).find((section) => section.key === 'sommaire');
+    const sections = (version.content?.sections || []).filter((section) => section.key !== 'sommaire');
+    const documentsAssocies = version.content?.documents_associes || [];
+    const tocEntries = sections.flatMap((section, index) => [
+      { number: index + 1, label: section.label, sectionIndex: index, nested: false },
+      ...sectionSubheadings(section).map((label) => ({ label, sectionIndex: index, nested: true })),
+    ]);
+    if (documentsAssocies.length) {
+      tocEntries.push({
+        number: sections.length + 1,
+        label: 'Documents associés',
+        sectionIndex: sections.length,
+        nested: false,
+      });
+    }
+    const historyIndex = sections.length + (documentsAssocies.length ? 1 : 0);
+    tocEntries.push({
+      number: historyIndex + 1,
+      label: 'Historique des versions',
+      sectionIndex: historyIndex,
+      nested: false,
+    });
+
+    drawPageHeader();
+    if (tenantLogo) {
+      try {
+        const coverLogoWidth = 220;
+        const coverLogoHeight = 110;
+        doc.image(tenantLogo, (PAGE_WIDTH - coverLogoWidth) / 2, (doc.page.height - coverLogoHeight) / 2, {
+          fit: [coverLogoWidth, coverLogoHeight],
+          align: 'center',
+          valign: 'center',
+        });
+      } catch {
+        // A logo illisible n'empêche pas l'export de la procédure.
+      }
+    } else {
+      doc
+        .font('Body-Bold')
+        .fontSize(20)
+        .fillColor(INK)
+        .text(tenantName || 'PROCÉDURE QUALITÉ', PAGE_MARGIN, doc.page.height / 2 - 28, { width: CONTENT_WIDTH, align: 'center' });
+      doc.font('Body').fontSize(14).text(procedure.title, PAGE_MARGIN, doc.page.height / 2 + 8, { width: CONTENT_WIDTH, align: 'center' });
+    }
+
+    // Page 2 reprend le bandeau gris et le sommaire tabulaire du document témoin.
+    doc.addPage();
+    const sommairePageIndex = 1;
+    drawCompanyBand(doc, tenantName);
+    const sommaireStartY = doc.y;
+    doc.addPage();
 
     if (visualOptions.band) {
       const bandTop = doc.y + 4;
       doc.rect(PAGE_MARGIN, bandTop, CONTENT_WIDTH, 4).fill(accentColor);
       doc.y = bandTop + 12;
     }
-
-    doc.moveDown(0.8);
-    doc.font('Body-Bold').fontSize(18).fillColor(accentColor).text('PROCÉDURE', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH, align: 'center' });
-    doc.font('Body-Bold').fontSize(13).fillColor(INK).text(`${procedure.number} — ${procedure.title}`, PAGE_MARGIN, doc.y + 5, { width: CONTENT_WIDTH, align: 'center' });
-    doc.font('Body').fontSize(9).fillColor(MUTED).text(`Entreprise : ${tenantName || '—'}`, PAGE_MARGIN, doc.y + 5, { width: CONTENT_WIDTH, align: 'center' });
-    doc.moveDown(1);
-
-    doc
-      .fontSize(9)
-      .fillColor(MUTED)
-      .text(
-        `Processus : ${procedure.process || 'non précisé'}    —    Statut : ${
-          PROCEDURE_STATUS_LABELS[procedure.status] || procedure.status
-        }    —    Version imprimée : v${version.version}${version.id === procedure.current_version_id ? ' (en vigueur)' : ''}`,
-        PAGE_MARGIN,
-        doc.y,
-        { width: CONTENT_WIDTH }
-      );
-    doc.text(`Prochaine révision : ${formatDate(procedure.next_review_date)}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-    doc.moveDown(0.8);
 
     if (procedure.status === 'obsolete') {
       drawImportantBox(doc, {
@@ -301,48 +500,33 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
         text: `La date de prochaine révision (${formatDate(procedure.next_review_date)}) est dépassée.`,
       });
     }
-
-    // Objet/domaine d'application/responsabilités ne sont plus des champs séparés (voir le plan
-    // de refonte de la mise en page des procédures) : ce sont des sections ordinaires en tête de
-    // "sections", numérotées et sommairées exactement comme les autres.
-    const manualSommaire = (version.content?.sections || []).find((section) => section.key === 'sommaire');
-    const sections = (version.content?.sections || []).filter((section) => section.key !== 'sommaire');
-    const documentsAssocies = version.content?.documents_associes || [];
-
-    // Le sommaire est un bloc de contenu comme un autre (voir le plan de refonte) : une section
-    // portant la clé "sommaire" — ajoutée par défaut par l'éditeur ou réécrite librement à la
-    // main — est déjà rendue par la boucle sections.forEach ci-dessous, sans aucun traitement
-    // spécial (jamais régénérée/écrasée automatiquement). Le mécanisme ci-dessous (page réservée
-    // + numéros de page par entrée) ne sert donc QUE de repli pour le contenu qui n'a encore
-    // aucune section "sommaire" explicite (contenu migré, ou tenant qui n'en a jamais ajouté) —
-    // jamais les deux en même temps, sous peine de doublon. Le seuil de 3 reprend celui de
-    // l'écran (ProcedureContentView.jsx) : sous 3 entrées, naviguer n'apporte rien face à un
-    // document déjà court.
-    const tocLabels = [...sections.map((s) => s.label), documentsAssocies.length > 0 && 'Documents associés', 'Historique des versions'].filter(Boolean);
-
-    let sommairePageIndex = null;
-    let sommaireStartY = null;
-    const tocEntries = [];
-    if (tocLabels.length >= 3) {
-      doc.addPage(); // page réservée, remplie plus bas une fois les numéros de page connus
-      sommairePageIndex = currentPageNumber - 1; // pages sont indexées à partir de 0, currentPageNumber à partir de 1
-      sommaireStartY = doc.y;
-      doc.addPage(); // le contenu réel reprend sur une page fraîche, jamais sur la page réservée
-    }
-
-    doc.moveDown(0.5);
-    if (manualSommaire?.blocks?.length) {
-      const label = tocLabels.length >= 3 ? 'Notes du sommaire' : manualSommaire.label || 'Sommaire';
-      drawBlocks(doc, null, label, manualSommaire.blocks, accentColor, visualOptions);
+    if (version.status !== 'approved') {
+      const rejected = version.status === 'rejected';
+      drawImportantBox(doc, {
+        color: rejected ? RED : AMBER,
+        background: rejected ? RED_LIGHT : AMBER_LIGHT,
+        label: rejected ? 'IMPORTANT — Version rejetée' : 'IMPORTANT — Version non approuvée',
+        text:
+          version.status === 'pending'
+            ? 'Cette version est en attente de validation et ne doit pas être utilisée comme version en vigueur.'
+            : rejected
+              ? 'Cette version a été rejetée et ne doit pas être utilisée comme version en vigueur.'
+              : 'Cette version est un brouillon et ne doit pas être utilisée comme version en vigueur.',
+      });
     }
 
     sections.forEach((section, index) => {
-      tocEntries.push({ label: section.label, page: currentPageNumber });
-      drawBlocks(doc, index + 1, section.label, section.blocks, accentColor, visualOptions);
+      const tocEntry = tocEntries.find((entry) => !entry.nested && entry.sectionIndex === index);
+      tocEntry.startPage = currentPageNumber;
+      drawBlocks(doc, index + 1, section.label, section.blocks, accentColor, visualOptions, (page) => {
+        tocEntry.startPage = page;
+      });
+      tocEntry.endPage = currentPageNumber;
     });
 
     if (documentsAssocies.length > 0) {
-      tocEntries.push({ label: 'Documents associés', page: currentPageNumber });
+      const tocEntry = tocEntries.find((entry) => !entry.nested && entry.sectionIndex === sections.length);
+      tocEntry.startPage = currentPageNumber;
       doc
         .font('Body-Bold')
         .fontSize(12)
@@ -355,54 +539,44 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
         doc.moveDown(0.15);
       });
       doc.moveDown(0.5);
+      tocEntry.endPage = currentPageNumber;
     }
 
-    // Historique des versions en bas de document — traçabilité qualité, même esprit que le
-    // tableau "Historique des versions" déjà affiché sur ProcedureDetail.jsx. Sur sa propre page,
-    // même logique que le corps de la procédure ci-dessus : un tableau de traçabilité mélangé au
-    // texte qui précède se perdait visuellement plutôt que de se lire comme une annexe à part.
-    doc.addPage();
-    tocEntries.push({ label: 'Historique des versions', page: currentPageNumber });
-    doc.font('Body-Bold').fontSize(13).fillColor(accentColor).text('Historique des versions', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
+    // Historique des versions en annexe après le contenu : il peut poursuivre sur la dernière
+    // page plutôt que de créer une page presque vide pour quelques lignes.
+    const historyEntry = tocEntries.find((entry) => !entry.nested && entry.sectionIndex === historyIndex);
+    historyEntry.startPage = currentPageNumber;
+    doc
+      .font('Body-Bold')
+      .fontSize(13)
+      .fillColor(accentColor)
+      .text(`${historyIndex + 1}. Historique des versions`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
     doc.font('Body');
     doc.moveDown(0.5);
 
-    (versions || []).forEach((v) => {
-      doc
-        .font('Body-Bold')
-        .fontSize(9.5)
-        .fillColor(INK)
-        .text(`v${v.version} — ${VERSION_STATUS_LABELS[v.status] || v.status}`, PAGE_MARGIN, doc.y, {
-          width: CONTENT_WIDTH,
-          continued: false,
-        });
-      doc.font('Body');
-      const authorLine = `Rédigée par ${v.author?.full_name || 'auteur inconnu'} le ${formatDate(v.created_at)}`;
-      const validatorLine = v.validator?.full_name
-        ? ` — ${v.status === 'rejected' ? 'Rejetée' : 'Validée'} par ${v.validator.full_name} le ${formatDate(v.validated_at)}`
-        : '';
-      doc.fontSize(8.5).fillColor(MUTED).text(authorLine + validatorLine, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.moveDown(0.5);
-    });
+    drawTableBlock(
+      doc,
+      ['Version', 'Statut', 'Rédigée par', 'Date', 'Validée par'],
+      (versions || []).map((v) => [
+        `v${v.version}`,
+        VERSION_STATUS_LABELS[v.status] || v.status,
+        v.author?.full_name || 'auteur inconnu',
+        formatDate(v.created_at),
+        v.validator?.full_name || '—',
+      ]),
+      accentColor,
+      [0.2, 0.13, 0.36, 0.15, 0.16]
+    );
+    historyEntry.endPage = currentPageNumber;
 
     // Remplit la page réservée plus haut, maintenant que le numéro de page de chaque entrée est
     // connu — même technique que le pied de page ci-dessous (bufferPages + switchToPage vers une
     // page déjà créée). Sans risque de débordement en pratique (une procédure a rarement assez de
     // sections pour remplir une A4 rien qu'avec leurs libellés) ; si jamais c'était le cas,
     // pdfkit ajouterait la suite à la toute fin du document plutôt que juste après cette page.
-    if (sommairePageIndex !== null) {
-      doc.switchToPage(sommairePageIndex);
-      doc.y = sommaireStartY;
-      doc.font('Body-Bold').fontSize(14).fillColor(accentColor).text('Sommaire', PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
-      doc.font('Body');
-      doc.moveDown(0.8);
-      tocEntries.forEach((entry) => {
-        const rowY = doc.y;
-        doc.fontSize(10).fillColor(INK).text(entry.label, PAGE_MARGIN, rowY, { width: CONTENT_WIDTH - 50 });
-        doc.fontSize(10).fillColor(MUTED).text(String(entry.page), PAGE_MARGIN, rowY, { width: CONTENT_WIDTH, align: 'right' });
-        doc.moveDown(0.5);
-      });
-    }
+    doc.switchToPage(sommairePageIndex);
+    doc.y = sommaireStartY;
+    drawTableOfContents(doc, tocEntries, manualSommaire, accentColor, visualOptions);
 
     // Pied de page numéroté — même construction que listReportPdf.js/qqoqccpPdf.js.
     const range = doc.bufferedPageRange();
@@ -410,7 +584,24 @@ export function buildProcedurePdf({ tenantName, tenantLogo, procedure, version, 
       doc.switchToPage(i);
       const bottomMargin = doc.page.margins.bottom;
       doc.page.margins.bottom = 0;
-      doc.fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} / ${range.count}`, PAGE_MARGIN, doc.page.height - 30, {
+      const contactLine = [tenantName, tenantAddress, tenantPhone ? `Tél. : ${tenantPhone}` : null].filter(Boolean).join(' — ');
+      if (contactLine) {
+        doc.font('Body').fontSize(7).fillColor(MUTED).text(contactLine, PAGE_MARGIN, doc.page.height - 69, {
+          width: CONTENT_WIDTH,
+          align: 'center',
+          lineBreak: false,
+          ellipsis: true,
+        });
+      }
+      if (tenantLegalMentions) {
+        doc.font('Body').fontSize(6.5).fillColor(MUTED).text(tenantLegalMentions, PAGE_MARGIN, doc.page.height - 57, {
+          width: CONTENT_WIDTH,
+          align: 'center',
+          lineBreak: false,
+          ellipsis: true,
+        });
+      }
+      doc.font('Body').fontSize(7).fillColor(MUTED).text(`Page ${i - range.start + 1} sur ${range.count}`, PAGE_MARGIN, doc.page.height - 34, {
         width: CONTENT_WIDTH,
         align: 'center',
       });

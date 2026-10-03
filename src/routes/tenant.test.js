@@ -12,6 +12,44 @@ afterEach(async () => {
   }
 });
 
+describe('GET/PATCH /api/tenant — identité des documents', () => {
+  it('permet à un admin de configurer les coordonnées utilisées dans les exports', async () => {
+    tenant = await createTenant();
+    const updated = await request(app)
+      .patch('/api/tenant')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({
+        company_address: '7 rue Gustave Eiffel, 97419 La Possession',
+        company_phone: '0262 22 17 30',
+        company_legal_mentions: 'SAS au capital de 150 000 € — SIRET 521 120 717 00017',
+      });
+
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject({
+      company_address: '7 rue Gustave Eiffel, 97419 La Possession',
+      company_phone: '0262 22 17 30',
+      company_legal_mentions: 'SAS au capital de 150 000 € — SIRET 521 120 717 00017',
+    });
+
+    const fetched = await request(app).get('/api/tenant').set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.body).toMatchObject({
+      company_address: '7 rue Gustave Eiffel, 97419 La Possession',
+      company_phone: '0262 22 17 30',
+      company_legal_mentions: 'SAS au capital de 150 000 € — SIRET 521 120 717 00017',
+    });
+  });
+
+  it('refuse les mentions légales trop longues', async () => {
+    tenant = await createTenant();
+    const res = await request(app)
+      .patch('/api/tenant')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ company_legal_mentions: 'x'.repeat(301) });
+    expect(res.status).toBe(400);
+  });
+});
+
 // Durcissement : le logo était accepté quel que soit son type MIME et stocké tel quel comme
 // content-type public — un SVG (peut embarquer du <script>) ou un HTML uploadé comme "logo"
 // s'exécuterait dans le navigateur au lieu de s'afficher comme une image. Voir ALLOWED_LOGO_TYPES

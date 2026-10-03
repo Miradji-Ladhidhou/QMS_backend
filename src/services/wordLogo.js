@@ -10,13 +10,14 @@ export const LOGO_MAX_HEIGHT_PT = 40;
 // hauteur fixe, sans jamais déformer l'image (docx#ImageRun exige des dimensions explicites,
 // il ne les déduit pas seul du buffer). Partagé par tous les exports Word (procedureWord.js,
 // listReportWord.js) : le logo est placé dans l'en-tête de section, donc répété sur chaque page.
-export function logoImageRun(tenantLogo) {
+export function logoImageRun(tenantLogo, { maxWidth = Number.POSITIVE_INFINITY, maxHeight = LOGO_MAX_HEIGHT_PT } = {}) {
   if (!tenantLogo) return null;
   try {
     const { width, height, type } = imageSize(tenantLogo);
     if (!width || !height) return null;
-    const heightPt = LOGO_MAX_HEIGHT_PT;
-    const widthPt = Math.round((width / height) * heightPt);
+    const scale = Math.min(maxWidth / width, maxHeight / height);
+    const widthPt = Math.max(1, Math.round(width * scale));
+    const heightPt = Math.max(1, Math.round(height * scale));
     const docxType = type === 'jpg' ? 'jpeg' : type; // ImageRun attend 'jpeg', image-size renvoie 'jpg'.
     return new ImageRun({ type: docxType, data: tenantLogo, transformation: { width: widthPt, height: heightPt } });
   } catch {

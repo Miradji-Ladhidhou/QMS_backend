@@ -85,6 +85,15 @@ function planSection(plan, monitoringSummaryByCcpId) {
     ['Produit', plan.product_description],
     ['Service', plan.service?.name],
     ['Équipe HACCP', plan.team],
+    ['Programmes prérequis', plan.prerequisites],
+    ['Usage prévu', plan.intended_use],
+    ['Consommateurs visés', plan.consumer_groups],
+    ['Caractéristiques produit', plan.product_characteristics],
+    ['Diagramme — référence', plan.flow_diagram_reference],
+    ['Diagramme — vérification et preuves', plan.flow_diagram_verification],
+    ['Justification de l’absence de CCP', plan.no_ccp_justification],
+    ['Revue de validation — preuves de capacité des mesures de maîtrise', plan.validation_review_notes],
+    ['Revue de vérification — preuves de bonne application', plan.verification_review_notes],
     ['Prochaine revue', formatDate(plan.review_date)],
     ['Dernière revue', plan.last_reviewed_at ? formatDate(plan.last_reviewed_at) : 'Jamais revu'],
   ];
@@ -99,6 +108,8 @@ function planSection(plan, monitoringSummaryByCcpId) {
         description: hazard.description,
         score: `P${hazard.likelihood} × G${hazard.severity} = ${hazard.risk_score}`,
         significant: hazard.is_significant ? 'Oui' : 'Non',
+        control_type: hazard.control_type || 'undetermined',
+        decision_justification: hazard.decision_justification || '',
         existing_controls: hazard.existing_controls,
         _highlight: hazard.is_significant,
       });
@@ -106,14 +117,21 @@ function planSection(plan, monitoringSummaryByCcpId) {
         const limits = numericLimitsOf(hazard.ccp);
         ccpRows.push({
           ccp_number: hazard.ccp.ccp_number,
+          status: { draft: 'Brouillon', approved: 'Approuvé', legacy: 'Historique (legacy)' }[hazard.ccp.status] || hazard.ccp.status,
           hazard: hazard.description,
-          critical_limits: `${hazard.ccp.critical_limits}${limits ? ` [${describeLimits(limits)}]` : ''}`,
-          monitoring: `${hazard.ccp.monitoring_procedure}${hazard.ccp.monitoring_frequency ? ` (${hazard.ccp.monitoring_frequency})` : ''}${
+          critical_limits: `${hazard.ccp.critical_limits || 'À définir'}${limits ? ` [${describeLimits(limits)}]` : ''}`,
+          monitoring: `${hazard.ccp.monitoring_procedure || 'À définir'}${hazard.ccp.monitoring_frequency ? ` (${hazard.ccp.monitoring_frequency})` : ''}${
             hazard.ccp.monitoring_responsible_user ? ` — ${hazard.ccp.monitoring_responsible_user.full_name}` : ''
           }`,
           corrective_action: hazard.ccp.corrective_action_procedure,
           verification: `${hazard.ccp.verification_procedure || ''}${hazard.ccp.verification_frequency ? ` (${hazard.ccp.verification_frequency})` : ''}`,
           record_keeping: hazard.ccp.record_keeping_procedure,
+          validation: [
+            hazard.ccp.validation_source,
+            hazard.ccp.validation_evidence,
+            hazard.ccp.approved_by_user?.full_name ? `Approuvé par ${hazard.ccp.approved_by_user.full_name}` : '',
+            hazard.ccp.approved_at ? `Approuvé le ${formatDate(hazard.ccp.approved_at)}` : '',
+          ].filter(Boolean).join('\n'),
           _ccpId: hazard.ccp.id,
         });
       }
@@ -145,12 +163,14 @@ function planSection(plan, monitoringSummaryByCcpId) {
     heading('Analyse des dangers'),
     ...table(
       [
-        { key: 'step', label: 'Étape', width: 13 },
-        { key: 'hazard_type', label: 'Type', width: 9 },
-        { key: 'description', label: 'Danger', width: 26 },
-        { key: 'score', label: 'P × G', width: 12 },
-        { key: 'significant', label: 'Significatif', width: 9 },
-        { key: 'existing_controls', label: 'Maîtrise existante', width: 31 },
+        { key: 'step', label: 'Étape', width: 10 },
+        { key: 'hazard_type', label: 'Type', width: 7 },
+        { key: 'description', label: 'Danger', width: 18 },
+        { key: 'score', label: 'P × G', width: 8 },
+        { key: 'significant', label: 'Significatif', width: 8 },
+        { key: 'control_type', label: 'Décision de maîtrise', width: 11 },
+        { key: 'decision_justification', label: 'Justification', width: 19 },
+        { key: 'existing_controls', label: 'Maîtrise existante', width: 19 },
       ],
       hazardRows,
       'Aucun danger identifié pour l’instant.'
@@ -158,13 +178,15 @@ function planSection(plan, monitoringSummaryByCcpId) {
     heading('Points critiques (CCP)'),
     ...table(
       [
-        { key: 'ccp_number', label: 'CCP', width: 6 },
-        { key: 'hazard', label: 'Danger associé', width: 16 },
-        { key: 'critical_limits', label: 'Limites critiques', width: 17 },
-        { key: 'monitoring', label: 'Surveillance', width: 22 },
-        { key: 'corrective_action', label: 'Actions correctives', width: 17 },
-        { key: 'verification', label: 'Vérification', width: 12 },
-        { key: 'record_keeping', label: 'Registres', width: 10 },
+        { key: 'ccp_number', label: 'CCP', width: 4 },
+        { key: 'status', label: 'Statut', width: 7 },
+        { key: 'hazard', label: 'Danger associé', width: 12 },
+        { key: 'critical_limits', label: 'Limites critiques', width: 14 },
+        { key: 'monitoring', label: 'Surveillance', width: 18 },
+        { key: 'corrective_action', label: 'Actions correctives', width: 12 },
+        { key: 'verification', label: 'Vérification', width: 10 },
+        { key: 'record_keeping', label: 'Enregistrements', width: 10 },
+        { key: 'validation', label: 'Validation / preuves', width: 13 },
       ],
       ccpRows,
       'Aucun point critique défini pour l’instant.'

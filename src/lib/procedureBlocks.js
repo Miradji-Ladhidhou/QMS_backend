@@ -57,7 +57,7 @@ function blockToPlainText(block) {
     case 'liste_puces':
       return (block.items || []).map((item) => `- ${item}`).join('\n');
     case 'tableau': {
-      const header = (block.headers || []).join(' | ');
+      const header = block.hasHeader === false ? '' : (block.headers || []).join(' | ');
       const rows = (block.rows || []).map((row) => row.join(' | '));
       return [header, ...rows].filter(Boolean).join('\n');
     }

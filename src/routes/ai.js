@@ -70,6 +70,7 @@ router.post(
 );
 
 const HAZARD_TYPES = ['biological', 'chemical', 'physical', 'allergen'];
+const HAZARD_CONTROL_TYPES = ['undetermined', 'prp', 'ccp', 'process_change'];
 
 // POST /api/ai/haccp-surveillance-suggestion — analyse les dangers existants, applique l'arbre
 // Codex et propose une surveillance de routine ou un CCP prérempli. Rien n'est enregistré par
@@ -115,6 +116,7 @@ router.post(
       const suggestionById = new Map();
       const textFields = [
         'justification',
+        'decision_justification',
         'routine_monitoring',
         'routine_frequency',
         'critical_limits',
@@ -130,18 +132,43 @@ router.post(
           !knownHazardIds.has(item.hazard_id) ||
           suggestionById.has(item.hazard_id) ||
           typeof item.is_significant !== 'boolean' ||
+          !HAZARD_CONTROL_TYPES.includes(item.control_type) ||
+          typeof item.decision_justification !== 'string' ||
+          item.decision_justification.trim().length < 8 ||
           textFields.some((field) => typeof item[field] !== 'string') ||
-          (item.is_significant && ['critical_limits', 'monitoring_procedure', 'monitoring_frequency'].some((field) => !item[field].trim())) ||
-          (!item.is_significant && (!item.routine_monitoring.trim() || !item.routine_frequency.trim()))
+          (item.control_type !== 'ccp' && (!item.routine_monitoring.trim() || !item.routine_frequency.trim()))
         ) {
           continue;
         }
-        suggestionById.set(item.hazard_id, item);
+        suggestionById.set(item.hazard_id, { ...item, justification: item.justification || item.decision_justification });
       }
       if (typeof suggestion.summary !== 'string' || suggestionById.size !== knownHazardIds.size) {
         return res.status(503).json({ error: "L'analyse IA n'a pas fourni une proposition exploitable pour chaque danger. Veuillez réessayer." });
       }
-      res.json({ ...suggestion, suggestions: [...suggestionById.values()] });
+      const validatedSuggestions = [...suggestionById.values()];
+      const proposals = validatedSuggestions
+        .filter((item) => item.control_type === 'ccp')
+        .map((item) => ({
+          hazard_id: item.hazard_id,
+          justification: item.decision_justification,
+          ...Object.fromEntries([
+            'ccp_number',
+            'critical_limits',
+            'monitoring_procedure',
+            'monitoring_frequency',
+            'monitoring_responsible',
+            'corrective_action_procedure',
+            'verification_procedure',
+            'verification_frequency',
+            'record_keeping_procedure',
+            'limit_min',
+            'limit_max',
+            'limit_unit',
+            'monitoring_interval_hours',
+          ].filter((field) => field in item).map((field) => [field, item[field]])),
+          ai_generated: true,
+        }));
+      res.json({ ...suggestion, suggestions: validatedSuggestions, proposals });
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer des propositions de surveillance : ${err.message}` });
     }
@@ -150,13 +177,8 @@ router.post(
 
 // POST /api/ai/haccp-significance-suggestion — complète la couverture IA du module HACCP aux
 // côtés de POST /haccp/plans/:planId/steps/:stepId/hazard-suggestion (identification des
-// dangers, AiHazardSuggestion.jsx) : ici, à partir d'un danger déjà décrit dans le formulaire,
-// on suggère s'il est significatif (nécessite un CCP) et pourquoi — l'arbre de décision Codex
-// Alimentarius appliqué en une fois, voir groq.js. laterSteps (optionnel, [{ name,
-// description }], les étapes réellement postérieures dans le plan) n'est pas validé ici : champ
-// facultatif, simplement transmis tel quel à generateHaccpSignificanceSuggestion pour que la
-// question 4 de l'arbre de décision soit fondée sur des données réelles plutôt que supposée.
-// Rien n'est persisté ici non plus.
+// dangers, AiHazardSuggestion.jsx) : ici, à partir d'un danger déjà décrit, on suggère
+// indépendamment la significativité du risque et la décision de maîtrise, sans rien enregistrer.
 router.post(
   '/haccp-significance-suggestion',
   [
@@ -173,15 +195,29 @@ router.post(
 
     try {
       const suggestion = await generateHaccpSignificanceSuggestion(req.body);
-      res.json(suggestion);
+      if (
+        !suggestion ||
+        typeof suggestion.is_significant !== 'boolean' ||
+        !HAZARD_CONTROL_TYPES.includes(suggestion.control_type) ||
+        typeof suggestion.justification !== 'string' ||
+        suggestion.justification.trim().length < 8 ||
+        typeof suggestion.decision_justification !== 'string' ||
+        suggestion.decision_justification.trim().length < 8
+      ) throw new Error('La réponse IA ne contient pas une analyse du risque et une décision de maîtrise valides.');
+      res.json({
+        is_significant: suggestion.is_significant,
+        control_type: suggestion.control_type,
+        justification: suggestion.justification,
+        decision_justification: suggestion.decision_justification,
+      });
     } catch (err) {
       res.status(503).json({ error: `Impossible de générer une suggestion IA : ${err.message}` });
     }
   }
 );
 
-// POST /api/ai/haccp-ccp-suggestion — suite logique de la route précédente : une fois un danger
-// jugé significatif, suggère les limites critiques et les procédures de surveillance/action
+// POST /api/ai/haccp-ccp-suggestion — après une décision de maîtrise CCP explicite, suggère
+// les limites critiques et les procédures de surveillance/action
 // corrective/vérification/enregistrement de son point critique (CCP). Rien n'est persisté ici
 // non plus — voir groq.js et AiCcpDefinitionSuggestion.jsx.
 router.post(

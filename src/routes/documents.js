@@ -316,7 +316,10 @@ async function uploadDocumentFile({ storage, file, categoryId, supabasePath }) {
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
-    .select(`${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color, is_restricted)`)
+    .select(
+      `${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color, is_restricted), ` +
+        'source_procedure:procedures!procedures_source_document_id_fkey(id, number, title, status)'
+    )
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 

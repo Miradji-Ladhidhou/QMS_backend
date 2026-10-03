@@ -29,6 +29,7 @@
     "googleapis": "^176.0.0",
     "groq-sdk": "^1.5.0",
     "helmet": "^7.1.0",
+    "htmlparser2": "^8.0.2",
     "image-size": "^1.2.1",
     "jszip": "^3.10.2",
     "mammoth": "^1.8.0",

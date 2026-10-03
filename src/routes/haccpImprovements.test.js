@@ -33,18 +33,40 @@ const isoDate = (days) => {
 };
 
 // Chaîne complète : plan -> étape -> danger significatif -> CCP (limites 0 à 4 °C, relevé toutes les 12 h).
-async function buildPlan(tenant, { ccp = {}, plan = {}, hazard = {} } = {}) {
+async function buildPlan(tenant, { ccp = {}, plan = {}, hazard = {}, withCcp = true } = {}) {
   const token = tenant.admin.token;
   const post = (url, body) => request(app).post(url).set(auth(token)).send(body);
-  const planRes = await post('/api/haccp/plans', { title: 'Chaîne du froid — produits tranchés', ...plan });
+  const planRes = await post('/api/haccp/plans', {
+    title: 'Chaîne du froid — produits tranchés',
+    prerequisites: 'Nettoyage, hygiène du personnel et maîtrise de l’eau documentés.',
+    intended_use: 'Produit consommé après préparation, sans cuisson ultérieure.',
+    consumer_groups: 'Consommateurs adultes, incluant les publics vulnérables.',
+    product_characteristics: 'Produit frais prêt à consommer, conservé entre 0 et 4 °C.',
+    flow_diagram_reference: 'Diagramme FAB-01, version 3.',
+    flow_diagram_verification: 'Parcours sur site réalisé par l’équipe HACCP le 2026-06-01.',
+    validation_review_notes: 'Capacité des mesures de maîtrise revue à partir du rapport VAL-2026.',
+    verification_review_notes: 'Bonne application revue à partir des relevés et contrôles VER-2026.',
+    ...plan,
+  });
   const step = await post(`/api/haccp/plans/${planRes.body.id}/steps`, { name: 'Stockage en chambre froide' });
   const hazardRes = await post(`/api/haccp/steps/${step.body.id}/hazards`, { hazard_type: 'biological', description: 'Prolifération de Listeria', likelihood: 3, severity: 5, ...hazard });
-  await request(app).patch(`/api/haccp/hazards/${hazardRes.body.id}`).set(auth(token)).send({ is_significant: true, justification: 'Danger majeur.' }).expect(200);
+  await request(app).patch(`/api/haccp/hazards/${hazardRes.body.id}`).set(auth(token)).send({
+    is_significant: true,
+    justification: 'Danger majeur.',
+    control_type: 'ccp',
+    decision_justification: 'Aucune étape ultérieure ne maîtrise ce danger; le contrôle est critique ici.',
+  }).expect(200);
+  if (!withCcp) return { plan: planRes.body, step: step.body, hazard: hazardRes.body, ccp: null };
   const ccpRes = await post(`/api/haccp/hazards/${hazardRes.body.id}/ccps`, {
     ccp_number: 'CCP1',
-    critical_limits: '≤ 4 °C',
+    critical_limits: 'Entre 0 et 4 °C',
     monitoring_procedure: 'Relevé de la sonde',
     monitoring_frequency: '2 fois par jour',
+    monitoring_responsible: tenant.admin.id,
+    corrective_action_procedure: 'Isoler le lot, arrêter le procédé et régler la chambre froide.',
+    verification_procedure: 'Vérifier les relevés et étalonner la sonde.',
+    verification_frequency: 'Chaque semaine',
+    record_keeping_procedure: 'Enregistrer chaque mesure, lot et décision pendant la durée définie.',
     limit_min: 0,
     limit_max: 4,
     limit_unit: '°C',
@@ -52,12 +74,210 @@ async function buildPlan(tenant, { ccp = {}, plan = {}, hazard = {} } = {}) {
     ...ccp,
   });
   expect(ccpRes.status).toBe(201);
-  return { plan: planRes.body, step: step.body, hazard: hazardRes.body, ccp: ccpRes.body };
+  const approved = await request(app).post(`/api/haccp/ccps/${ccpRes.body.id}/approve`).set(auth(token)).send({
+    validation_source: 'Étude de conservation produit et spécification documentée.',
+    validation_evidence: 'Rapport VAL-CCP-2026-04 : essais enregistrés sur trois lots représentatifs.',
+  });
+  expect(approved.status).toBe(200);
+  return { plan: planRes.body, step: step.body, hazard: hazardRes.body, ccp: approved.body };
 }
 
 const logReading = (tenant, ccpId, body, token = tenant.admin.token) => request(app).post(`/api/haccp/ccps/${ccpId}/monitoring-logs`).set(auth(token)).send(body);
+const driftDetails = {
+  lot_reference: 'LOT-2026-04',
+  product_disposition: 'Lot isolé en chambre froide dédiée.',
+  disposition_decision: 'Responsable qualité autorise destruction du lot.',
+  return_to_control: 'Chambre froide réglée et température stabilisée.',
+  effectiveness_verification: 'Deux relevés consécutifs conformes après réglage.',
+};
 const activate = (tenant, planId) => request(app).patch(`/api/haccp/plans/${planId}`).set(auth(tenant.admin.token)).send({ status: 'active' });
 const getPlan = async (tenant, planId) => (await request(app).get(`/api/haccp/plans/${planId}`).set(auth(tenant.admin.token))).body;
+
+describe('Validation des CCP et exploitation des brouillons', () => {
+  it('un brouillon n’est pas surveillable, refuse l’approbation incomplète et repasse en brouillon après édition', async () => {
+    const tenant = await newTenant();
+    const { plan, hazard } = await buildPlan(tenant, { withCcp: false });
+    const created = await request(app)
+      .post(`/api/haccp/hazards/${hazard.id}/ccps`)
+      .set(auth(tenant.admin.token))
+      .send({ critical_limits: 'Entre 0 et 4 °C' });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ status: 'draft', ai_generated: false, critical_limits: 'Entre 0 et 4 °C' });
+    const draftDetail = await getPlan(tenant, plan.id);
+    expect(draftDetail.steps[0].hazards[0].ccp).toMatchObject({ id: created.body.id, status: 'draft', limits: null, limits_text: '' });
+    expect(draftDetail.steps[0].hazards[0].ccp.monitoring_state).toBeUndefined();
+
+    const blockedLog = await logReading(tenant, created.body.id, { numeric_value: 3 });
+    expect(blockedLog.status).toBe(409);
+    await admin.from('haccp_plans').update({ status: 'active' }).eq('id', plan.id);
+    expect(await getOverdueReadingAlerts(tenant.tenantId)).toEqual([]);
+    const due = await request(app).get('/api/haccp/monitoring-due').set(auth(tenant.admin.token));
+    expect(due.body.items.some((item) => item.id === created.body.id)).toBe(false);
+    const missingValidation = await request(app)
+      .post(`/api/haccp/ccps/${created.body.id}/approve`)
+      .set(auth(tenant.admin.token))
+      .send({ validation_source: 'Source validée', validation_evidence: 'Preuves.' });
+    expect(missingValidation.status).toBe(400);
+
+    const source = 'Étude technique documentée et spécification fournisseur.';
+    const evidence = 'Rapport VAL-CCP-2026-04 : essai enregistré sur trois lots représentatifs.';
+    const completed = await request(app)
+      .patch(`/api/haccp/ccps/${created.body.id}`)
+      .set(auth(tenant.admin.token))
+      .send({
+        critical_limits: 'Entre 0 et 4 °C',
+        limit_min: 0,
+        limit_max: 4,
+        limit_unit: '°C',
+        monitoring_procedure: 'Relever et enregistrer la température de chaque lot avec une sonde étalonnée.',
+        monitoring_frequency: 'À chaque lot',
+        monitoring_responsible: tenant.admin.id,
+        corrective_action_procedure: 'Isoler le produit et rétablir les conditions de conservation.',
+        verification_procedure: 'Vérifier les relevés et l’étalonnage de la sonde.',
+        verification_frequency: 'Chaque semaine',
+        record_keeping_procedure: 'Conserver les relevés, lots et décisions de disposition.',
+        validation_source: source,
+        validation_evidence: evidence,
+      });
+    expect(completed.status).toBe(200);
+
+    const approved = await request(app)
+      .post(`/api/haccp/ccps/${created.body.id}/approve`)
+      .set(auth(tenant.admin.token))
+      .send({});
+    expect(approved.status).toBe(200);
+    expect(approved.body).toMatchObject({ status: 'approved', validation_source: source, validation_evidence: evidence, approved_by: tenant.admin.id });
+    expect(approved.body.approved_at).toBeTruthy();
+    expect((await getPlan(tenant, plan.id)).steps[0].hazards[0].ccp).toMatchObject({
+      limits: { min: 0, max: 4, unit: '°C' }, limits_text: '≥ 0 °C et ≤ 4 °C',
+    });
+
+    const edited = await request(app)
+      .patch(`/api/haccp/ccps/${created.body.id}`)
+      .set(auth(tenant.admin.token))
+      .send({ critical_limits: 'Entre 0 et 3 °C' });
+    expect(edited.status).toBe(200);
+    expect(edited.body).toMatchObject({ status: 'draft', reapproval_required: true, validation_source: null, approved_at: null });
+    expect((await logReading(tenant, created.body.id, { numeric_value: 2 })).status).toBe(409);
+    const inconsistent = await request(app)
+      .post(`/api/haccp/ccps/${created.body.id}/approve`)
+      .set(auth(tenant.admin.token))
+      .send({ validation_source: source, validation_evidence: evidence });
+    expect(inconsistent.status).toBe(400);
+    expect(inconsistent.body.details.some((message) => message.includes('cohérentes'))).toBe(true);
+  });
+
+  it('préserve les CCP legacy comme opérationnels sans inventer d’approbation ni exiger les champs de dérive récents', async () => {
+    const tenant = await newTenant();
+    const { plan, ccp } = await buildPlan(tenant);
+    await admin.from('haccp_ccps').update({ status: 'legacy', validation_source: null, validation_evidence: null, approved_by: null, approved_at: null }).eq('id', ccp.id);
+    await activate(tenant, plan.id);
+
+    const log = await logReading(tenant, ccp.id, { numeric_value: 8, corrective_action_taken: 'Lot écarté et installation réglée.' });
+    expect(log.status).toBe(201);
+    expect(log.body).toMatchObject({ within_limits: false, lot_reference: null, effectiveness_verification: null });
+    const detail = await getPlan(tenant, plan.id);
+    expect(detail.steps[0].hazards[0].ccp).toMatchObject({ status: 'legacy', approved_by: null, last_reading: { within_limits: false } });
+    const due = await request(app).get('/api/haccp/monitoring-due').set(auth(tenant.admin.token));
+    expect(due.body.items.find((item) => item.id === ccp.id).status).toBe('legacy');
+    const edited = await request(app).patch(`/api/haccp/ccps/${ccp.id}`).set(auth(tenant.admin.token)).send({ monitoring_frequency: 'À chaque lot' });
+    expect(edited.status).toBe(200);
+    expect(edited.body).toMatchObject({ status: 'draft', reapproval_required: true, approved_by: null, approved_at: null });
+    expect((await logReading(tenant, ccp.id, { numeric_value: 2 })).status).toBe(409);
+    expect((await request(app).get('/api/haccp/monitoring-due').set(auth(tenant.admin.token))).body.items).toEqual([]);
+  });
+
+  it('active un plan sans CCP avec justification explicite, sans assimiler risque significatif et décision CCP', async () => {
+    const tenant = await newTenant();
+    const { plan, hazard } = await buildPlan(tenant, { withCcp: false });
+    await request(app).patch(`/api/haccp/hazards/${hazard.id}`).set(auth(tenant.admin.token)).send({
+      is_significant: true,
+      control_type: 'prp',
+      decision_justification: 'Le programme prérequis validé maîtrise ce danger sans point critique.',
+    }).expect(200);
+
+    expect((await activate(tenant, plan.id)).status).toBe(400);
+    const completed = await request(app).patch(`/api/haccp/plans/${plan.id}`).set(auth(tenant.admin.token)).send({
+      no_ccp_justification: 'L’analyse conclut que les programmes prérequis suffisent; aucune mesure critique ne s’applique.',
+    });
+    expect(completed.status).toBe(200);
+    expect((await activate(tenant, plan.id)).status).toBe(200);
+    await request(app).patch(`/api/haccp/plans/${plan.id}`).set(auth(tenant.admin.token)).send({
+      status: 'draft', validation_review_notes: '', verification_review_notes: '',
+    }).expect(200);
+    const missingReviews = await activate(tenant, plan.id);
+    expect(missingReviews.status).toBe(400);
+    expect(missingReviews.body.missing_fields).toEqual(['validation_review_notes', 'verification_review_notes']);
+  });
+
+  it('crée les CCP sélectionnés par lots; les doublons et erreurs d’insertion ne mutent pas la décision du danger', async () => {
+    const tenant = await newTenant();
+    const { plan, step, hazard } = await buildPlan(tenant, { withCcp: false });
+    await request(app).patch(`/api/haccp/hazards/${hazard.id}`).set(auth(tenant.admin.token)).send({
+      is_significant: false, control_type: 'undetermined', decision_justification: '',
+    }).expect(200);
+    const second = await request(app).post(`/api/haccp/steps/${step.id}/hazards`).set(auth(tenant.admin.token)).send({
+      hazard_type: 'chemical',
+      description: 'Résidus de produit de nettoyage',
+      likelihood: 2,
+      severity: 3,
+    });
+    await request(app).patch(`/api/haccp/hazards/${second.body.id}`).set(auth(tenant.admin.token)).send({
+      control_type: 'prp',
+      decision_justification: 'Le rinçage contrôlé élimine les résidus à cette étape.',
+    }).expect(200);
+
+    const batch = await request(app).post(`/api/haccp/plans/${plan.id}/ccp-drafts`).set(auth(tenant.admin.token)).send({
+      proposals: [
+        { hazard_id: hazard.id, justification: 'Aucune étape aval ne maîtrise ce danger.', critical_limits: 'À confirmer par essai.' },
+        { hazard_id: hazard.id, justification: 'Doublon sélectionné accidentellement.' },
+        {
+          hazard_id: second.body.id,
+          justification: 'Proposition de CCP nécessitant validation.',
+          monitoring_responsible: '00000000-0000-4000-8000-000000000001',
+        },
+      ],
+    });
+    expect(batch.status).toBe(200);
+    expect(batch.body.created).toHaveLength(1);
+    expect(batch.body.created[0]).toMatchObject({ hazard_id: hazard.id, status: 'draft', ai_generated: true });
+    expect(batch.body.errors).toHaveLength(2);
+    const { data: selectedHazard } = await admin.from('haccp_hazards').select('is_significant, control_type, decision_justification').eq('id', hazard.id).single();
+    expect(selectedHazard).toMatchObject({
+      is_significant: false, control_type: 'ccp', decision_justification: 'Aucune étape aval ne maîtrise ce danger.',
+    });
+    const { data: unchanged } = await admin.from('haccp_hazards').select('control_type, decision_justification').eq('id', second.body.id).single();
+    expect(unchanged).toMatchObject({ control_type: 'prp', decision_justification: 'Le rinçage contrôlé élimine les résidus à cette étape.' });
+  });
+
+  it('préserve les CCP brouillons dans les exports du plan sans leur créer de synthèse de surveillance', async () => {
+    const tenant = await newTenant();
+    const { plan, hazard } = await buildPlan(tenant, { withCcp: false });
+    const notes = {
+      validation_review_notes: 'Rapport VAL-2026 : capacité de maîtrise démontrée par les essais.',
+      verification_review_notes: 'Rapport VER-2026 : bonne application confirmée par revue des relevés.',
+    };
+    const updated = await request(app).patch(`/api/haccp/plans/${plan.id}`).set(auth(tenant.admin.token)).send(notes);
+    expect(updated.status).toBe(200);
+    expect(updated.body).toMatchObject(notes);
+    const draft = await request(app).post(`/api/haccp/hazards/${hazard.id}/ccps`).set(auth(tenant.admin.token)).send({
+      critical_limits: 'Limite à confirmer après validation.',
+    });
+    expect(draft.body.status).toBe('draft');
+
+    const pdf = await request(app).get(`/api/haccp/plans/${plan.id}/pdf`).set(auth(tenant.admin.token));
+    expect(pdf.status).toBe(200);
+    expect((await pdfParse(Buffer.from(pdf.body))).text).toContain('Brouillon');
+    const word = await request(app).get(`/api/haccp/plans/${plan.id}/word`).set(auth(tenant.admin.token)).responseType('blob');
+    expect(word.status).toBe(200);
+    const wordText = (await mammoth.extractRawText({ buffer: Buffer.from(word.body) })).value;
+    expect(wordText).toContain('Brouillon');
+    for (const note of Object.values(notes)) expect(wordText).toContain(note);
+    await request(app).post(`/api/haccp/plans/${plan.id}/revisions`).set(auth(tenant.admin.token)).send({ reason: 'Revue documentaire' }).expect(201);
+    const { data: revision } = await admin.from('haccp_plan_revisions').select('snapshot').eq('plan_id', plan.id).single();
+    expect(revision.snapshot.plan).toMatchObject(notes);
+  });
+});
 
 describe('Limites chiffrées et intervalle d’un CCP', () => {
   it('enregistre les bornes (0 inclus), l’unité et l’intervalle ; les efface avec une chaîne vide', async () => {
@@ -105,10 +325,10 @@ describe('Verdict automatique d’un relevé', () => {
     const lying = await logReading(tenant, ccp.id, { numeric_value: 7, within_limits: true });
     expect(lying.status).toBe(400);
     expect(lying.body.error).toContain('action corrective');
-    const drift = await logReading(tenant, ccp.id, { numeric_value: 4.1, within_limits: true, corrective_action_taken: 'Lot mis en quarantaine' });
+    const drift = await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 4.1, within_limits: true, corrective_action_taken: 'Lot mis en quarantaine' });
     expect(drift.status).toBe(201);
     expect(drift.body.within_limits).toBe(false);
-    expect((await logReading(tenant, ccp.id, { numeric_value: -0.5, corrective_action_taken: 'Réglage du groupe froid' })).body.within_limits).toBe(false);
+    expect((await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: -0.5, corrective_action_taken: 'Réglage du groupe froid' })).body.within_limits).toBe(false);
   });
 
   it('refuse un texte non numérique quand le CCP a des limites chiffrées', async () => {
@@ -128,7 +348,7 @@ describe('Verdict automatique d’un relevé', () => {
     expect(ok.status).toBe(201);
     expect(ok.body).toMatchObject({ within_limits: true, recorded_value: 'Aspect conforme', numeric_value: null });
     expect((await logReading(tenant, ccp.id, { recorded_value: 'Odeur anormale', within_limits: false })).status).toBe(400); // action corrective
-    expect((await logReading(tenant, ccp.id, { recorded_value: 'Odeur anormale', within_limits: false, corrective_action_taken: 'Lot écarté' })).body.within_limits).toBe(false);
+    expect((await logReading(tenant, ccp.id, { ...driftDetails, recorded_value: 'Odeur anormale', within_limits: false, corrective_action_taken: 'Lot écarté' })).body.within_limits).toBe(false);
   });
 
   it('services : parseNumber, isWithinLimits, evaluateReading', () => {
@@ -151,7 +371,7 @@ describe('Dérives répétées', () => {
     const tenant = await newTenant({ extraUsers: [{ role: 'manager' }] });
     const manager = tenant.users[0];
     const { ccp } = await buildPlan(tenant, { ccp: { monitoring_responsible: manager.id } });
-    const drift = (value) => logReading(tenant, ccp.id, { numeric_value: value, corrective_action_taken: 'Action immédiate' });
+    const drift = (value) => logReading(tenant, ccp.id, { ...driftDetails, numeric_value: value, corrective_action_taken: 'Action immédiate' });
 
     expect((await drift(6)).body.repeated_deviation).toBeNull();
     expect((await drift(7)).body.repeated_deviation).toBeNull();
@@ -175,9 +395,9 @@ describe('Dérives répétées', () => {
     let detail = await getPlan(tenant, plan.id);
     expect(detail.steps[0].hazards[0].ccp).toMatchObject({ repeated_deviation: false, recent_deviations: 0 });
 
-    await logReading(tenant, ccp.id, { numeric_value: 9, corrective_action_taken: 'a' });
-    await logReading(tenant, ccp.id, { numeric_value: 9, corrective_action_taken: 'a' });
-    await logReading(tenant, ccp.id, { numeric_value: 9, corrective_action_taken: 'a' });
+    await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 9, corrective_action_taken: 'a' });
+    await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 9, corrective_action_taken: 'a' });
+    await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 9, corrective_action_taken: 'a' });
     detail = await getPlan(tenant, plan.id);
     expect(detail.steps[0].hazards[0].ccp).toMatchObject({ repeated_deviation: true, recent_deviations: 3 });
   });
@@ -274,6 +494,7 @@ describe('Relevés du jour (GET /haccp/monitoring-due)', () => {
     const res = await request(app).get('/api/haccp/monitoring-due').set(auth(member.token));
     expect(res.status).toBe(200);
     expect(res.body.items.map((item) => item.plan.title)).toEqual(['Plan B', 'Plan A']);
+    expect(res.body.items.every((item) => item.status === 'approved')).toBe(true);
     expect(res.body.items.find((item) => item.plan.id === draft.plan.id)).toBeUndefined();
     expect(res.body.items[0]).toMatchObject({ monitoring_state: 'overdue', is_mine: false, limits: { min: 0, max: 4, unit: '°C' }, ccp_number: 'CCP1' });
     expect(res.body.items[1]).toMatchObject({ monitoring_state: 'ok', is_mine: true, last_reading: { recorded_value: '2 °C' } });
@@ -300,7 +521,7 @@ describe('Synthèse de surveillance d’un CCP', () => {
     const tenant = await newTenant();
     const { ccp } = await buildPlan(tenant);
     for (const value of [2, 3, 4]) await logReading(tenant, ccp.id, { numeric_value: value });
-    await logReading(tenant, ccp.id, { numeric_value: 6, corrective_action_taken: 'Quarantaine' });
+    await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 6, corrective_action_taken: 'Quarantaine' });
     await admin.from('haccp_monitoring_logs').insert({ tenant_id: tenant.tenantId, ccp_id: ccp.id, recorded_value: '1 °C', numeric_value: 1, within_limits: true, recorded_at: new Date(Date.now() - 60 * 86400000).toISOString() });
 
     const res = await request(app).get(`/api/haccp/ccps/${ccp.id}/monitoring-summary?days=30`).set(auth(tenant.admin.token));
@@ -355,11 +576,17 @@ describe('Revue annuelle et versions d’un plan', () => {
     const { plan, step, ccp } = await buildPlan(tenant);
     await activate(tenant, plan.id);
 
+    const dossierUpdate = await request(app).patch(`/api/haccp/plans/${plan.id}`).set(auth(tenant.admin.token)).send({
+      prerequisites: 'Programme prérequis révisé et approuvé par l’équipe.',
+      intended_use: 'Consommation immédiate après ouverture.',
+    });
+    expect(dossierUpdate.status).toBe(200);
     await request(app).patch(`/api/haccp/ccps/${ccp.id}`).set(auth(tenant.admin.token)).send({ limit_max: 5, critical_limits: '≤ 5 °C' });
     await request(app).post(`/api/haccp/steps/${step.id}/hazards`).set(auth(tenant.admin.token)).send({ hazard_type: 'chemical', description: 'Résidus de nettoyage', likelihood: 2, severity: 3 });
 
     const pending = (await request(app).get(`/api/haccp/plans/${plan.id}/revisions`).set(auth(tenant.admin.token))).body.pending_changes;
     expect(pending.some((line) => line.startsWith('Danger ajouté : « Résidus de nettoyage »'))).toBe(true);
+    expect(pending.some((line) => line.includes('prérequis modifié(e)'))).toBe(true);
     expect(pending.some((line) => line.includes('CCP CCP1') && line.includes('limite max') && line.includes('limites critiques'))).toBe(true);
 
     const manual = await request(app).post(`/api/haccp/plans/${plan.id}/revisions`).set(auth(tenant.admin.token)).send({ reason: 'Après revue du procédé' });
@@ -367,6 +594,8 @@ describe('Revue annuelle et versions d’un plan', () => {
     expect(manual.body).toMatchObject({ revision_number: 2, kind: 'manual' });
     const listed = (await request(app).get(`/api/haccp/plans/${plan.id}/revisions`).set(auth(tenant.admin.token))).body;
     expect(listed.revisions[0].changes.some((line) => line.startsWith('Danger ajouté'))).toBe(true);
+    const { data: savedRevision } = await admin.from('haccp_plan_revisions').select('snapshot').eq('plan_id', plan.id).eq('revision_number', 2).single();
+    expect(savedRevision.snapshot.plan.prerequisites).toBe('Programme prérequis révisé et approuvé par l’équipe.');
     expect(listed.pending_changes).toEqual([]);
   });
 
@@ -452,8 +681,25 @@ describe('Liens d’un plan et formations des opérateurs', () => {
     // Un CCP par personne suivie : la couverture se calcule sur les responsables de surveillance.
     for (const [index, user] of [expired, failed, none, exempt].entries()) {
       const hazard = await request(app).post(`/api/haccp/steps/${step.id}/hazards`).set(auth(tenant.admin.token)).send({ hazard_type: 'physical', description: `Corps étranger ${index}`, likelihood: 2, severity: 3 });
-      await request(app).patch(`/api/haccp/hazards/${hazard.body.id}`).set(auth(tenant.admin.token)).send({ is_significant: true });
-      await request(app).post(`/api/haccp/hazards/${hazard.body.id}/ccps`).set(auth(tenant.admin.token)).send({ critical_limits: 'x', monitoring_procedure: 'y', monitoring_responsible: user.id });
+      await request(app).patch(`/api/haccp/hazards/${hazard.body.id}`).set(auth(tenant.admin.token)).send({
+        is_significant: true,
+        control_type: 'ccp',
+        decision_justification: 'Ce point doit être maîtrisé par une limite critique dédiée.',
+      });
+      const ccp = await request(app).post(`/api/haccp/hazards/${hazard.body.id}/ccps`).set(auth(tenant.admin.token)).send({
+        critical_limits: 'Concentration conforme à la spécification documentée.',
+        monitoring_procedure: 'Vérifier la concentration du produit avec la méthode étalonnée.',
+        monitoring_frequency: 'À chaque lot',
+        monitoring_responsible: user.id,
+        corrective_action_procedure: 'Isoler le lot et corriger le dosage.',
+        verification_procedure: 'Revue indépendante des relevés et de la méthode.',
+        verification_frequency: 'Chaque semaine',
+        record_keeping_procedure: 'Conserver les relevés de mesure et actions réalisées.',
+      });
+      await request(app).post(`/api/haccp/ccps/${ccp.body.id}/approve`).set(auth(tenant.admin.token)).send({
+        validation_source: 'Spécification fournisseur et méthode de contrôle documentée.',
+        validation_evidence: 'Rapport de validation VAL-2026-17, essais réalisés sur plusieurs lots.',
+      });
     }
     await admin.from('users').update({ training_exempt: true }).eq('id', exempt.id);
 
@@ -512,7 +758,7 @@ describe('Exports : Word du plan, fiche CCP, fiche de relevés vierge', () => {
     const tenant = await newTenant();
     const { ccp } = await buildPlan(tenant);
     await logReading(tenant, ccp.id, { numeric_value: 3 });
-    await logReading(tenant, ccp.id, { numeric_value: 8, corrective_action_taken: 'Lot mis en quarantaine' });
+    await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 8, corrective_action_taken: 'Lot mis en quarantaine' });
 
     const res = await request(app).get(`/api/haccp/ccps/${ccp.id}/pdf`).set(auth(tenant.admin.token)).responseType('blob');
     expect(res.status).toBe(200);
@@ -549,7 +795,7 @@ describe('Tableau de bord et préférence d’alerte', () => {
     let stats = (await request(app).get('/api/dashboard/stats').set(auth(tenant.admin.token))).body;
     expect(stats.haccp).toMatchObject({ active_plans: 1, overdue_ccps: 1, deviating_ccps: 0 });
 
-    for (let i = 0; i < 3; i += 1) await logReading(tenant, ccp.id, { numeric_value: 9, corrective_action_taken: 'a' });
+    for (let i = 0; i < 3; i += 1) await logReading(tenant, ccp.id, { ...driftDetails, numeric_value: 9, corrective_action_taken: 'a' });
     stats = (await request(app).get('/api/dashboard/stats').set(auth(tenant.admin.token))).body;
     expect(stats.haccp).toMatchObject({ overdue_ccps: 0, deviating_ccps: 1 });
   });

@@ -4,6 +4,23 @@ import app from '../app.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
 
 let tenant;
+const completeDossier = {
+  prerequisites: 'Programme de nettoyage, hygiène et maîtrise de l’eau.',
+  intended_use: 'Produit consommé après réfrigération et préparation.',
+  consumer_groups: 'Consommateurs adultes, dont personnes vulnérables.',
+  product_characteristics: 'Produit frais, prêt à consommer, conservé réfrigéré.',
+  flow_diagram_reference: 'Diagramme FAB-01, version 3.',
+  flow_diagram_verification: 'Diagramme parcouru sur site par l’équipe HACCP le 2026-06-01.',
+  validation_review_notes: 'Capacité des mesures de maîtrise revue à partir du rapport VAL-2026.',
+  verification_review_notes: 'Bonne application revue à partir des relevés et contrôles VER-2026.',
+};
+const driftDetails = {
+  lot_reference: 'LOT-2026-04',
+  product_disposition: 'Lot isolé en chambre froide dédiée.',
+  disposition_decision: 'Responsable qualité autorise destruction du lot.',
+  return_to_control: 'Chambre froide réglée et température stabilisée.',
+  effectiveness_verification: 'Deux relevés consécutifs conformes après réglage.',
+};
 
 afterEach(async () => {
   if (tenant) {
@@ -37,11 +54,42 @@ async function makeHazard(token, stepId, overrides = {}) {
 }
 
 async function makeCcp(token, hazardId, overrides = {}) {
+  const decision = await request(app)
+    .patch(`/api/haccp/hazards/${hazardId}`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({ control_type: 'ccp', decision_justification: 'Cette étape maîtrise directement ce danger.' });
+  if (decision.status !== 200) return decision;
+
+  const userId = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()).sub;
   const res = await request(app)
     .post(`/api/haccp/hazards/${hazardId}/ccps`)
     .set('Authorization', `Bearer ${token}`)
-    .send({ critical_limits: '≥ 85°C pendant 15 secondes', monitoring_procedure: 'Sonde de température en continu', ...overrides });
-  return res;
+    .send({
+      critical_limits: '≥ 85°C pendant 15 secondes',
+      monitoring_procedure: 'Sonde de température en continu',
+      monitoring_frequency: 'À chaque lot',
+      monitoring_responsible: userId,
+      corrective_action_procedure: 'Arrêter le procédé, isoler le lot et ouvrir une investigation.',
+      verification_procedure: 'Revue indépendante des relevés et étalonnage de la sonde.',
+      verification_frequency: 'Chaque semaine',
+      record_keeping_procedure: 'Conserver les relevés et décisions de lot pendant la durée définie.',
+      ...overrides,
+    });
+  if (res.status !== 201) return res;
+  return request(app)
+    .post(`/api/haccp/ccps/${res.body.id}/approve`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({
+      validation_source: 'Étude de validation thermique et protocole interne approuvé.',
+      validation_evidence: 'Rapport de validation VL-2026-04, essais documentés sur trois lots représentatifs.',
+    });
+}
+
+async function completePlan(token, planId, extra = {}) {
+  return request(app)
+    .patch(`/api/haccp/plans/${planId}`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({ ...completeDossier, ...extra });
 }
 
 describe('POST /api/haccp/plans — création réservée à admin/manager', () => {
@@ -97,7 +145,10 @@ describe('Chaîne complète plan -> étape -> danger -> CCP -> surveillance', ()
     const step = await makeStep(tenant.admin.token, plan.body.id);
     const hazard = await makeHazard(tenant.admin.token, step.body.id);
 
-    const ccpAttempt = await makeCcp(tenant.admin.token, hazard.body.id);
+    const ccpAttempt = await request(app)
+      .post(`/api/haccp/hazards/${hazard.body.id}/ccps`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ critical_limits: '≥ 85°C', monitoring_procedure: 'Mesure à la sonde' });
     expect(ccpAttempt.status).toBe(400);
   });
 
@@ -114,7 +165,8 @@ describe('Chaîne complète plan -> étape -> danger -> CCP -> surveillance', ()
       .expect(200);
 
     const ccp = await makeCcp(tenant.admin.token, hazard.body.id);
-    expect(ccp.status).toBe(201);
+    expect(ccp.status).toBe(200);
+    expect(ccp.body.status).toBe('approved');
 
     const detail = await request(app).get(`/api/haccp/plans/${plan.body.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(detail.body.steps[0].hazards[0].ccp.id).toBe(ccp.body.id);
@@ -167,7 +219,7 @@ describe('Chaîne complète plan -> étape -> danger -> CCP -> surveillance', ()
     const log = await request(app)
       .post(`/api/haccp/ccps/${ccp.body.id}/monitoring-logs`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.' });
+      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.', ...driftDetails });
 
     const capa = await request(app)
       .post(`/api/haccp/monitoring-logs/${log.body.id}/create-capa`)
@@ -204,7 +256,7 @@ describe('POST /api/haccp/ccps/:ccpId/monitoring-logs — action corrective exig
     const withAction = await request(app)
       .post(`/api/haccp/ccps/${ccp.body.id}/monitoring-logs`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.' });
+      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.', ...driftDetails });
     expect(withAction.status).toBe(201);
   });
 
@@ -228,7 +280,7 @@ describe('POST /api/haccp/ccps/:ccpId/monitoring-logs — action corrective exig
   });
 });
 
-describe('PATCH /api/haccp/plans/:id — activation exige des CCP couvrant tous les dangers significatifs', () => {
+describe('PATCH /api/haccp/plans/:id — activation exige une analyse documentée', () => {
   it('refuse "active" pour un plan sans aucun CCP', async () => {
     tenant = await createTenant();
     const plan = await makePlan(tenant.admin.token);
@@ -240,9 +292,10 @@ describe('PATCH /api/haccp/plans/:id — activation exige des CCP couvrant tous 
     expect(res.status).toBe(400);
   });
 
-  it('refuse "active" tant qu’un danger significatif n’a pas son CCP', async () => {
+  it('refuse "active" tant qu’un danger n’a pas de décision de maîtrise', async () => {
     tenant = await createTenant();
     const plan = await makePlan(tenant.admin.token);
+    await completePlan(tenant.admin.token, plan.body.id);
     const step = await makeStep(tenant.admin.token, plan.body.id);
     const hazard = await makeHazard(tenant.admin.token, step.body.id);
     await request(app)
@@ -259,9 +312,10 @@ describe('PATCH /api/haccp/plans/:id — activation exige des CCP couvrant tous 
     expect(res.status).toBe(400);
   });
 
-  it('autorise "active" une fois chaque danger significatif rattaché à un CCP', async () => {
+  it('autorise "active" une fois le CCP approuvé, après la décision de maîtrise', async () => {
     tenant = await createTenant();
     const plan = await makePlan(tenant.admin.token);
+    await completePlan(tenant.admin.token, plan.body.id);
     const step = await makeStep(tenant.admin.token, plan.body.id);
     const hazard = await makeHazard(tenant.admin.token, step.body.id);
     await request(app)
@@ -281,7 +335,10 @@ describe('PATCH /api/haccp/plans/:id — activation exige des CCP couvrant tous 
 
   it('un danger non significatif n’a pas besoin de CCP pour activer le plan', async () => {
     tenant = await createTenant();
-    const plan = await makePlan(tenant.admin.token);
+    const plan = await makePlan(tenant.admin.token, {
+      ...completeDossier,
+      no_ccp_justification: 'Les programmes prérequis maîtrisent les dangers sans limite critique à cette étape.',
+    });
     const step = await makeStep(tenant.admin.token, plan.body.id);
     const significant = await makeHazard(tenant.admin.token, step.body.id, { description: 'Danger significatif' });
     await request(app)
@@ -290,8 +347,13 @@ describe('PATCH /api/haccp/plans/:id — activation exige des CCP couvrant tous 
       .send({ is_significant: true })
       .expect(200);
     await makeCcp(tenant.admin.token, significant.body.id);
-    // Danger non significatif, volontairement laissé sans CCP.
-    await makeHazard(tenant.admin.token, step.body.id, { description: 'Danger mineur', likelihood: 1, severity: 1 });
+    // Le caractère significatif du risque reste séparé de la décision de maîtrise.
+    const minor = await makeHazard(tenant.admin.token, step.body.id, { description: 'Danger mineur', likelihood: 1, severity: 1 });
+    await request(app)
+      .patch(`/api/haccp/hazards/${minor.body.id}`)
+      .set('Authorization', 'Bearer ' + tenant.admin.token)
+      .send({ control_type: 'prp', decision_justification: 'Les bonnes pratiques d’hygiène préviennent ce danger mineur.' })
+      .expect(200);
 
     const res = await request(app)
       .patch(`/api/haccp/plans/${plan.body.id}`)
@@ -316,7 +378,7 @@ describe('DELETE /api/haccp/plans/:id — cascade sur étapes/dangers/CCP/survei
     const log = await request(app)
       .post(`/api/haccp/ccps/${ccp.body.id}/monitoring-logs`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.' });
+      .send({ recorded_value: '78°C', within_limits: false, corrective_action_taken: 'Ligne stoppée, lot mis en quarantaine.', ...driftDetails });
     const capa = await request(app)
       .post(`/api/haccp/monitoring-logs/${log.body.id}/create-capa`)
       .set('Authorization', `Bearer ${tenant.admin.token}`)

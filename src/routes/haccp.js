@@ -35,8 +35,27 @@ const router = Router();
 
 const PLAN_STATUSES = ['draft', 'active', 'under_review', 'archived'];
 const HAZARD_TYPES = ['biological', 'chemical', 'physical', 'allergen'];
+const HAZARD_CONTROL_TYPES = ['undetermined', 'prp', 'ccp', 'process_change'];
+const PLAN_DOSSIER_FIELDS = [
+  'prerequisites',
+  'intended_use',
+  'consumer_groups',
+  'product_characteristics',
+  'flow_diagram_reference',
+  'flow_diagram_verification',
+  'no_ccp_justification',
+  'validation_review_notes',
+  'verification_review_notes',
+];
+const CCP_OPERATIONAL_STATUSES = ['approved', 'legacy'];
 // Mêmes niveaux que capas.js (CAPA_LEVELS) — dupliqués ici comme dans risks.js/audits.js.
 const CAPA_LEVELS = ['low', 'medium', 'high', 'critical'];
+
+function substantiveText(value, minLength = 8) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  return text.length >= minLength && !/^(?:n\/?a|none|tbd|todo|à compléter|a completer|non renseigné|non renseigne|à confirmer|a confirmer|aucun)$/i.test(text);
+}
 
 // Date yyyy-mm-dd dans `months` mois (le jour est ramené au dernier jour du mois cible si besoin).
 function addMonthsIso(months) {
@@ -77,6 +96,16 @@ async function loadPlanForTenant(tenantId, planId) {
   return data;
 }
 
+async function canManageHaccpCategory(req, categoryId) {
+  return hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId,
+    permission: 'manage',
+  });
+}
+
 // GET /api/haccp/plans/:id — plan complet avec ses étapes, chacune avec ses dangers, chacun
 // avec son CCP (le cas échéant).
 router.get('/plans/:id', async (req, res) => {
@@ -105,21 +134,23 @@ router.get('/plans/:id', async (req, res) => {
 
   // État de surveillance de chaque CCP (relevé en retard, dérives répétées, dernier relevé) : calculé ici, une
   // seule fois pour tout le plan, plutôt que par un aller-retour par CCP.
-  let statusByCcpId = new Map();
+  let statusByCcpId;
   try {
     statusByCcpId = new Map((await fetchCcpStatuses(req.tenantId, { planIds: [plan.id] })).map((ccp) => [ccp.id, ccp]));
-  } catch {
-    /* le plan reste consultable sans ces indicateurs */
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
   }
   const withStatus = stepsWithHazards.map((step) => ({
     ...step,
     hazards: step.hazards.map((hazard) => {
       const status = hazard.ccp ? statusByCcpId.get(hazard.ccp.id) : null;
+      const limits = hazard.ccp ? numericLimitsOf(hazard.ccp) : null;
       return {
         ...hazard,
-        ccp: hazard.ccp
+        ccp: hazard.ccp && CCP_OPERATIONAL_STATUSES.includes(hazard.ccp.status)
           ? {
               ...hazard.ccp,
+              limits,
               limits_text: status?.limits_text || '',
               last_reading: status?.last_reading || null,
               monitoring_state: status?.monitoring_state || 'no_schedule',
@@ -128,7 +159,7 @@ router.get('/plans/:id', async (req, res) => {
               recent_deviations: status?.recent_deviations || 0,
               repeated_deviation: Boolean(status?.repeated_deviation),
             }
-          : null,
+          : hazard.ccp ? { ...hazard.ccp, limits, limits_text: describeLimits(limits) } : null,
       };
     }),
   }));
@@ -146,6 +177,7 @@ router.post(
     body('product_description').optional({ values: 'falsy' }).trim(),
     body('scope').optional({ values: 'falsy' }).trim(),
     body('team').optional({ values: 'falsy' }).trim(),
+    ...PLAN_DOSSIER_FIELDS.map((field) => body(field).optional({ nullable: true }).isString().trim().isLength({ max: 5000 }).withMessage(`${field} ne peut pas dépasser 5 000 caractères.`)),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('status').optional({ values: 'falsy' }).isIn(PLAN_STATUSES).withMessage('Statut invalide.'),
     body('category_id').optional({ values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
@@ -155,6 +187,9 @@ router.post(
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+    if (req.body.status === 'active') {
+      return res.status(400).json({ error: 'Créez le plan en brouillon puis activez-le après validation du dossier HACCP.' });
     }
 
     const {
@@ -175,6 +210,7 @@ router.post(
         product_description: productDescription || null,
         scope: scope || null,
         team: team || null,
+        ...Object.fromEntries(PLAN_DOSSIER_FIELDS.map((field) => [field, req.body[field]?.trim() || null])),
         service_id: serviceId || null,
         status: status || undefined,
         category_id: categoryId || null,
@@ -231,6 +267,7 @@ router.patch(
     body('product_description').optional({ values: 'falsy' }).trim(),
     body('scope').optional({ values: 'falsy' }).trim(),
     body('team').optional({ values: 'falsy' }).trim(),
+    ...PLAN_DOSSIER_FIELDS.map((field) => body(field).optional({ nullable: true }).isString().trim().isLength({ max: 5000 }).withMessage(`${field} ne peut pas dépasser 5 000 caractères.`)),
     body('service_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('status').optional().isIn(PLAN_STATUSES).withMessage('Statut invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
@@ -247,6 +284,9 @@ router.patch(
     for (const field of ['title', 'product_description', 'scope', 'team', 'status', 'review_date']) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
+    for (const field of PLAN_DOSSIER_FIELDS) {
+      if (field in req.body) update[field] = req.body[field]?.trim() || null;
+    }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
 
@@ -254,11 +294,12 @@ router.patch(
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
     }
 
-    // Principe 2 de la méthode HACCP : un plan "actif" est censé être appliqué sur le terrain,
-    // donc chaque danger significatif doit avoir son CCP défini — sinon "actif" ne veut rien
-    // dire opérationnellement. Même logique que le verrou posé sur la clôture d'un audit avec
-    // NC majeure non traitée.
+    // Activation exige un dossier préalable, une décision documentée pour chaque danger et des
+    // CCP validés lorsque l'analyse les a retenus. La significativité du risque n'impose pas un CCP.
     if (update.status === 'active') {
+      const activationPlan = await loadPlanForTenant(req.tenantId, req.params.id);
+      if (!activationPlan) return res.status(404).json({ error: 'Plan HACCP introuvable.' });
+      const candidatePlan = { ...activationPlan, ...update };
       const { data: steps, error: stepsError } = await supabase
         .from('haccp_process_steps')
         .select('id')
@@ -270,44 +311,69 @@ router.patch(
       }
 
       const stepIds = steps.map((step) => step.id);
-      let significantHazards = [];
+      if (stepIds.length === 0) {
+        return res.status(400).json({ error: 'Ajoutez les étapes du procédé et leur analyse des dangers avant d’activer ce plan.' });
+      }
+      const missingDossier = PLAN_DOSSIER_FIELDS.filter((field) =>
+        field !== 'no_ccp_justification' && !substantiveText(candidatePlan[field])
+      );
+      if (missingDossier.length > 0) {
+        return res.status(400).json({ error: 'Complétez le dossier préliminaire, les preuves du diagramme de fabrication et les notes distinctes de revue de validation et de vérification avant activation.', missing_fields: missingDossier });
+      }
+
+      let hazards = [];
       if (stepIds.length > 0) {
-        const { data: hazards, error: hazardsError } = await supabase
+        const { data, error: hazardsError } = await supabase
           .from('haccp_hazards')
-          .select('id')
+          .select('id, step_id, control_type, decision_justification')
           .eq('tenant_id', req.tenantId)
-          .in('step_id', stepIds)
-          .eq('is_significant', true);
+          .in('step_id', stepIds);
 
         if (hazardsError) {
           return res.status(500).json({ error: "Impossible de vérifier l'analyse des dangers." });
         }
-        significantHazards = hazards;
+        hazards = data;
       }
 
-      if (significantHazards.length === 0) {
+      if (hazards.length === 0) {
         return res.status(400).json({
-          error: "Ce plan n'a aucun danger significatif rattaché à un point critique (CCP) : complétez l'analyse avant de l'activer.",
+          error: "Ce plan ne comporte aucun danger analysé : complétez l'analyse avant de l'activer.",
+        });
+      }
+      const analyzedStepIds = new Set(hazards.map((hazard) => hazard.step_id));
+      if (stepIds.some((stepId) => !analyzedStepIds.has(stepId))) {
+        return res.status(400).json({ error: 'Chaque étape du procédé doit comporter au moins un danger analysé avant activation.' });
+      }
+
+      const undecidedHazards = hazards.filter((hazard) => hazard.control_type === 'undetermined' || !substantiveText(hazard.decision_justification));
+      if (undecidedHazards.length > 0) {
+        return res.status(400).json({
+          error: 'Chaque danger doit avoir une décision de maîtrise documentée avant activation.',
+          hazard_ids: undecidedHazards.map((hazard) => hazard.id),
         });
       }
 
-      const significantHazardIds = significantHazards.map((hazard) => hazard.id);
-      const { data: ccps, error: ccpsError } = await supabase
-        .from('haccp_ccps')
-        .select('hazard_id')
-        .eq('tenant_id', req.tenantId)
-        .in('hazard_id', significantHazardIds);
-
-      if (ccpsError) {
-        return res.status(500).json({ error: 'Impossible de vérifier les points critiques.' });
+      const ccpHazards = hazards.filter((hazard) => hazard.control_type === 'ccp');
+      if (ccpHazards.length === 0 && !substantiveText(candidatePlan.no_ccp_justification)) {
+        return res.status(400).json({ error: 'Justifiez pourquoi aucun CCP n’est retenu avant d’activer ce plan.' });
       }
+      if (ccpHazards.length > 0) {
+        const { data: ccps, error: ccpsError } = await supabase
+          .from('haccp_ccps')
+          .select('hazard_id, status')
+          .eq('tenant_id', req.tenantId)
+          .in('hazard_id', ccpHazards.map((hazard) => hazard.id))
+          .in('status', CCP_OPERATIONAL_STATUSES);
 
-      const hazardIdsWithCcp = new Set(ccps.map((ccp) => ccp.hazard_id));
-      const hasUncoveredHazard = significantHazardIds.some((hazardId) => !hazardIdsWithCcp.has(hazardId));
-      if (hasUncoveredHazard) {
-        return res.status(400).json({
-          error: "Au moins un danger significatif n'a pas encore de point critique (CCP) défini : complétez l'analyse avant d'activer ce plan.",
-        });
+        if (ccpsError) return res.status(500).json({ error: 'Impossible de vérifier les points critiques.' });
+        const hazardIdsWithValidatedCcp = new Set(ccps.map((ccp) => ccp.hazard_id));
+        const uncovered = ccpHazards.filter((hazard) => !hazardIdsWithValidatedCcp.has(hazard.id));
+        if (uncovered.length > 0) {
+          return res.status(400).json({
+            error: 'Chaque danger classé CCP doit avoir un CCP approuvé ou un CCP historique préservé avant activation.',
+            hazard_ids: uncovered.map((hazard) => hazard.id),
+          });
+        }
       }
     }
 
@@ -527,6 +593,8 @@ router.post(
     body('severity').isInt({ min: 1, max: 5 }).withMessage('Gravité invalide (1 à 5).'),
     body('is_significant').optional().isBoolean().withMessage('Valeur invalide.'),
     body('justification').optional({ values: 'falsy' }).trim(),
+    body('control_type').optional().isIn(HAZARD_CONTROL_TYPES).withMessage('Décision de maîtrise invalide.'),
+    body('decision_justification').optional({ values: 'falsy' }).trim(),
     body('ai_generated').optional().isBoolean().withMessage('Valeur invalide.'),
   ],
   async (req, res) => {
@@ -555,7 +623,13 @@ router.post(
       is_significant: isSignificant,
       justification,
       ai_generated: aiGenerated,
+      control_type: controlType,
+      decision_justification: decisionJustification,
     } = req.body;
+
+    if (controlType && controlType !== 'undetermined' && !substantiveText(decisionJustification)) {
+      return res.status(400).json({ error: 'Justifiez la décision de maîtrise du danger.' });
+    }
 
     const { data, error } = await supabase
       .from('haccp_hazards')
@@ -569,6 +643,8 @@ router.post(
         severity,
         is_significant: isSignificant || false,
         justification: justification || null,
+        control_type: controlType || 'undetermined',
+        decision_justification: decisionJustification || null,
         ai_generated: aiGenerated || false,
         created_by: req.user.id,
       })
@@ -594,6 +670,8 @@ router.patch(
     body('severity').optional().isInt({ min: 1, max: 5 }).withMessage('Gravité invalide (1 à 5).'),
     body('is_significant').optional().isBoolean().withMessage('Valeur invalide.'),
     body('justification').optional({ values: 'falsy' }).trim(),
+    body('control_type').optional().isIn(HAZARD_CONTROL_TYPES).withMessage('Décision de maîtrise invalide.'),
+    body('decision_justification').optional({ values: 'falsy' }).trim(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -608,9 +686,43 @@ router.patch(
     if ('likelihood' in req.body) update.likelihood = req.body.likelihood;
     if ('severity' in req.body) update.severity = req.body.severity;
     if ('is_significant' in req.body) update.is_significant = req.body.is_significant;
+    if ('control_type' in req.body) update.control_type = req.body.control_type;
+    if ('decision_justification' in req.body) update.decision_justification = req.body.decision_justification || null;
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({ error: 'Aucun champ à mettre à jour.' });
+    }
+    const controlType = update.control_type;
+    const justification = update.decision_justification;
+    if (controlType && controlType !== 'undetermined' && !substantiveText(justification)) {
+      const { data: current, error: currentError } = await supabase
+        .from('haccp_hazards')
+        .select('decision_justification')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (currentError) return res.status(500).json({ error: 'Impossible de vérifier la justification du danger.' });
+      if (!substantiveText(justification || current?.decision_justification)) {
+        return res.status(400).json({ error: 'Justifiez la décision de maîtrise du danger.' });
+      }
+    }
+    if ('control_type' in update) {
+      const { data: hazardScope, error: scopeError } = await supabase
+        .from('haccp_hazards')
+        .select('step:haccp_process_steps(plan:haccp_plans(category_id))')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.params.id)
+        .maybeSingle();
+      if (scopeError) return res.status(500).json({ error: 'Impossible de vérifier les droits sur cette décision.' });
+      if (!hazardScope) return res.status(404).json({ error: 'Danger introuvable.' });
+      const canManage = await hasGenericCategoryPermission({
+        tenantId: req.tenantId,
+        userId: req.user.id,
+        userRole: req.userRole,
+        categoryId: hazardScope.step?.plan?.category_id,
+        permission: 'manage',
+      });
+      if (!canManage) return res.status(404).json({ error: 'Danger introuvable.' });
     }
 
     const { data, error } = await supabase
@@ -670,28 +782,185 @@ function ccpNumericUpdate(body) {
 }
 
 const LIMITS_ORDER_ERROR = 'La limite minimale ne peut pas dépasser la limite maximale.';
+const CCP_TEXT_FIELDS = [
+  'ccp_number',
+  'critical_limits',
+  'monitoring_procedure',
+  'monitoring_frequency',
+  'monitoring_responsible',
+  'corrective_action_procedure',
+  'verification_procedure',
+  'verification_frequency',
+  'record_keeping_procedure',
+];
 
-// POST /api/haccp/hazards/:hazardId/ccps — un CCP n'a de sens que pour un danger déjà jugé
-// significatif (coeur de la méthode HACCP) : refusé sinon plutôt que silencieusement accepté.
+function ccpPayloadFromBody(body) {
+  const payload = Object.fromEntries(CCP_TEXT_FIELDS.map((field) => [field, typeof body[field] === 'string' ? body[field].trim() || null : body[field] || null]));
+  return {
+    ...payload,
+    ...ccpNumericUpdate(body),
+    ai_generated: body.ai_generated === undefined ? false : body.ai_generated,
+  };
+}
+
+function mapCcpRpcError(error) {
+  const message = error?.message || '';
+  if (message.includes('CCP_EXISTS')) return { status: 409, message: 'Un CCP existe déjà pour ce danger et ne peut pas être remplacé.' };
+  if (message.includes('HAZARD_NOT_FOUND')) return { status: 404, message: 'Danger introuvable.' };
+  console.error('[haccp] Échec transactionnel de création du CCP :', message);
+  return { status: 500, message: 'Erreur lors de la création du brouillon CCP.' };
+}
+
+async function createCcpDraftAtomically({ tenantId, hazardId, decisionJustification, payload }) {
+  return supabase.rpc('haccp_create_ccp_draft', {
+    p_tenant_id: tenantId,
+    p_hazard_id: hazardId,
+    p_decision_justification: decisionJustification,
+    p_ccp: payload,
+  });
+}
+
+function ccpApprovalErrors(ccp) {
+  const errors = [];
+  const required = {
+    critical_limits: 'Les limites critiques doivent être précises et vérifiables.',
+    validation_source: 'La source de validation est requise.',
+    validation_evidence: 'Les preuves de validation sont requises.',
+    monitoring_procedure: 'La procédure de surveillance est requise.',
+    monitoring_frequency: 'La fréquence de surveillance est requise.',
+    monitoring_responsible: 'Un responsable de surveillance est requis.',
+    corrective_action_procedure: 'La procédure d’action corrective est requise.',
+    verification_procedure: 'La procédure de vérification est requise.',
+    verification_frequency: 'La fréquence de vérification est requise.',
+    record_keeping_procedure: 'La procédure de tenue des enregistrements est requise.',
+  };
+  for (const [field, message] of Object.entries(required)) {
+    const minLength = field === 'validation_evidence' ? 20 : field === 'validation_source' ? 5 : 8;
+    if (field === 'monitoring_responsible' ? !ccp[field] : !substantiveText(ccp[field], minLength)) errors.push(message);
+  }
+
+  const numericLimits = numericLimitsOf(ccp);
+  if (numericLimits) {
+    const text = String(ccp.critical_limits || '');
+    const statedNumbers = new Set((text.match(/-?\d+(?:[.,]\d+)?/g) || []).map((value) => Number(value.replace(',', '.'))));
+    for (const bound of [numericLimits.min, numericLimits.max]) {
+      if (bound !== null && !statedNumbers.has(bound)) {
+        errors.push('Les bornes numériques doivent être cohérentes avec les limites critiques textuelles.');
+        break;
+      }
+    }
+    if (numericLimits.unit && !text.toLowerCase().replace(/[°\s]/g, '').includes(numericLimits.unit.toLowerCase().replace(/[°\s]/g, ''))) {
+      errors.push('L’unité numérique doit correspondre aux limites critiques textuelles.');
+    }
+  }
+  return errors;
+}
+
+// Un lot de propositions donne une décision explicite pour chaque danger retenu, mais chaque
+// insertion + mise à jour de décision reste atomique et indépendante des autres propositions.
+router.post(
+  '/plans/:id/ccp-drafts',
+  requireRole('admin', 'manager'),
+  [body('proposals').isArray({ min: 1, max: 50 }).withMessage('Fournissez entre 1 et 50 propositions CCP.')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+
+    const plan = await findVisiblePlan(req);
+    if (!plan) return res.status(404).json({ error: 'Plan HACCP introuvable.' });
+    const created = [];
+    const failed = [];
+
+    for (const proposal of req.body.proposals) {
+      const hazardId = proposal?.hazard_id;
+      const errorMessage = validateDraftProposal(proposal);
+      if (errorMessage) {
+        failed.push({ hazard_id: hazardId || null, error: errorMessage });
+        continue;
+      }
+
+      const { data: hazard, error: hazardError } = await supabase
+        .from('haccp_hazards')
+        .select('id, decision_justification, control_type, step:haccp_process_steps(plan:haccp_plans(id, category_id))')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', hazardId)
+        .maybeSingle();
+      if (hazardError) {
+        failed.push({ hazard_id: hazardId, error: 'Impossible de vérifier le danger.' });
+        console.error('[haccp] Échec de vérification de danger pour le brouillon CCP :', hazardError.message);
+        continue;
+      }
+      if (!hazard || hazard.step?.plan?.id !== plan.id) {
+        failed.push({ hazard_id: hazardId, error: 'Danger introuvable dans ce plan.' });
+        continue;
+      }
+      const canManage = await canManageHaccpCategory(req, plan.category_id);
+      if (!canManage) {
+        failed.push({ hazard_id: hazardId, error: 'Vous ne pouvez pas gérer les contrôles de cette catégorie.' });
+        continue;
+      }
+
+      const decisionJustification = String(proposal.justification).trim();
+      const { data, error } = await createCcpDraftAtomically({
+        tenantId: req.tenantId,
+        hazardId,
+        decisionJustification,
+        payload: { ...ccpPayloadFromBody(proposal), ai_generated: proposal.ai_generated !== false },
+      });
+      if (error) {
+        const mapped = mapCcpRpcError(error);
+        failed.push({ hazard_id: hazardId, error: mapped.message });
+      } else {
+        created.push(data);
+      }
+    }
+
+    res.status(200).json({ created, errors: failed });
+  }
+);
+
+function validateDraftProposal(proposal) {
+  if (!proposal || typeof proposal !== 'object' || Array.isArray(proposal)) return 'Proposition invalide.';
+  if (typeof proposal.hazard_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(proposal.hazard_id)) return 'Identifiant de danger invalide.';
+  if (!substantiveText(proposal.justification)) return 'La décision CCP doit être justifiée.';
+  for (const field of CCP_TEXT_FIELDS) {
+    if (proposal[field] !== undefined && proposal[field] !== null && typeof proposal[field] !== 'string') return `Le champ ${field} doit être du texte.`;
+  }
+  for (const field of ['limit_min', 'limit_max', 'monitoring_interval_hours']) {
+    if (!isBlank(proposal[field]) && !Number.isFinite(Number(proposal[field]))) return `Le champ ${field} doit être numérique.`;
+  }
+  if (!isBlank(proposal.monitoring_interval_hours) && (Number(proposal.monitoring_interval_hours) <= 0 || Number(proposal.monitoring_interval_hours) > 8760)) {
+    return 'L’intervalle de surveillance doit être entre 0 et 8760 heures.';
+  }
+  if (proposal.limit_min !== undefined && proposal.limit_max !== undefined && !isBlank(proposal.limit_min) && !isBlank(proposal.limit_max) && Number(proposal.limit_min) > Number(proposal.limit_max)) {
+    return LIMITS_ORDER_ERROR;
+  }
+  if (proposal.monitoring_responsible && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(proposal.monitoring_responsible)) return 'Responsable invalide.';
+  if (proposal.ai_generated !== undefined && typeof proposal.ai_generated !== 'boolean') return 'Valeur ai_generated invalide.';
+  return null;
+}
+
+// POST /api/haccp/hazards/:hazardId/ccps — creates a draft only after an explicit CCP control decision.
 router.post(
   '/hazards/:hazardId/ccps',
   requireRole('admin', 'manager'),
   [
     body('ccp_number').optional({ values: 'falsy' }).trim(),
-    body('critical_limits').trim().notEmpty().withMessage('Les limites critiques sont requises.'),
-    body('monitoring_procedure').trim().notEmpty().withMessage('La procédure de surveillance est requise.'),
+    body('critical_limits').optional({ nullable: true }).isString().trim(),
+    body('monitoring_procedure').optional({ nullable: true }).isString().trim(),
     body('monitoring_frequency').optional({ values: 'falsy' }).trim(),
     body('monitoring_responsible').optional({ values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
     body('corrective_action_procedure').optional({ values: 'falsy' }).trim(),
     body('verification_procedure').optional({ values: 'falsy' }).trim(),
     body('verification_frequency').optional({ values: 'falsy' }).trim(),
     body('record_keeping_procedure').optional({ values: 'falsy' }).trim(),
+    body('ai_generated').optional().isBoolean().withMessage('Valeur ai_generated invalide.'),
     ...CCP_NUMERIC_VALIDATORS,
   ],
   async (req, res) => {
     const { data: hazard, error: fetchError } = await supabase
       .from('haccp_hazards')
-      .select('id, is_significant')
+      .select('id, control_type, decision_justification, step:haccp_process_steps(plan:haccp_plans(category_id))')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.hazardId)
       .single();
@@ -699,9 +968,11 @@ router.post(
     if (fetchError || !hazard) {
       return res.status(404).json({ error: 'Danger introuvable.' });
     }
-    if (!hazard.is_significant) {
-      return res.status(400).json({ error: "Ce danger n'est pas marqué comme significatif : marquez-le comme tel avant d'y rattacher un CCP." });
+    if (hazard.control_type !== 'ccp' || !substantiveText(hazard.decision_justification)) {
+      return res.status(400).json({ error: 'Enregistrez d’abord une décision de maîtrise CCP explicitement justifiée pour ce danger.' });
     }
+    const canManage = await canManageHaccpCategory(req, hazard.step?.plan?.category_id);
+    if (!canManage) return res.status(404).json({ error: 'Danger introuvable.' });
 
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
@@ -713,42 +984,78 @@ router.post(
       return res.status(400).json({ error: LIMITS_ORDER_ERROR });
     }
 
-    const {
-      ccp_number: ccpNumber,
-      critical_limits: criticalLimits,
-      monitoring_procedure: monitoringProcedure,
-      monitoring_frequency: monitoringFrequency,
-      monitoring_responsible: monitoringResponsible,
-      corrective_action_procedure: correctiveActionProcedure,
-      verification_procedure: verificationProcedure,
-      verification_frequency: verificationFrequency,
-      record_keeping_procedure: recordKeepingProcedure,
-    } = req.body;
-
-    const { data, error } = await supabase
-      .from('haccp_ccps')
-      .insert({
-        tenant_id: req.tenantId,
-        hazard_id: hazard.id,
-        ccp_number: ccpNumber || null,
-        critical_limits: criticalLimits,
-        monitoring_procedure: monitoringProcedure,
-        monitoring_frequency: monitoringFrequency || null,
-        monitoring_responsible: monitoringResponsible || null,
-        corrective_action_procedure: correctiveActionProcedure || null,
-        verification_procedure: verificationProcedure || null,
-        verification_frequency: verificationFrequency || null,
-        record_keeping_procedure: recordKeepingProcedure || null,
-        ...numeric,
-      })
-      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name)')
-      .single();
+    const payload = { ...ccpPayloadFromBody(req.body), ...numeric };
+    const { data, error } = await createCcpDraftAtomically({
+      tenantId: req.tenantId,
+      hazardId: hazard.id,
+      decisionJustification: hazard.decision_justification,
+      payload,
+    });
 
     if (error) {
-      return res.status(500).json({ error: 'Erreur lors de la création du point critique.' });
+      const mapped = mapCcpRpcError(error);
+      return res.status(mapped.status).json({ error: mapped.message });
     }
 
     res.status(201).json(data);
+  }
+);
+
+router.post(
+  '/ccps/:id/approve',
+  requireRole('admin', 'manager'),
+  [
+    body('validation_source').optional().isString().trim().isLength({ min: 5, max: 1000 }).withMessage('La source de validation doit être précisée.'),
+    body('validation_evidence').optional().isString().trim().isLength({ min: 20, max: 5000 }).withMessage('Les preuves de validation doivent être substantielles.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+
+    const { data: ccp, error: fetchError } = await supabase
+      .from('haccp_ccps')
+      .select('*, hazard:haccp_hazards(step:haccp_process_steps(plan:haccp_plans(category_id)))')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (fetchError) return res.status(500).json({ error: 'Impossible de vérifier le CCP.' });
+    if (!ccp) return res.status(404).json({ error: 'Point critique introuvable.' });
+    if (!(await canManageHaccpCategory(req, ccp.hazard?.step?.plan?.category_id))) {
+      return res.status(404).json({ error: 'Point critique introuvable.' });
+    }
+    if (ccp.status !== 'draft') return res.status(409).json({ error: ccp.status === 'legacy' ? 'Un CCP historique conserve son statut legacy ; aucune approbation rétroactive n’est inventée.' : 'Ce CCP est déjà approuvé.' });
+
+    const validationSource = req.body.validation_source ?? ccp.validation_source;
+    const validationEvidence = req.body.validation_evidence ?? ccp.validation_evidence;
+    const issues = ccpApprovalErrors({ ...ccp, validation_source: validationSource, validation_evidence: validationEvidence });
+    if (issues.length > 0) return res.status(400).json({ error: 'Le CCP ne peut pas être approuvé.', details: issues });
+
+    const { data: responsible, error: responsibleError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', ccp.monitoring_responsible)
+      .maybeSingle();
+    if (responsibleError) return res.status(500).json({ error: 'Impossible de vérifier le responsable de surveillance.' });
+    if (!responsible) return res.status(400).json({ error: 'Le responsable de surveillance doit appartenir à cette entreprise.' });
+
+    const { data, error } = await supabase
+      .from('haccp_ccps')
+      .update({
+        status: 'approved',
+        validation_source: validationSource.trim(),
+        validation_evidence: validationEvidence.trim(),
+        approved_by: req.user.id,
+        approved_at: new Date().toISOString(),
+      })
+      .eq('tenant_id', req.tenantId)
+      .eq('id', ccp.id)
+      .eq('status', 'draft')
+      .select('*, monitoring_responsible_user:users!haccp_ccps_monitoring_responsible_fkey(id, full_name)')
+      .maybeSingle();
+    if (error) return res.status(500).json({ error: 'Erreur lors de l’approbation du CCP.' });
+    if (!data) return res.status(409).json({ error: 'Le statut du CCP a changé ; rechargez-le avant de réessayer.' });
+    res.json(data);
   }
 );
 
@@ -765,12 +1072,26 @@ router.patch(
     body('verification_procedure').optional({ values: 'falsy' }).trim(),
     body('verification_frequency').optional({ values: 'falsy' }).trim(),
     body('record_keeping_procedure').optional({ values: 'falsy' }).trim(),
+    body('validation_source').optional({ nullable: true }).isString().trim().isLength({ max: 1000 }),
+    body('validation_evidence').optional({ nullable: true }).isString().trim().isLength({ max: 5000 }),
     ...CCP_NUMERIC_VALIDATORS,
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: current, error: currentError } = await supabase
+      .from('haccp_ccps')
+      .select('id, status, limit_min, limit_max, hazard:haccp_hazards(step:haccp_process_steps(plan:haccp_plans(category_id)))')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .maybeSingle();
+    if (currentError) return res.status(500).json({ error: 'Impossible de vérifier le point critique.' });
+    if (!current) return res.status(404).json({ error: 'Point critique introuvable.' });
+    if (!(await canManageHaccpCategory(req, current.hazard?.step?.plan?.category_id))) {
+      return res.status(404).json({ error: 'Point critique introuvable.' });
     }
 
     const update = { ...ccpNumericUpdate(req.body) };
@@ -783,6 +1104,8 @@ router.patch(
       'verification_procedure',
       'verification_frequency',
       'record_keeping_procedure',
+      'validation_source',
+      'validation_evidence',
     ]) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
@@ -794,12 +1117,21 @@ router.patch(
 
     // L'ordre des bornes se vérifie sur le résultat final (une seule borne peut changer dans cette requête).
     if ('limit_min' in update || 'limit_max' in update) {
-      const { data: current } = await supabase.from('haccp_ccps').select('limit_min, limit_max').eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
       const min = 'limit_min' in update ? update.limit_min : current?.limit_min;
       const max = 'limit_max' in update ? update.limit_max : current?.limit_max;
       if (min !== null && min !== undefined && max !== null && max !== undefined && Number(min) > Number(max)) {
         return res.status(400).json({ error: LIMITS_ORDER_ERROR });
       }
+    }
+    const reapprovalRequired = CCP_OPERATIONAL_STATUSES.includes(current.status);
+    if (reapprovalRequired) {
+      Object.assign(update, {
+        status: 'draft',
+        validation_source: update.validation_source ?? null,
+        validation_evidence: update.validation_evidence ?? null,
+        approved_by: null,
+        approved_at: null,
+      });
     }
 
     const { data, error } = await supabase
@@ -814,11 +1146,21 @@ router.patch(
       return res.status(404).json({ error: 'Point critique introuvable.' });
     }
 
-    res.json(data);
+    res.json({ ...data, reapproval_required: reapprovalRequired });
   }
 );
 
 router.delete('/ccps/:id', requireRole('admin', 'manager'), async (req, res) => {
+  const { data: current, error: currentError } = await supabase
+    .from('haccp_ccps')
+    .select('id, hazard:haccp_hazards(step:haccp_process_steps(plan:haccp_plans(category_id)))')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (currentError) return res.status(500).json({ error: 'Impossible de vérifier le point critique.' });
+  if (!current || !(await canManageHaccpCategory(req, current.hazard?.step?.plan?.category_id))) {
+    return res.status(404).json({ error: 'Point critique introuvable.' });
+  }
   const { error, count } = await supabase.from('haccp_ccps').delete({ count: 'exact' }).eq('tenant_id', req.tenantId).eq('id', req.params.id);
 
   if (error) {
@@ -861,17 +1203,25 @@ router.post(
     body('numeric_value').optional().custom((value) => isBlank(value) || Number.isFinite(Number(value))).withMessage('Valeur numérique invalide.'),
     body('within_limits').optional().isBoolean().withMessage('Valeur invalide.').toBoolean(),
     body('corrective_action_taken').optional({ values: 'falsy' }).trim(),
+    body('lot_reference').optional({ values: 'falsy' }).isString().trim().isLength({ max: 500 }),
+    body('product_disposition').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }),
+    body('disposition_decision').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }),
+    body('return_to_control').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }),
+    body('effectiveness_verification').optional({ values: 'falsy' }).isString().trim().isLength({ max: 2000 }),
   ],
   async (req, res) => {
     const { data: ccp, error: fetchError } = await supabase
       .from('haccp_ccps')
-      .select('id, ccp_number, limit_min, limit_max, limit_unit, monitoring_responsible, hazard:haccp_hazards(step:haccp_process_steps(plan:haccp_plans(id, title, created_by)))')
+      .select('id, status, ccp_number, limit_min, limit_max, limit_unit, monitoring_responsible, hazard:haccp_hazards(step:haccp_process_steps(plan:haccp_plans(id, title, created_by)))')
       .eq('tenant_id', req.tenantId)
       .eq('id', req.params.ccpId)
       .single();
 
     if (fetchError || !ccp) {
       return res.status(404).json({ error: 'Point critique introuvable.' });
+    }
+    if (!CCP_OPERATIONAL_STATUSES.includes(ccp.status)) {
+      return res.status(409).json({ error: 'Ce CCP est un brouillon et ne peut pas recevoir de relevés de surveillance.' });
     }
 
     const errors = validationResult(req);
@@ -893,6 +1243,21 @@ router.post(
         error: 'Une dérive hors limites doit être accompagnée de l’action corrective immédiate prise.',
       });
     }
+    if (reading.withinLimits === false && ccp.status === 'approved') {
+      const driftFields = {
+        lot_reference: 'la référence du lot',
+        product_disposition: 'la décision sur le produit concerné',
+        disposition_decision: 'la décision de traitement du lot',
+        return_to_control: 'le retour à la maîtrise',
+        effectiveness_verification: 'la vérification de l’efficacité des mesures',
+      };
+      const missing = Object.entries(driftFields)
+        .filter(([field]) => !substantiveText(req.body[field]))
+        .map(([, label]) => label);
+      if (missing.length > 0) {
+        return res.status(400).json({ error: `Pour une dérive sur un CCP approuvé, renseignez ${missing.join(', ')}.` });
+      }
+    }
 
     const { data, error } = await supabase
       .from('haccp_monitoring_logs')
@@ -903,6 +1268,11 @@ router.post(
         numeric_value: reading.numericValue,
         within_limits: reading.withinLimits,
         corrective_action_taken: req.body.corrective_action_taken || null,
+        lot_reference: req.body.lot_reference || null,
+        product_disposition: req.body.product_disposition || null,
+        disposition_decision: req.body.disposition_decision || null,
+        return_to_control: req.body.return_to_control || null,
+        effectiveness_verification: req.body.effectiveness_verification || null,
         recorded_by: req.user.id,
       })
       .select('*, recorded_by_user:users!haccp_monitoring_logs_recorded_by_fkey(id, full_name)')
@@ -1104,7 +1474,10 @@ async function loadPlansForPdf(tenantId, plans) {
   }
 
   const ccpIds = assembled.flatMap((plan) => plan.steps.flatMap((step) => step.hazards.map((h) => h.ccp?.id).filter(Boolean)));
-  const monitoringSummaryByCcpId = await computeMonitoringSummaryByCcpId(tenantId, ccpIds);
+  const operationalCcpIds = assembled.flatMap((plan) =>
+    plan.steps.flatMap((step) => step.hazards.map((hazard) => hazard.ccp).filter((ccp) => ccp && CCP_OPERATIONAL_STATUSES.includes(ccp.status)).map((ccp) => ccp.id))
+  );
+  const monitoringSummaryByCcpId = await computeMonitoringSummaryByCcpId(tenantId, operationalCcpIds);
 
   return { assembled, monitoringSummaryByCcpId };
 }
@@ -1219,6 +1592,7 @@ router.get('/monitoring-due', async (req, res) => {
     .map((ccp) => ({
       id: ccp.id,
       ccp_number: ccp.ccp_number,
+      status: ccp.status,
       plan: { id: ccp.plan.id, title: ccp.plan.title },
       step_name: ccp.step_name,
       hazard_description: ccp.hazard_description,
@@ -1281,7 +1655,7 @@ router.get('/ccps/:ccpId/monitoring-summary', async (req, res) => {
   const since = new Date(Date.now() - days * 86400000).toISOString();
   const { data: logs, error } = await supabase
     .from('haccp_monitoring_logs')
-    .select('id, recorded_at, recorded_value, numeric_value, within_limits, corrective_action_taken, linked_capa_id')
+    .select('id, recorded_at, recorded_value, numeric_value, within_limits, corrective_action_taken, linked_capa_id, lot_reference, product_disposition, disposition_decision, return_to_control, effectiveness_verification')
     .eq('tenant_id', req.tenantId)
     .eq('ccp_id', ccp.id)
     .gte('recorded_at', since)
@@ -1307,6 +1681,11 @@ router.get('/ccps/:ccpId/monitoring-summary', async (req, res) => {
       value: log.numeric_value === null || log.numeric_value === undefined ? null : Number(log.numeric_value),
       within_limits: log.within_limits,
       has_capa: Boolean(log.linked_capa_id),
+      lot_reference: log.lot_reference,
+      product_disposition: log.product_disposition,
+      disposition_decision: log.disposition_decision,
+      return_to_control: log.return_to_control,
+      effectiveness_verification: log.effectiveness_verification,
     })),
   });
 });
@@ -1327,7 +1706,7 @@ router.get('/ccps/:ccpId/pdf', async (req, res) => {
   const since = new Date(Date.now() - days * 86400000).toISOString();
   const { data: logs } = await supabase
     .from('haccp_monitoring_logs')
-    .select('recorded_at, recorded_value, numeric_value, within_limits, corrective_action_taken, recorded_by_user:users!haccp_monitoring_logs_recorded_by_fkey(id, full_name)')
+    .select('recorded_at, recorded_value, numeric_value, within_limits, corrective_action_taken, lot_reference, product_disposition, disposition_decision, return_to_control, effectiveness_verification, recorded_by_user:users!haccp_monitoring_logs_recorded_by_fkey(id, full_name)')
     .eq('tenant_id', req.tenantId)
     .eq('ccp_id', ccp.id)
     .gte('recorded_at', since)
@@ -1371,7 +1750,7 @@ router.get('/plans/:id/word', async (req, res) => {
 
 // --- Revue et versions d'un plan ------------------------------------------------------------
 
-// POST /api/haccp/plans/:id/review — « marquer revu » (revue annuelle, principe 6) : enregistre une version du
+// POST /api/haccp/plans/:id/review — « marquer revu » (revue annuelle / vérification) : enregistre une version du
 // plan, trace qui l'a revu et quand, et fixe la prochaine revue.
 router.post(
   '/plans/:id/review',

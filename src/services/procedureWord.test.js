@@ -30,11 +30,16 @@ async function documentXml(buffer) {
   return zip.file('word/document.xml').async('string');
 }
 
+async function wordPartXml(buffer, part) {
+  const zip = await JSZip.loadAsync(buffer);
+  return zip.file(`word/${part}.xml`).async('string');
+}
+
 // Somme des largeurs de <w:gridCol> pour chaque <w:tbl> du document — un Math.round colonne par
 // colonne peut décaler cette somme de quelques twips par rapport à la largeur déclarée du
 // tableau (bug réel constaté : LibreOffice tolère l'écart, Word désaligne les bordures entre
 // l'en-tête et les lignes de données). Toutes les tables de ce renderer partagent la même
-// largeur totale (TABLE_WIDTH_DXA = 9026, voir procedureWord.js), donc chaque somme doit y être
+// largeur totale (TABLE_WIDTH_DXA = 10466, voir procedureWord.js), donc chaque somme doit y être
 // strictement égale.
 async function tableColumnWidthSums(buffer) {
   const zip = await JSZip.loadAsync(buffer);
@@ -122,8 +127,9 @@ describe('buildProcedureWordDocument', () => {
     expect(buffer.length).toBeGreaterThan(0);
 
     const text = await textOf(buffer);
-    expect(text).toContain(PROCEDURE.number);
-    expect(text).toContain(PROCEDURE.title);
+    const headerXml = await wordPartXml(buffer, 'header1');
+    expect(headerXml).toContain(PROCEDURE.number);
+    expect(headerXml).toContain(PROCEDURE.title);
     // façon IA
     expect(text).toContain('Réception de la commande');
     expect(text).toContain('Vérifier le bon de commande');
@@ -152,8 +158,41 @@ describe('buildProcedureWordDocument', () => {
       versions: VERSIONS,
     });
     expect(Buffer.isBuffer(buffer)).toBe(true);
-    const text = await textOf(buffer);
-    expect(text).toContain(PROCEDURE.title);
+    expect(await wordPartXml(buffer, 'header1')).toContain(PROCEDURE.title);
+  });
+
+  it('exporte les tableaux de formulaire sans ajouter de ligne d’en-tête artificielle', async () => {
+    const version = richVersion({
+      content: {
+        sections: [
+          {
+            key: 'formulaire',
+            label: 'Formulaire',
+            blocks: [
+              {
+                type: 'tableau',
+                hasHeader: false,
+                headers: ['Colonne 1', 'Colonne 2'],
+                rows: [['Date', ''], ['Référence produit', '']],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const xml = await documentXml(
+      await buildProcedureWordDocument({
+        tenantName: 'Entreprise Test',
+        procedure: PROCEDURE,
+        version,
+        versions: [version],
+      })
+    );
+    const formTable = xml.match(/<w:tbl>[\s\S]*?<\/w:tbl>/g).find((table) => table.includes('Référence produit'));
+
+    expect(formTable).toBeDefined();
+    expect(formTable).not.toContain('Colonne 1');
+    expect((formTable.match(/<w:tr>/g) || []).length).toBe(2);
   });
 
   it('sommaire reflète une structure modifiée après coup (section renommée + section ajoutée)', async () => {
@@ -173,17 +212,47 @@ describe('buildProcedureWordDocument', () => {
     expect(text).toContain('Annexes');
   });
 
-  it('génère un sommaire Word actualisable avec des titres paginables', async () => {
+  it('inclut immédiatement les entrées du sommaire sans dépendre d’une actualisation Word', async () => {
     const buffer = await buildProcedureWordDocument({
       tenantName: 'Entreprise Test',
       procedure: PROCEDURE,
       version: richVersion(),
       versions: VERSIONS,
     });
+    const text = await textOf(buffer);
     const xml = await documentXml(buffer);
-    expect(xml).toContain('TOC \\o &quot;1-2&quot;');
+    expect(text).toContain('Sommaire');
+    expect(text).toContain('2.    Contrôles et indicateurs');
+    expect(text).toContain('4.    Historique des versions');
+    expect(xml).not.toContain('TOC \\o');
     expect(xml).toContain('w:val="Heading1"');
     expect(xml).toContain('w:val="Heading2"');
+  });
+
+  it('crée une couverture, un sommaire séparé et un corps numéroté avec ses sous-sections', async () => {
+    const version = richVersion({
+      content: {
+        sections: [
+          { key: 'objectifs', label: 'Objectifs de la procédure', blocks: [{ type: 'paragraphe', id: 'p1', text: '1.1 Objet de la procédure\nTexte descriptif.' }] },
+          { key: 'responsabilites', label: 'Responsabilités', blocks: [{ type: 'tableau', id: 't1', headers: ['Poste', 'Responsabilités'], rows: [['Responsable', 'Pilote la procédure.']] }] },
+        ],
+      },
+    });
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure: PROCEDURE,
+      version,
+      versions: [version],
+    });
+    const text = await textOf(buffer);
+    const xml = await documentXml(buffer);
+
+    expect(xml).toContain('DATE DE CRÉATION');
+    expect(text.indexOf('Entreprise Test')).toBeLessThan(text.indexOf('Sommaire'));
+    expect(text.indexOf('Sommaire')).toBeLessThan(text.indexOf('1.    Objectifs de la procédure'));
+    expect(text).toContain('1.1    Objet de la procédure');
+    expect(xml.match(/<w:sectPr/g)).toHaveLength(3);
+    expect(xml).toContain('PAGEREF procedure_section_0');
   });
 
   it('un sommaire réécrit à la main (section key "sommaire") est rendu tel quel, jamais écrasé par le calcul automatique', async () => {
@@ -233,16 +302,16 @@ describe('buildProcedureWordDocument', () => {
     expect(await textOf(buffer)).toContain('Note personnalisée courte');
   });
 
-  it('table à colonnes libres : cantSplit sur chaque ligne (identité + historique + tableau manuel)', async () => {
+  it('préserve les lignes indivisibles des tableaux de contrôle, sommaire, contenu et historique', async () => {
     const buffer = await buildProcedureWordDocument({
       tenantName: 'Entreprise Test',
       procedure: PROCEDURE,
       version: richVersion(),
       versions: VERSIONS,
     });
-    // 8 lignes d'identité + 3 lignes d'historique (en-tête + 2 versions, voir VERSIONS) + 2
-    // lignes du tableau manuel (en-tête + 1 ligne) = 13.
-    expect(await countCantSplit(buffer)).toBe(13);
+    // En-tête de contrôle sur la couverture (3) + sommaire (6) + tableau manuel (2)
+    // + historique des versions (3) = 14.
+    expect(await countCantSplit(buffer)).toBe(14);
   });
 
   it('la somme des largeurs de colonnes de chaque tableau tombe exactement sur la largeur déclarée (jamais un twip d’écart)', async () => {
@@ -253,10 +322,12 @@ describe('buildProcedureWordDocument', () => {
       versions: VERSIONS,
     });
     const sums = await tableColumnWidthSums(buffer);
-    // Identité (2 col.) + tableau manuel (4 col.) + historique (5 col.) = 3 tableaux, tous à la
-    // même largeur totale.
-    expect(sums).toHaveLength(3);
-    sums.forEach((sum) => expect(sum).toBe(9026));
+    // Tableau de contrôle couverture + sommaire + tableau manuel + historique.
+    expect(sums).toHaveLength(4);
+    sums.forEach((sum) => expect(sum).toBe(10466));
+    const headerXml = await wordPartXml(buffer, 'header1');
+    expect(headerXml).toContain('w:tbl');
+    expect(headerXml).toContain('PROCÉDURE DU SYSTÈME DE GESTION DE LA QUALITÉ');
   });
 
   it('sans logo tenant : aucun emplacement vide, aucune image embarquée', async () => {
@@ -267,5 +338,39 @@ describe('buildProcedureWordDocument', () => {
       versions: VERSIONS,
     });
     expect(await hasEmbeddedMedia(buffer)).toBe(false);
+  });
+
+  it('identifie l’entreprise et avertit si la version exportée est un brouillon et la révision échue', async () => {
+    const procedure = { ...PROCEDURE, next_review_date: '2020-01-01' };
+    const version = richVersion();
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      procedure,
+      version,
+      versions: [version],
+    });
+    const text = await textOf(buffer);
+
+    expect(await wordPartXml(buffer, 'footer1')).toContain('Entreprise Test');
+    expect(await wordPartXml(buffer, 'header1')).toContain('Brouillon');
+    expect(text).toContain('Version non approuvée');
+    expect(text).toContain('Révision en retard');
+  });
+
+  it('place les coordonnées configurées de l’entreprise dans le pied de page', async () => {
+    const buffer = await buildProcedureWordDocument({
+      tenantName: 'Entreprise Test',
+      tenantAddress: '7 rue Gustave Eiffel',
+      tenantPhone: '0262 22 17 30',
+      tenantLegalMentions: 'SIRET 521 120 717 00017',
+      procedure: PROCEDURE,
+      version: richVersion(),
+      versions: VERSIONS,
+    });
+    const footerXml = await wordPartXml(buffer, 'footer1');
+    expect(footerXml).toContain('7 rue Gustave Eiffel');
+    expect(footerXml).toContain('0262 22 17 30');
+    expect(footerXml).toContain('SIRET 521 120 717 00017');
+    expect(footerXml).toContain(' sur ');
   });
 });

@@ -82,7 +82,7 @@ export async function fetchTrainingCoverage(tenantId, planId, viewer) {
   const { data: hazards } = stepIds.length ? await supabase.from('haccp_hazards').select('id').eq('tenant_id', tenantId).in('step_id', stepIds) : { data: [] };
   const hazardIds = (hazards || []).map((hazard) => hazard.id);
   const { data: ccps } = hazardIds.length
-    ? await supabase.from('haccp_ccps').select('monitoring_responsible, responsible:users!haccp_ccps_monitoring_responsible_fkey(id, full_name, training_exempt)').eq('tenant_id', tenantId).in('hazard_id', hazardIds)
+    ? await supabase.from('haccp_ccps').select('status, monitoring_responsible, responsible:users!haccp_ccps_monitoring_responsible_fkey(id, full_name, training_exempt)').eq('tenant_id', tenantId).in('hazard_id', hazardIds).in('status', ['approved', 'legacy'])
     : { data: [] };
 
   const people = new Map();

@@ -31,6 +31,9 @@ create table tenants (
   slug          text not null unique,
   plan          text not null default 'free' check (plan in ('free', 'starter', 'pro', 'enterprise')),
   logo_url      text,
+  company_address text,
+  company_phone text,
+  company_legal_mentions text,
   -- Fuseau IANA (ex. 'Europe/Paris', 'Indian/Reunion') utilisé pour l'affichage date/heure
   -- dans le menu et, à terme, tout formatage de date sensible au fuseau. UTC par défaut :
   -- neutre, ne présuppose rien de la localisation réelle du tenant.
@@ -636,9 +639,18 @@ create table haccp_plans (
   product_description text,
   scope              text,
   team               text,
+  prerequisites      text,
+  intended_use       text,
+  consumer_groups    text,
+  product_characteristics text,
+  flow_diagram_reference text,
+  flow_diagram_verification text,
+  no_ccp_justification text,
+  validation_review_notes text,
+  verification_review_notes text,
   service_id         uuid references services (id) on delete set null,
   status             text not null default 'draft' check (status in ('draft', 'active', 'under_review', 'archived')),
-  -- Revue annuelle du plan (principe 6 : validation).
+  -- Revue annuelle du plan (principe 6 : vérification de l'efficacité du système HACCP).
   review_date        date,
   last_reviewed_at   timestamptz,
   last_reviewed_by   uuid references users (id) on delete set null,
@@ -660,9 +672,8 @@ create table haccp_process_steps (
 );
 
 -- likelihood/severity et risk_score generated : même principe que risks.risk_score ci-dessus
--- (jamais désynchronisé d'une mise à jour partielle). is_significant + justification tiennent
--- lieu, pour l'instant, de l'arbre de décision Codex Alimentarius complet (les 4 questions
--- classiques) — une évaluation manuelle documentée plutôt qu'un assistant guidé, en V1.
+-- (jamais désynchronisé d'une mise à jour partielle). is_significant représente la significativité
+-- du risque; control_type est une décision de maîtrise distincte (PRP, CCP, modification procédé).
 create table haccp_hazards (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
@@ -675,6 +686,8 @@ create table haccp_hazards (
   risk_score        integer generated always as (likelihood * severity) stored,
   is_significant    boolean not null default false,
   justification     text,
+  control_type      text not null default 'undetermined' check (control_type in ('undetermined', 'prp', 'ccp', 'process_change')),
+  decision_justification text,
   -- Traçabilité : ce danger vient-il d'une suggestion IA acceptée telle quelle (ou modifiée)
   -- plutôt que d'une saisie manuelle — utile pour un audit de conformité qui voudrait
   -- distinguer l'analyse humaine de l'assistance IA.
@@ -689,13 +702,19 @@ create table haccp_ccps (
   tenant_id                   uuid not null references tenants (id) on delete cascade,
   hazard_id                   uuid not null references haccp_hazards (id) on delete cascade,
   ccp_number                  text,
-  critical_limits             text not null,
+  critical_limits             text,
+  status                      text not null default 'draft' check (status in ('draft', 'approved', 'legacy')),
+  validation_source           text,
+  validation_evidence         text,
+  approved_by                 uuid references users (id) on delete set null,
+  approved_at                 timestamptz,
+  ai_generated                boolean not null default false,
   -- Limites chiffrées (bornes incluses) : verdict automatique d'un relevé et courbe. Au moins une
   -- borne pour activer le verdict automatique ; critical_limits reste la référence lisible.
   limit_min                   numeric,
   limit_max                   numeric,
   limit_unit                  text,
-  monitoring_procedure        text not null,
+  monitoring_procedure        text,
   monitoring_frequency        text,
   -- Intervalle de surveillance en heures (ex. 12 = deux fois par jour) : rappel « relevé en retard ».
   monitoring_interval_hours   numeric check (monitoring_interval_hours is null or monitoring_interval_hours > 0),
@@ -721,11 +740,76 @@ create table haccp_monitoring_logs (
   numeric_value          numeric,
   within_limits          boolean not null,
   corrective_action_taken text,
+  lot_reference         text,
+  product_disposition   text,
+  disposition_decision  text,
+  return_to_control     text,
+  effectiveness_verification text,
   linked_capa_id         uuid references capas (id) on delete set null,
   recorded_by            uuid references users (id) on delete set null,
   recorded_at            timestamptz not null default now(),
   created_at             timestamptz not null default now()
 );
+
+-- Creates each AI/user-selected CCP draft and records the explicit hazard control decision
+-- atomically. Existing CCPs cannot be silently replaced.
+create or replace function haccp_create_ccp_draft(
+  p_tenant_id uuid,
+  p_hazard_id uuid,
+  p_decision_justification text,
+  p_ccp jsonb
+) returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_hazard_id uuid;
+  v_ccp jsonb;
+begin
+  select id into v_hazard_id
+  from haccp_hazards
+  where id = p_hazard_id and tenant_id = p_tenant_id
+  for update;
+
+  if not found then
+    raise exception 'HAZARD_NOT_FOUND';
+  end if;
+
+  if exists (
+    select 1 from haccp_ccps
+    where tenant_id = p_tenant_id and hazard_id = p_hazard_id
+  ) then
+    raise exception 'CCP_EXISTS';
+  end if;
+
+  insert into haccp_ccps (
+    tenant_id, hazard_id, ccp_number, critical_limits, status, ai_generated,
+    monitoring_procedure, monitoring_frequency, monitoring_responsible,
+    corrective_action_procedure, verification_procedure, verification_frequency,
+    record_keeping_procedure, limit_min, limit_max, limit_unit, monitoring_interval_hours
+  ) values (
+    p_tenant_id, p_hazard_id, nullif(p_ccp->>'ccp_number', ''), nullif(p_ccp->>'critical_limits', ''),
+    'draft', coalesce((p_ccp->>'ai_generated')::boolean, true),
+    nullif(p_ccp->>'monitoring_procedure', ''), nullif(p_ccp->>'monitoring_frequency', ''),
+    nullif(p_ccp->>'monitoring_responsible', '')::uuid,
+    nullif(p_ccp->>'corrective_action_procedure', ''), nullif(p_ccp->>'verification_procedure', ''),
+    nullif(p_ccp->>'verification_frequency', ''), nullif(p_ccp->>'record_keeping_procedure', ''),
+    nullif(p_ccp->>'limit_min', '')::numeric, nullif(p_ccp->>'limit_max', '')::numeric,
+    nullif(p_ccp->>'limit_unit', ''), nullif(p_ccp->>'monitoring_interval_hours', '')::numeric
+  )
+  returning to_jsonb(haccp_ccps.*) into v_ccp;
+
+  update haccp_hazards
+  set control_type = 'ccp', decision_justification = p_decision_justification, updated_at = now()
+  where id = p_hazard_id and tenant_id = p_tenant_id;
+
+  return v_ccp;
+end;
+$$;
+
+revoke all on function haccp_create_ccp_draft(uuid, uuid, text, jsonb) from public, anon, authenticated;
+grant execute on function haccp_create_ccp_draft(uuid, uuid, text, jsonb) to service_role;
 
 -- Relevé de surveillance à l'origine de cette CAPA (voir aussi
 -- haccp_monitoring_logs.linked_capa_id, l'inverse) — même principe miroir que
@@ -1225,6 +1309,7 @@ create table document_register_rows (
 create table procedures (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants (id) on delete cascade,
+  source_document_id uuid references documents (id) on delete set null,
   number            text not null,
   title             text not null,
   process           text,
@@ -1258,14 +1343,13 @@ create table procedure_versions (
   -- Motif de rejet ("retour au rédacteur avec commentaire") — même nom que
   -- document_approvals.comment.
   comment       text,
-  -- Pièce jointe optionnelle (procédure officielle déjà mise en forme, PDF/Word) EN
-  -- COMPLÉMENT du contenu structuré, jamais à sa place : le contenu structuré garde tous ses
-  -- usages (génération IA, vérification de conformité, comparateur de versions), la pièce
-  -- jointe est juste le document source que le client possédait déjà. Même mécanisme que
-  -- documents.file_path (Google Drive du tenant, voir services/tenantStorage.js) mais
-  -- Drive-only ici, pas de repli Supabase : voir le résumé de session pour la justification.
-  attachment_drive_file_id  text,
+  -- Pièce jointe optionnelle EN COMPLÉMENT du contenu structuré. file_path/provider suivent
+  -- documents.file_path/storage_provider et restent figés sur cette version, même après un
+  -- changement de fournisseur du tenant. Un fichier importé depuis Documents référence son
+  -- stockage existant sans le déplacer.
+  attachment_file_path      text,
   attachment_file_name      text,
+  attachment_storage_provider text,
   -- Fiche de diffusion IA (résumé condensé pour un public cible qui doit connaître la
   -- procédure sans nécessairement la lire en entier) — générée seulement sur une version
   -- APPROVED (voir POST .../distribution-sheet), persistée ici pour être réaffichée en
@@ -2090,6 +2174,9 @@ create index idx_document_acknowledgments_tenant_id on document_acknowledgments 
 create index idx_document_acknowledgments_document_id on document_acknowledgments (document_id);
 
 create index idx_procedures_tenant_id on procedures (tenant_id);
+create unique index idx_procedures_source_document_id
+  on procedures (tenant_id, source_document_id)
+  where source_document_id is not null;
 create index idx_procedure_versions_tenant_id on procedure_versions (tenant_id);
 create index idx_procedure_versions_procedure_id on procedure_versions (procedure_id);
 create index idx_procedure_versions_search_vector on procedure_versions using gin (search_vector);

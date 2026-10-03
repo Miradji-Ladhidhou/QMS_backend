@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import { randomUUID } from 'node:crypto';
 import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -10,9 +11,15 @@ import { buildProcedurePdf } from '../services/procedurePdf.js';
 import { buildProcedureWordDocument } from '../services/procedureWord.js';
 import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
 import { signDownloadTicket } from '../services/driveDownloadTicket.js';
-import { uploadFile as uploadFileToDrive } from '../services/googleDrive.js';
+import {
+  getDriveFileStream,
+  refreshAccessTokenIfNeeded,
+  uploadFile as uploadFileToDrive,
+} from '../services/googleDrive.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
-import { draftToBlockContent, blocksToPlainText } from '../lib/procedureBlocks.js';
+import { draftToBlockContent, blocksToPlainText, textToParagraphBlocks } from '../lib/procedureBlocks.js';
+import { extractProcedureSectionsFromDocx } from '../services/procedureContentExtraction.js';
+import { filterViewableDocuments } from '../middleware/documentPermissions.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import {
   generateProcedureDraft,
@@ -35,6 +42,70 @@ const upload = multer({
 const router = Router();
 const MANAGER_ROLES = ['admin', 'manager'];
 const PROCEDURE_STATUSES = ['draft', 'in_review', 'approved', 'obsolete'];
+const STORAGE_BUCKET = 'qms-documents';
+const MAX_SOURCE_DOCX_BYTES = 20 * 1024 * 1024;
+
+async function sourceDocumentBuffer(document, tenantId) {
+  if (document.storage_provider === 'google_drive') {
+    const { data: connection, error } = await supabase
+      .from('google_drive_connections')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error || !connection) {
+      throw new Error(error?.message || 'Connexion Google Drive introuvable.');
+    }
+
+    const accessToken = await refreshAccessTokenIfNeeded(connection);
+    const stream = await getDriveFileStream(accessToken, document.file_path);
+    const chunks = [];
+    let size = 0;
+    for await (const chunk of stream) {
+      const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      size += bufferChunk.length;
+      if (size > MAX_SOURCE_DOCX_BYTES) {
+        stream.destroy();
+        throw new Error('Le document Word source dépasse la taille maximale autorisée.');
+      }
+      chunks.push(bufferChunk);
+    }
+    return Buffer.concat(chunks);
+  }
+
+  const { data, error } = await supabase.storage.from(STORAGE_BUCKET).download(document.file_path);
+  if (error || !data) {
+    throw new Error(error?.message || 'Fichier source introuvable dans le stockage.');
+  }
+  if (data.size > MAX_SOURCE_DOCX_BYTES) {
+    throw new Error('Le document Word source dépasse la taille maximale autorisée.');
+  }
+  return Buffer.from(await data.arrayBuffer());
+}
+
+async function buildImportedProcedureContent(sourceDocument, tenantId) {
+  const sourceText = [sourceDocument.description, sourceDocument.extracted_text].filter(Boolean).join('\n\n');
+  let importedSections;
+  if (sourceDocument.file_path && /\.docx$/i.test(sourceDocument.file_name || '')) {
+    const sourceBuffer = await sourceDocumentBuffer(sourceDocument, tenantId);
+    importedSections = await extractProcedureSectionsFromDocx(sourceBuffer, {
+      description: sourceDocument.description || '',
+      documentTitle: sourceDocument.title || '',
+    });
+  }
+
+  return {
+    sections: importedSections?.length
+      ? importedSections
+      : [
+          {
+            key: 'contenu_importe',
+            label: 'Contenu repris du document source',
+            blocks: textToParagraphBlocks(sourceText),
+          },
+        ],
+    documents_associes: [],
+  };
+}
 
 // Pas de système de quota générique dans l'app (voir middleware/rateLimit.js, un limiteur
 // anti-abus par IP, sans lien avec un coût IA par tenant) : garde-fou minimal et pragmatique
@@ -44,6 +115,83 @@ const MAX_FULL_DRAFT_JOBS_PER_DAY = 15;
 
 router.use(requireAuth);
 router.use(requireMenuVisible('procedures'));
+
+async function isSourceDocumentViewable(req, sourceDocumentId) {
+  if (!sourceDocumentId) return true;
+
+  const { data: sourceDocument, error } = await supabase
+    .from('documents')
+    .select('id, category_id, category:document_categories(id, is_restricted)')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', sourceDocumentId)
+    .maybeSingle();
+  if (error) {
+    console.error('Erreur lors de la vérification des droits du document source :', error);
+    throw new Error('Impossible de vérifier les droits du document source.');
+  }
+  if (!sourceDocument) return true;
+
+  const [viewable] = await filterViewableDocuments({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    documents: [sourceDocument],
+  });
+  return Boolean(viewable);
+}
+
+async function isProcedureViewable(req, procedureId) {
+  try {
+    const { data: procedure, error } = await supabase
+      .from('procedures')
+      .select('id, category_id, source_document_id, category:categories(id, is_restricted)')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', procedureId)
+      .maybeSingle();
+    if (error) {
+      console.error('Erreur lors de la vérification des droits de la procédure :', error);
+      throw new Error('Impossible de vérifier les droits de la procédure.');
+    }
+    if (!procedure) return false;
+    if (req.userRole !== 'admin') {
+      const shared = await isSharedWithUser({
+        tenantId: req.tenantId,
+        resourceType: 'procedure',
+        resourceId: procedure.id,
+        userId: req.user.id,
+        userRole: req.userRole,
+      });
+      if (!shared && procedure.category?.is_restricted) {
+        const categoryAllowed = await hasGenericCategoryPermission({
+          tenantId: req.tenantId,
+          userId: req.user.id,
+          userRole: req.userRole,
+          categoryId: procedure.category_id,
+          permission: 'view',
+        });
+        if (!categoryAllowed) return false;
+      }
+    }
+    return isSourceDocumentViewable(req, procedure.source_document_id);
+  } catch (error) {
+    console.error('Erreur lors de la vérification des droits de la procédure :', error);
+    throw error;
+  }
+}
+
+async function requireProcedureView(req, res, procedureId) {
+  try {
+    const visible = await isProcedureViewable(req, procedureId);
+    if (!visible) {
+      res.status(404).json({ error: 'Procédure introuvable.' });
+      return false;
+    }
+    return true;
+  } catch {
+    res.status(500).json({ error: 'Impossible de vérifier les droits de la procédure.' });
+    return false;
+  }
+}
 
 // Même logique que bumpVersion (documents.js) : "1.0" -> "1.1", 1.0 par défaut pour la
 // toute première version d'une procédure.
@@ -256,7 +404,10 @@ router.get(
           id, version, status, validated_at,
           author:users!procedure_versions_author_id_fkey(id, full_name),
           validator:users!procedure_versions_validator_id_fkey(id, full_name)
-        ), category:categories(id, name, color, is_restricted, owner_user_id)`
+        ), category:categories(id, name, color, is_restricted, owner_user_id),
+        source_document:documents!procedures_source_document_id_fkey(
+          id, category_id, number, title, version, status, category:document_categories(id, is_restricted)
+        )`
       )
       .eq('tenant_id', req.tenantId)
       .order('number', { ascending: true });
@@ -293,24 +444,32 @@ router.get(
       return res.status(500).json({ error: 'Impossible de récupérer les procédures.' });
     }
 
-    if (req.userRole === 'admin') {
-      return res.json(data);
+    let visible = data;
+    if (req.userRole !== 'admin') {
+      // Un partage ouvre une procédure, mais ne doit pas élargir les droits du document d'origine.
+      const sharedIds = await getSharedResourceIds({
+        tenantId: req.tenantId,
+        resourceType: 'procedure',
+        userId: req.user.id,
+        userRole: req.userRole,
+      });
+      const categoryViewableIds = new Set(
+        (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((p) => p.id)
+      );
+      visible = data.filter((procedure) => sharedIds.has(procedure.id) || categoryViewableIds.has(procedure.id));
     }
 
-    // Un partage (voir record_shares/recordSharing.js, bouton Partager) donne accès à une
-    // procédure précise en plus des règles normales — jamais une restriction, uniquement un
-    // octroi supplémentaire. Même principe que capas.js.
-    const sharedIds = await getSharedResourceIds({
+    const sourceDocuments = visible
+      .filter((procedure) => procedure.source_document)
+      .map((procedure) => procedure.source_document);
+    const viewableSourceDocuments = await filterViewableDocuments({
       tenantId: req.tenantId,
-      resourceType: 'procedure',
       userId: req.user.id,
       userRole: req.userRole,
+      documents: sourceDocuments,
     });
-    const categoryViewableIds = new Set(
-      (await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data })).map((p) => p.id)
-    );
-    const visible = data.filter((procedure) => sharedIds.has(procedure.id) || categoryViewableIds.has(procedure.id));
-    res.json(visible);
+    const viewableSourceIds = new Set(viewableSourceDocuments.map((document) => document.id));
+    res.json(visible.filter((procedure) => !procedure.source_document || viewableSourceIds.has(procedure.source_document.id)));
   }
 );
 
@@ -339,7 +498,7 @@ router.get('/:id', async (req, res) => {
   const { data: procedure, error } = await supabase
     .from('procedures')
     .select(
-      '*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status), obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id)'
+      '*, current_version:procedure_versions!procedures_current_version_id_fkey(id, version, status), obsoleted_by_user:users!procedures_obsoleted_by_fkey(id, full_name), category:categories(id, name, color, is_restricted, owner_user_id), source_document:documents!procedures_source_document_id_fkey(id, number, title, version, status)'
     )
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
@@ -357,6 +516,8 @@ router.get('/:id', async (req, res) => {
   if (!procedure) {
     return res.status(404).json({ error: 'Procédure introuvable.' });
   }
+
+  if (!(await requireProcedureView(req, res, procedure.id))) return;
 
   if (req.userRole !== 'admin' && procedure.category?.is_restricted) {
     const shared = await isSharedWithUser({
@@ -394,7 +555,8 @@ router.get('/:id', async (req, res) => {
   // principe que my_acknowledgment sur GET /api/documents/:id : une nouvelle validation change
   // current_version_id, ce qui rend naturellement cette valeur null pour tout le monde.
   let myAcknowledgment = null;
-  if (procedure.current_version_id) {
+  const currentVersion = versions.find((version) => version.id === procedure.current_version_id);
+  if (currentVersion?.status === 'approved') {
     const { data } = await supabase
       .from('procedure_acknowledgments')
       .select('acknowledged_at')
@@ -451,6 +613,8 @@ router.get('/:id/pdf', async (req, res) => {
     return res.status(404).json({ error: 'Procédure introuvable.' });
   }
 
+  if (!(await requireProcedureView(req, res, procedure.id))) return;
+
   const { data: versions, error: versionsError } = await supabase
     .from('procedure_versions')
     .select('*, author:users!procedure_versions_author_id_fkey(id, full_name), validator:users!procedure_versions_validator_id_fkey(id, full_name)')
@@ -466,11 +630,18 @@ router.get('/:id/pdf', async (req, res) => {
 
   const version = versions.find((v) => v.id === procedure.current_version_id) || versions[0];
 
-  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const { data: tenant } = await supabase
+    .from('tenants')
+    .select('name, logo_url, company_address, company_phone, company_legal_mentions')
+    .eq('id', req.tenantId)
+    .single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
   const template = await fetchTenantTemplate(req.tenantId);
   const pdfBuffer = await buildProcedurePdf({
     tenantName: tenant?.name,
+    tenantAddress: tenant?.company_address,
+    tenantPhone: tenant?.company_phone,
+    tenantLegalMentions: tenant?.company_legal_mentions,
     tenantLogo,
     procedure,
     version,
@@ -632,6 +803,219 @@ router.delete('/:id', async (req, res) => {
 // version n'est créée ici : POST /:id/versions s'en charge séparément, une procédure peut donc
 // exister brièvement sans contenu tant que sa première version n'est pas rédigée.
 router.post(
+  '/from-document',
+  requireRole(...MANAGER_ROLES),
+  [
+    body('document_id').isUUID().withMessage('Document source invalide.'),
+    body('number').trim().notEmpty().withMessage('Le numéro est requis.'),
+    body('title').trim().notEmpty().isLength({ max: 300 }).withMessage('Le titre est requis (300 caractères maximum).'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: sourceDocument, error: sourceError } = await supabase
+      .from('documents')
+      .select(
+        'id, category_id, number, title, description, extracted_text, version, review_date, file_path, file_name, storage_provider, category:document_categories(id, is_restricted)'
+      )
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.body.document_id)
+      .maybeSingle();
+
+    if (sourceError) {
+      console.error('Erreur lors de la lecture du document source de la procédure :', sourceError);
+      return res.status(500).json({ error: 'Impossible de récupérer le document source.' });
+    }
+    if (!sourceDocument) {
+      return res.status(404).json({ error: 'Document source introuvable.' });
+    }
+
+    const [viewableSource] = await filterViewableDocuments({
+      tenantId: req.tenantId,
+      userId: req.user.id,
+      userRole: req.userRole,
+      documents: [sourceDocument],
+    });
+    if (!viewableSource) {
+      return res.status(404).json({ error: 'Document source introuvable.' });
+    }
+
+    const { data: existingProcedure, error: existingError } = await supabase
+      .from('procedures')
+      .select('id, number, title, status')
+      .eq('tenant_id', req.tenantId)
+      .eq('source_document_id', sourceDocument.id)
+      .maybeSingle();
+    if (existingError) {
+      console.error('Erreur lors de la recherche de la procédure déjà liée :', existingError);
+      return res.status(500).json({ error: 'Impossible de vérifier si ce document a déjà été converti.' });
+    }
+    if (existingProcedure) {
+      return res.json({ procedure: existingProcedure, already_exists: true });
+    }
+
+    let versionContent;
+    try {
+      versionContent = await buildImportedProcedureContent(sourceDocument, req.tenantId);
+    } catch (error) {
+      console.error('Erreur lors de la lecture du document source de la procédure :', error);
+      return res.status(500).json({
+        error: 'Impossible de préserver la structure du document source. Vérifiez que le fichier est accessible et réessayez.',
+      });
+    }
+
+    const { data: procedure, error: createError } = await supabase
+      .from('procedures')
+      .insert({
+        tenant_id: req.tenantId,
+        source_document_id: sourceDocument.id,
+        number: req.body.number,
+        title: req.body.title,
+        next_review_date: sourceDocument.review_date,
+        created_by: req.user.id,
+      })
+      .select('id, number, title, status, source_document_id')
+      .single();
+
+    if (createError) {
+      if (createError.code === '23505') {
+        const { data: racedProcedure } = await supabase
+          .from('procedures')
+          .select('id, number, title, status')
+          .eq('tenant_id', req.tenantId)
+          .eq('source_document_id', sourceDocument.id)
+          .maybeSingle();
+        if (racedProcedure) return res.json({ procedure: racedProcedure, already_exists: true });
+        return res.status(409).json({ error: 'Ce numéro de procédure est déjà utilisé. Choisissez un autre numéro.' });
+      }
+      console.error('Erreur lors de la création de la procédure depuis un document :', createError);
+      return res.status(500).json({ error: 'Impossible de créer la procédure.' });
+    }
+
+    const { data: version, error: versionError } = await supabase
+      .from('procedure_versions')
+      .insert({
+        tenant_id: req.tenantId,
+        procedure_id: procedure.id,
+        version: sourceDocument.version || '1.0',
+        content: versionContent,
+        author_id: req.user.id,
+        attachment_file_path: sourceDocument.file_path,
+        attachment_file_name: sourceDocument.file_name,
+        attachment_storage_provider: sourceDocument.storage_provider,
+      })
+      .select('id')
+      .single();
+
+    if (versionError) {
+      console.error('Erreur lors de la création de la version importée :', versionError);
+      const { error: cleanupError } = await supabase
+        .from('procedures')
+        .delete()
+        .eq('tenant_id', req.tenantId)
+        .eq('id', procedure.id);
+      if (cleanupError) console.error('Échec du nettoyage après la création incomplète de la procédure :', cleanupError);
+      return res.status(500).json({ error: 'Impossible de préparer la première version importée.' });
+    }
+
+    res.status(201).json({ procedure: { ...procedure, current_version_id: null }, already_exists: false });
+  }
+);
+
+// POST /api/procedures/:id/reimport-source — crée un nouveau brouillon structuré depuis le
+// document lié, sans modifier les versions déjà enregistrées.
+router.post('/:id/reimport-source', requireRole(...MANAGER_ROLES), async (req, res) => {
+  const { data: procedure, error: procedureError } = await supabase
+    .from('procedures')
+    .select('id, source_document_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+
+  if (procedureError) {
+    console.error('Erreur lors de la lecture de la procédure à réimporter :', procedureError);
+    return res.status(500).json({ error: 'Impossible de récupérer la procédure.' });
+  }
+  if (!procedure) return res.status(404).json({ error: 'Procédure introuvable.' });
+  if (!(await requireProcedureView(req, res, procedure.id))) return;
+  if (!procedure.source_document_id) {
+    return res.status(409).json({ error: 'Aucun document source n’est lié à cette procédure.' });
+  }
+
+  const { data: sourceDocument, error: sourceError } = await supabase
+    .from('documents')
+    .select(
+      'id, category_id, title, description, extracted_text, version, file_path, file_name, storage_provider, category:document_categories(id, is_restricted)'
+    )
+    .eq('tenant_id', req.tenantId)
+    .eq('id', procedure.source_document_id)
+    .maybeSingle();
+
+  if (sourceError) {
+    console.error('Erreur lors de la lecture du document source à réimporter :', sourceError);
+    return res.status(500).json({ error: 'Impossible de récupérer le document source.' });
+  }
+  if (!sourceDocument) return res.status(404).json({ error: 'Document source introuvable.' });
+
+  const [viewableSource] = await filterViewableDocuments({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    documents: [sourceDocument],
+  });
+  if (!viewableSource) return res.status(404).json({ error: 'Document source introuvable.' });
+
+  let content;
+  try {
+    content = await buildImportedProcedureContent(sourceDocument, req.tenantId);
+  } catch (error) {
+    console.error('Erreur lors de la lecture structurée du document source :', error);
+    return res.status(500).json({
+      error: 'Impossible de préserver la structure du document source. Vérifiez que le fichier est accessible et réessayez.',
+    });
+  }
+
+  const { data: latestVersion, error: latestVersionError } = await supabase
+    .from('procedure_versions')
+    .select('version')
+    .eq('tenant_id', req.tenantId)
+    .eq('procedure_id', procedure.id)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestVersionError) {
+    console.error('Erreur lors de la lecture de la dernière version de la procédure :', latestVersionError);
+    return res.status(500).json({ error: 'Impossible de déterminer le numéro de la nouvelle version.' });
+  }
+
+  const { data: version, error: versionError } = await supabase
+    .from('procedure_versions')
+    .insert({
+      tenant_id: req.tenantId,
+      procedure_id: procedure.id,
+      version: latestVersion ? bumpVersion(latestVersion.version) : sourceDocument.version || '1.0',
+      content,
+      author_id: req.user.id,
+      attachment_file_path: sourceDocument.file_path,
+      attachment_file_name: sourceDocument.file_name,
+      attachment_storage_provider: sourceDocument.storage_provider,
+    })
+    .select('*, author:users!procedure_versions_author_id_fkey(id, full_name)')
+    .single();
+
+  if (versionError) {
+    console.error('Erreur lors de la création du brouillon depuis le document source :', versionError);
+    return res.status(500).json({ error: 'Impossible de créer le nouveau brouillon.' });
+  }
+
+  return res.status(201).json(version);
+});
+
+router.post(
   '/',
   [
     body('number').trim().notEmpty().withMessage('Le numéro est requis.'),
@@ -779,6 +1163,18 @@ async function fetchVersionForAction(req, res) {
     res.status(404).json({ error: 'Version introuvable.' });
     return null;
   }
+  const { data: procedure, error: procedureError } = await supabase
+    .from('procedures')
+    .select('source_document_id')
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (procedureError) {
+    console.error('Erreur lors de la vérification de la visibilité de la procédure :', procedureError);
+    res.status(500).json({ error: 'Impossible de vérifier les droits de la procédure.' });
+    return null;
+  }
+  if (!(await requireProcedureView(req, res, procedure?.id || req.params.id))) return null;
   return version;
 }
 
@@ -822,12 +1218,8 @@ router.put(
 );
 
 // POST /api/procedures/:id/versions/:versionId/attachment — pièce jointe EN COMPLÉMENT du
-// contenu structuré, jamais à sa place (voir schema.sql) : le document officiel que le client
-// possédait déjà, attaché tel quel à une version encore en brouillon. Drive-only, pas de repli
-// Supabase comme documents.js — un tenant qui n'a pas activé Drive n'a simplement pas cette
-// fonctionnalité (message actionnable ci-dessous), plutôt que de réimporter tout le mécanisme
-// dual-provider (dossiers de catégorie, ticket de prévisualisation...) pour une pièce jointe
-// occasionnelle. Même garde que PUT ci-dessus : auteur ou admin/manager, brouillon uniquement.
+// contenu structuré. Les nouveaux fichiers suivent le stockage configuré pour le tenant, tandis
+// que les versions importées gardent le provider propre au document source.
 router.post('/:id/versions/:versionId/attachment', upload.single('file'), async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
@@ -848,29 +1240,43 @@ router.post('/:id/versions/:versionId/attachment', upload.single('file'), async 
   } catch (err) {
     return res.status(409).json({ error: err.message });
   }
-  if (storage.provider !== 'google_drive') {
-    return res.status(400).json({
-      error:
-        "Google Drive n'est pas activé pour votre entreprise — activez-le depuis Paramètres > Documents pour joindre un fichier.",
-    });
-  }
-
-  let driveFileId;
+  let attachmentFilePath;
+  let attachmentStorageProvider = null;
   try {
-    driveFileId = await uploadFileToDrive(storage.accessToken, {
-      name: req.file.originalname,
-      mimeType: safeStorageContentType(req.file.mimetype),
-      buffer: req.file.buffer,
-      parentFolderId: storage.connection.root_folder_id,
-    });
+    if (storage.provider === 'google_drive') {
+      attachmentFilePath = await uploadFileToDrive(storage.accessToken, {
+        name: req.file.originalname,
+        mimeType: safeStorageContentType(req.file.mimetype),
+        buffer: req.file.buffer,
+        parentFolderId: storage.connection.root_folder_id,
+      });
+      attachmentStorageProvider = 'google_drive';
+    } else {
+      const safeFileName = req.file.originalname.replace(/[\\/]/g, '_');
+      attachmentFilePath = `${req.tenantId}/procedures/${req.params.id}/${version.id}/${randomUUID()}-${safeFileName}`;
+      const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(attachmentFilePath, req.file.buffer, {
+          contentType: safeStorageContentType(req.file.mimetype),
+          upsert: false,
+        });
+      if (uploadError) {
+        console.error("Échec de l'upload d'une pièce jointe de procédure vers Supabase Storage :", uploadError);
+        return res.status(500).json({ error: "Échec de l'upload du fichier dans le stockage documentaire." });
+      }
+    }
   } catch (uploadError) {
     console.error("Échec de l'upload d'une pièce jointe de procédure vers Google Drive :", uploadError);
-    return res.status(500).json({ error: "Échec de l'upload vers Google Drive." });
+    return res.status(500).json({ error: `Échec de l'upload vers ${storage.provider === 'google_drive' ? 'Google Drive' : 'le stockage documentaire'}.` });
   }
 
   const { data, error } = await supabase
     .from('procedure_versions')
-    .update({ attachment_drive_file_id: driveFileId, attachment_file_name: req.file.originalname })
+    .update({
+      attachment_file_path: attachmentFilePath,
+      attachment_file_name: req.file.originalname,
+      attachment_storage_provider: attachmentStorageProvider,
+    })
     .eq('id', version.id)
     .select()
     .single();
@@ -898,7 +1304,7 @@ router.delete('/:id/versions/:versionId/attachment', async (req, res) => {
 
   const { data, error } = await supabase
     .from('procedure_versions')
-    .update({ attachment_drive_file_id: null, attachment_file_name: null })
+    .update({ attachment_file_path: null, attachment_file_name: null, attachment_storage_provider: null })
     .eq('id', version.id)
     .select()
     .single();
@@ -918,12 +1324,15 @@ router.get('/:id/versions/:versionId/attachment', async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
 
-  if (!version.attachment_drive_file_id) {
+  if (!version.attachment_file_path) {
     return res.status(404).json({ error: 'Aucune pièce jointe pour cette version.' });
   }
 
-  const ticket = signDownloadTicket(req.tenantId, version.attachment_drive_file_id, version.attachment_file_name);
-  res.json({ url: `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(ticket)}` });
+  const url =
+    version.attachment_storage_provider === 'google_drive'
+      ? `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(signDownloadTicket(req.tenantId, version.attachment_file_path, version.attachment_file_name))}`
+      : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(version.attachment_file_path).data.publicUrl;
+  res.json({ url });
 });
 
 // POST /api/procedures/:id/versions/:versionId/check-compliance — vérifie le contenu de cette
@@ -1095,7 +1504,11 @@ router.post('/:id/versions/:versionId/export-word', async (req, res) => {
   // de `versions` (déjà résolue ci-dessus) plutôt que refaire une requête pour la même version.
   const versionWithNames = versions?.find((v) => v.id === version.id) || version;
 
-  const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
+  const { data: tenant } = await supabase
+    .from('tenants')
+    .select('name, logo_url, company_address, company_phone, company_legal_mentions')
+    .eq('id', req.tenantId)
+    .single();
   const template = await fetchTenantTemplate(req.tenantId);
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
 
@@ -1106,6 +1519,9 @@ router.post('/:id/versions/:versionId/export-word', async (req, res) => {
       visualOptions: template.visual_options,
       tenantLogo,
       tenantName: tenant?.name,
+      tenantAddress: tenant?.company_address,
+      tenantPhone: tenant?.company_phone,
+      tenantLegalMentions: tenant?.company_legal_mentions,
       procedure,
       version: versionWithNames,
       versions,
@@ -1157,10 +1573,12 @@ router.post('/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMes
   if (procedure.current_version_id) {
     const { data: currentVersion } = await supabase
       .from('procedure_versions')
-      .select('content')
+      .select('content, status')
       .eq('id', procedure.current_version_id)
       .maybeSingle();
-    currentContent = currentVersion?.content ?? null;
+    if (currentVersion?.status === 'approved') {
+      currentContent = currentVersion.content ?? null;
+    }
   }
 
   try {
@@ -1244,11 +1662,9 @@ router.post('/:id/versions/:versionId/submit', async (req, res) => {
   res.json(data);
 });
 
-// POST /api/procedures/:id/versions/:versionId/validate — même principe que la vérification
-// d'efficacité CAPA (requireRole admin/manager) : pas d'approbateur désigné à l'avance,
-// n'importe quel admin/manager du tenant peut valider une version en attente — sauf celui qui
-// l'a rédigée (author_id) : la validation est censée être une revue indépendante (§7.5.2 b),
-// se valider soi-même viderait cette étape de son sens.
+// POST /api/procedures/:id/versions/:versionId/validate — réservé aux admins/managers.
+// La validation indépendante reste préférable, mais un administrateur ou manager peut aussi
+// approuver sa propre version lorsqu'il travaille seul.
 router.post('/:id/versions/:versionId/validate', requireRole(...MANAGER_ROLES), async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
@@ -1256,10 +1672,6 @@ router.post('/:id/versions/:versionId/validate', requireRole(...MANAGER_ROLES), 
   if (version.status !== 'pending') {
     return res.status(409).json({ error: "Cette version n'est pas en attente de validation." });
   }
-  if (version.author_id === req.user.id) {
-    return res.status(403).json({ error: 'Vous ne pouvez pas valider une version que vous avez rédigée vous-même.' });
-  }
-
   const validatedAt = new Date().toISOString();
   const { data, error } = await supabase
     .from('procedure_versions')
@@ -1325,7 +1737,7 @@ router.post(
 router.post('/:id/acknowledge', async (req, res) => {
   const { data: procedure, error } = await supabase
     .from('procedures')
-    .select('id, current_version_id')
+    .select('id, current_version_id, current_version:procedure_versions!procedures_current_version_id_fkey(status)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.id)
     .single();
@@ -1333,7 +1745,7 @@ router.post('/:id/acknowledge', async (req, res) => {
   if (error || !procedure) {
     return res.status(404).json({ error: 'Procédure introuvable.' });
   }
-  if (!procedure.current_version_id) {
+  if (!procedure.current_version_id || procedure.current_version?.status !== 'approved') {
     return res.status(400).json({ error: 'Aucune version approuvée à accuser réception.' });
   }
 
