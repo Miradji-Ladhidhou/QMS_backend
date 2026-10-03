@@ -23,7 +23,7 @@ router.use(requireAuth);
 router.get('/mine', async (req, res) => {
   const { data, error } = await supabase
     .from('document_approvals')
-    .select('id, decision, workflow:document_workflows(id, status, document:documents(id, number, title, version))')
+    .select('id, decision, workflow:document_workflows(id, status, created_at, document:documents(id, number, title, version))')
     .eq('tenant_id', req.tenantId)
     .eq('approver_id', req.user.id)
     .eq('decision', 'pending');
