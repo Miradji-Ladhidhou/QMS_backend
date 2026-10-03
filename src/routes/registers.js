@@ -110,6 +110,39 @@ router.post(
   }
 );
 
+// PATCH /api/registers/folders/rename — rename a folder and all registers in it
+router.patch(
+  '/folders/rename',
+  requireRole('admin', 'manager'),
+  [
+    body('folder').isString().trim().notEmpty().isLength({ max: 120 }),
+    body('new_name').isString().trim().notEmpty().isLength({ max: 120 }),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { folder, new_name: newName } = req.body;
+    const { data: updated, error } = await supabase
+      .from('document_registers')
+      .update({ folder: newName })
+      .eq('tenant_id', req.tenantId)
+      .eq('folder', folder)
+      .select('id');
+
+    if (error) {
+      return res.status(500).json({ error: 'Impossible de renommer le dossier.' });
+    }
+    if (!updated?.length) {
+      return res.status(404).json({ error: 'Dossier introuvable.' });
+    }
+
+    res.json({ updated_count: updated.length });
+  }
+);
+
 // GET /api/registers/:id — détail d'un registre et de ses lignes
 router.get('/:id', async (req, res) => {
   const { data: register, error: regError } = await supabase

@@ -14,6 +14,31 @@ afterEach(async () => {
 });
 
 describe('Document Registers — Registres documentaires personnalisables', () => {
+  it('renomme un dossier pour tous ses registres sans toucher aux autres dossiers', async () => {
+    tenant = await createTenant();
+    const authorization = `Bearer ${tenant.admin.token}`;
+    const first = await request(app).post('/api/registers')
+      .set('Authorization', authorization)
+      .send({ title: 'Registre A', folder: 'À classer' });
+    const second = await request(app).post('/api/registers')
+      .set('Authorization', authorization)
+      .send({ title: 'Registre B', folder: 'À classer' });
+    const other = await request(app).post('/api/registers')
+      .set('Authorization', authorization)
+      .send({ title: 'Registre C', folder: 'Autre dossier' });
+
+    const renamed = await request(app).patch('/api/registers/folders/rename')
+      .set('Authorization', authorization)
+      .send({ folder: 'À classer', new_name: 'Archives qualité' });
+
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.updated_count).toBe(2);
+    const list = await request(app).get('/api/registers').set('Authorization', authorization);
+    expect(list.body.find((register) => register.id === first.body.id).folder).toBe('Archives qualité');
+    expect(list.body.find((register) => register.id === second.body.id).folder).toBe('Archives qualité');
+    expect(list.body.find((register) => register.id === other.body.id).folder).toBe('Autre dossier');
+  });
+
   it('importe un classeur courant dans un registre vide et adapte ses colonnes', async () => {
     tenant = await createTenant();
     const created = await request(app).post('/api/registers')
