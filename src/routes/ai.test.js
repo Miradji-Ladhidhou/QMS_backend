@@ -125,20 +125,30 @@ describe('POST /api/ai/haccp-ccp-suggestion — authentification et validation',
   });
 });
 
-describe('POST /api/ai/haccp-plan-review — authentification et validation', () => {
+describe('POST /api/ai/haccp-surveillance-suggestion — authentification et validation', () => {
   it('401 sans authentification', async () => {
-    const res = await request(app).post('/api/ai/haccp-plan-review').send({ planTitle: 'Plan HACCP', steps: [] });
+    const res = await request(app).post('/api/ai/haccp-surveillance-suggestion').send({ planTitle: 'Plan HACCP', steps: [] });
     expect(res.status).toBe(401);
   });
 
-  it('400 si le plan ne contient pas d’étape', async () => {
+  it('403 pour un rôle sans permission de gestion HACCP', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'member' }] });
     const member = tenant.users[0];
 
     const res = await request(app)
-      .post('/api/ai/haccp-plan-review')
+      .post('/api/ai/haccp-surveillance-suggestion')
       .set('Authorization', `Bearer ${member.token}`)
       .send({ planTitle: 'Plan HACCP', steps: [] });
+    expect(res.status).toBe(403);
+  });
+
+  it('400 si les étapes ne contiennent aucun danger', async () => {
+    tenant = await createTenant();
+
+    const res = await request(app)
+      .post('/api/ai/haccp-surveillance-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ planTitle: 'Plan HACCP', steps: [{ name: 'Stockage', hazards: [] }] });
     expect(res.status).toBe(400);
     expect(res.body.error).toBeTruthy();
   });
@@ -147,7 +157,7 @@ describe('POST /api/ai/haccp-plan-review — authentification et validation', ()
     tenant = await createTenant();
 
     const res = await request(app)
-      .post('/api/ai/haccp-plan-review')
+      .post('/api/ai/haccp-surveillance-suggestion')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({
         planTitle: 'Plan HACCP',
@@ -157,11 +167,12 @@ describe('POST /api/ai/haccp-plan-review — authentification et validation', ()
             hazards: [
               {
                 hazard_type: 'radiologique',
+                id: '8728f32a-d4b7-46b2-8ebd-dec3aba830af',
                 description: 'Danger non reconnu',
                 likelihood: 8,
                 severity: 3,
                 is_significant: false,
-                ccp: null,
+                has_ccp: false,
               },
             ],
           },

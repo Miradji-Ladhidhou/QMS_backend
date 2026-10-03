@@ -1,12 +1,12 @@
 import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireRole } from '../middleware/auth.js';
 import {
   generateCapaSuggestion,
   generateRiskTreatmentSuggestion,
   generateHaccpSignificanceSuggestion,
   generateHaccpCcpSuggestion,
-  generateHaccpPlanReview,
+  generateHaccpSurveillanceSuggestion,
 } from '../services/groq.js';
 
 const router = Router();
@@ -71,19 +71,29 @@ router.post(
 
 const HAZARD_TYPES = ['biological', 'chemical', 'physical', 'allergen'];
 
-// POST /api/ai/haccp-plan-review — relecture ponctuelle des dangers et de leur maîtrise
-// depuis l'onglet Surveillance. La requête contient uniquement les données du plan déjà chargé
-// côté frontend ; rien n'est persisté par cet appel.
+// POST /api/ai/haccp-surveillance-suggestion — analyse les dangers existants, applique l'arbre
+// Codex et propose une surveillance de routine ou un CCP prérempli. Rien n'est enregistré par
+// cet appel; seules les personnes autorisées à gérer le plan peuvent générer ces propositions.
 router.post(
-  '/haccp-plan-review',
+  '/haccp-surveillance-suggestion',
+  requireRole('admin', 'manager'),
   [
     body('planTitle').trim().notEmpty().isLength({ max: 200 }).withMessage('Titre du plan invalide.'),
     body('productDescription').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
     body('scope').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
-    body('steps').isArray({ min: 1, max: 50 }).withMessage('Étapes du plan invalides.'),
+    body('steps')
+      .isArray({ min: 1, max: 50 })
+      .withMessage('Étapes du plan invalides.')
+      .bail()
+      .custom((steps) => {
+        const hazardCount = steps.reduce((total, step) => total + (Array.isArray(step.hazards) ? step.hazards.length : 0), 0);
+        return hazardCount > 0 && hazardCount <= 50;
+      })
+      .withMessage('Le plan doit contenir entre 1 et 50 dangers.'),
     body('steps.*.name').trim().notEmpty().isLength({ max: 200 }),
     body('steps.*.description').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
-    body('steps.*.hazards').isArray({ max: 30 }),
+    body('steps.*.hazards').isArray({ max: 50 }),
+    body('steps.*.hazards.*.id').isUUID(),
     body('steps.*.hazards.*.hazard_type').isIn(HAZARD_TYPES),
     body('steps.*.hazards.*.description').trim().notEmpty().isLength({ max: 1000 }),
     body('steps.*.hazards.*.existing_controls').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
@@ -91,9 +101,7 @@ router.post(
     body('steps.*.hazards.*.severity').isInt({ min: 1, max: 5 }),
     body('steps.*.hazards.*.is_significant').isBoolean(),
     body('steps.*.hazards.*.justification').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
-    body('steps.*.hazards.*.ccp').optional({ values: 'null' }).isObject(),
-    body('steps.*.hazards.*.ccp.critical_limits').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
-    body('steps.*.hazards.*.ccp.monitoring_procedure').optional({ values: 'falsy' }).isString().isLength({ max: 1000 }),
+    body('steps.*.hazards.*.has_ccp').isBoolean(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -102,10 +110,40 @@ router.post(
     }
 
     try {
-      const review = await generateHaccpPlanReview(req.body);
-      res.json(review);
+      const suggestion = await generateHaccpSurveillanceSuggestion(req.body);
+      const knownHazardIds = new Set(req.body.steps.flatMap((step) => step.hazards.map((hazard) => hazard.id)));
+      const suggestionById = new Map();
+      const textFields = [
+        'justification',
+        'routine_monitoring',
+        'routine_frequency',
+        'critical_limits',
+        'monitoring_procedure',
+        'monitoring_frequency',
+        'corrective_action_procedure',
+        'verification_procedure',
+        'verification_frequency',
+        'record_keeping_procedure',
+      ];
+      for (const item of suggestion.suggestions || []) {
+        if (
+          !knownHazardIds.has(item.hazard_id) ||
+          suggestionById.has(item.hazard_id) ||
+          typeof item.is_significant !== 'boolean' ||
+          textFields.some((field) => typeof item[field] !== 'string') ||
+          (item.is_significant && ['critical_limits', 'monitoring_procedure', 'monitoring_frequency'].some((field) => !item[field].trim())) ||
+          (!item.is_significant && (!item.routine_monitoring.trim() || !item.routine_frequency.trim()))
+        ) {
+          continue;
+        }
+        suggestionById.set(item.hazard_id, item);
+      }
+      if (typeof suggestion.summary !== 'string' || suggestionById.size !== knownHazardIds.size) {
+        return res.status(503).json({ error: "L'analyse IA n'a pas fourni une proposition exploitable pour chaque danger. Veuillez réessayer." });
+      }
+      res.json({ ...suggestion, suggestions: [...suggestionById.values()] });
     } catch (err) {
-      res.status(503).json({ error: `Impossible de générer une analyse IA : ${err.message}` });
+      res.status(503).json({ error: `Impossible de générer des propositions de surveillance : ${err.message}` });
     }
   }
 );
