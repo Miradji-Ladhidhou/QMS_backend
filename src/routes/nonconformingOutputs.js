@@ -17,7 +17,7 @@ router.use(requireAuth);
 router.use(requireMenuVisible('nonconforming-outputs'));
 
 const OUTPUT_SELECT =
-  '*, service:services(id, name), decider:users!nonconforming_outputs_decided_by_fkey(id, full_name), linked_capa:capas!nonconforming_outputs_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
+  '*, service:services(id, name), assignee:users!nonconforming_outputs_assigned_to_fkey(id, full_name), decider:users!nonconforming_outputs_decided_by_fkey(id, full_name), linked_capa:capas!nonconforming_outputs_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
 
 // GET /api/nonconforming-outputs — liste tenant-wide, tous les rôles (comme accidents.js : le
 // registre concerne le SMQ dans son ensemble). Filtrable par statut. Une catégorie
@@ -76,6 +76,8 @@ router.post(
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
     body('description').trim().notEmpty().withMessage('La description est requise.'),
     body('detected_at').isISO8601().withMessage('Date de détection invalide.'),
+    body('lot_reference').optional({ nullable: true, values: 'falsy' }).trim(),
+    body('containment_action').optional({ nullable: true, values: 'falsy' }).trim(),
     body('service_id').optional({ values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('disposition').optional({ values: 'falsy' }).isIn(DISPOSITIONS).withMessage('Traitement invalide.'),
     body('customer_informed').optional().isBoolean().withMessage('Valeur invalide.'),
@@ -92,6 +94,8 @@ router.post(
       title,
       description,
       detected_at: detectedAt,
+      lot_reference: lotReference,
+      containment_action: containmentAction,
       service_id: serviceId,
       disposition,
       customer_informed: customerInformed,
@@ -105,6 +109,8 @@ router.post(
         title,
         description,
         detected_at: detectedAt,
+        lot_reference: lotReference || null,
+        containment_action: containmentAction || null,
         service_id: serviceId || null,
         disposition: disposition || undefined,
         customer_informed: customerInformed || false,
@@ -164,11 +170,14 @@ router.patch(
     body('title').optional().trim().notEmpty().withMessage('Le titre ne peut pas être vide.'),
     body('description').optional().trim().notEmpty().withMessage('La description ne peut pas être vide.'),
     body('detected_at').optional().isISO8601().withMessage('Date de détection invalide.'),
+    body('lot_reference').optional({ nullable: true, values: 'falsy' }).trim(),
+    body('containment_action').optional({ nullable: true, values: 'falsy' }).trim(),
     body('service_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Service invalide.'),
     body('disposition').optional().isIn(DISPOSITIONS).withMessage('Traitement invalide.'),
     body('action_taken').optional({ nullable: true, values: 'falsy' }).trim(),
     body('concession_reference').optional({ nullable: true, values: 'falsy' }).trim(),
     body('customer_informed').optional().isBoolean().withMessage('Valeur invalide.'),
+    body('assigned_to').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Responsable invalide.'),
     body('decided_by').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Décideur invalide.'),
     body('status').optional().isIn(STATUSES).withMessage('Statut invalide.'),
     body('category_id').optional({ nullable: true, values: 'falsy' }).isUUID().withMessage('Catégorie invalide.'),
@@ -191,11 +200,37 @@ router.patch(
       return res.status(404).json({ error: 'Non-conformité introuvable.' });
     }
 
+    if (req.body.assigned_to) {
+      const { data: assignee, error: assigneeError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('tenant_id', req.tenantId)
+        .eq('id', req.body.assigned_to)
+        .maybeSingle();
+      if (assigneeError) {
+        return res.status(500).json({ error: "Impossible de vérifier le responsable sélectionné." });
+      }
+      if (!assignee) {
+        return res.status(400).json({ error: "Le responsable doit appartenir à votre entreprise." });
+      }
+    }
+
     const update = {};
-    for (const field of ['title', 'description', 'detected_at', 'disposition', 'action_taken', 'concession_reference', 'status']) {
+    for (const field of [
+      'title',
+      'description',
+      'detected_at',
+      'lot_reference',
+      'containment_action',
+      'disposition',
+      'action_taken',
+      'concession_reference',
+      'status',
+    ]) {
       if (field in req.body) update[field] = req.body[field] || null;
     }
     if ('service_id' in req.body) update.service_id = req.body.service_id || null;
+    if ('assigned_to' in req.body) update.assigned_to = req.body.assigned_to || null;
     if ('category_id' in req.body) update.category_id = req.body.category_id || null;
     if ('customer_informed' in req.body) update.customer_informed = req.body.customer_informed;
     if ('decided_by' in req.body) update.decided_by = req.body.decided_by || null;

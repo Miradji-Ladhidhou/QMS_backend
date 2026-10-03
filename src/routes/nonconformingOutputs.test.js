@@ -58,6 +58,19 @@ describe('POST /api/nonconforming-outputs — déclaration ouverte à tous les r
       .send({ title: 'Pièce hors tolérance', description: 'Défaut détecté.' });
     expect(noDate.status).toBe(400);
   });
+
+  it('enregistre la référence du lot et la mesure de confinement', async () => {
+    tenant = await createTenant();
+
+    const res = await makeOutput(tenant.admin.token, {
+      lot_reference: 'LOT-2026-014',
+      containment_action: 'Lot isolé et expéditions suspendues.',
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.lot_reference).toBe('LOT-2026-014');
+    expect(res.body.containment_action).toBe('Lot isolé et expéditions suspendues.');
+  });
 });
 
 describe('PATCH /api/nonconforming-outputs/:id — réservé admin/manager', () => {
@@ -74,9 +87,48 @@ describe('PATCH /api/nonconforming-outputs/:id — réservé admin/manager', () 
 
     const managerAttempt = await request(app)
       .patch(`/api/nonconforming-outputs/${output.body.id}`)
-      .set('Authorization', `Bearer ${manager.token}`)
+      .set('Authorization', 'Bearer ' + manager.token)
       .send({ action_taken: 'Tri et retouche du lot.' });
     expect(managerAttempt.status).toBe(200);
+  });
+
+  it('permet de documenter le lot, le confinement et le responsable du traitement', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const output = await makeOutput(tenant.admin.token);
+
+    const res = await request(app)
+      .patch(`/api/nonconforming-outputs/${output.body.id}`)
+      .auth(manager.token, { type: 'bearer' })
+      .send({
+        lot_reference: 'LOT-2026-015',
+        containment_action: 'Stock bloqué avant expédition.',
+        assigned_to: manager.id,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.lot_reference).toBe('LOT-2026-015');
+    expect(res.body.containment_action).toBe('Stock bloqué avant expédition.');
+    expect(res.body.assigned_to).toBe(manager.id);
+    expect(res.body.assignee.full_name).toBe('Test manager');
+  });
+
+  it('refuse un responsable appartenant à un autre tenant', async () => {
+    tenant = await createTenant();
+    const otherTenant = await createTenant();
+    try {
+      const output = await makeOutput(tenant.admin.token);
+
+      const res = await request(app)
+        .patch(`/api/nonconforming-outputs/${output.body.id}`)
+        .auth(tenant.admin.token, { type: 'bearer' })
+        .send({ assigned_to: otherTenant.admin.id });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('votre entreprise');
+    } finally {
+      await otherTenant.cleanup();
+    }
   });
 });
 
@@ -87,7 +139,7 @@ describe('PATCH /api/nonconforming-outputs/:id — clôture : action menée exig
 
     const res = await request(app)
       .patch(`/api/nonconforming-outputs/${output.body.id}`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .set('Authorization', 'Bearer ' + tenant.admin.token)
       .send({ status: 'closed' });
     expect(res.status).toBe(400);
   });
@@ -103,7 +155,7 @@ describe('PATCH /api/nonconforming-outputs/:id — clôture : action menée exig
 
     const res = await request(app)
       .patch(`/api/nonconforming-outputs/${output.body.id}`)
-      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .auth(tenant.admin.token, { type: 'bearer' })
       .send({ status: 'closed' });
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('closed');
@@ -179,7 +231,7 @@ describe('PATCH /api/nonconforming-outputs/:id — decided_by retombe sur l’au
 
     const closed = await request(app)
       .patch(`/api/nonconforming-outputs/${output.body.id}`)
-      .set('Authorization', `Bearer ${manager.token}`)
+      .auth(manager.token, { type: 'bearer' })
       .send({ status: 'closed', action_taken: 'Tri et retouche du lot.' });
     expect(closed.status).toBe(200);
     expect(closed.body.decided_by).toBe(manager.id);
