@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireModuleForWrites } from '../middleware/menuVisibility.js';
 
 const router = Router();
 
@@ -26,6 +27,7 @@ function formatFrenchList(items) {
 }
 
 router.use(requireAuth);
+router.use(requireModuleForWrites('services'));
 
 // GET /api/services/my-services — services auxquels l'utilisateur connecté est rattaché
 // (utile pour le filtrage du tableau de bord côté manager) — avant /:id pour ne pas être

@@ -3,6 +3,7 @@ import { body, query, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { SHAREABLE_ROLES } from '../services/recordSharing.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 
 const router = Router();
 
@@ -17,6 +18,19 @@ const RESOURCE_TABLES = {
 };
 
 router.use(requireAuth);
+router.use(async (req, res, next) => {
+  const resourceType = req.query.resource_type || req.body?.resource_type;
+  const moduleByResource = {
+    document: 'documents',
+    procedure: 'procedures',
+    capa: 'capas',
+    complaint: 'complaints',
+    qqoqccp: 'qqoqccp',
+  };
+  const module = moduleByResource[resourceType];
+  if (!module) return next();
+  return requireMenuVisible(module)(req, res, next);
+});
 // Gérer les partages est réservé à admin/manager : ce sont déjà les seuls rôles qui voient
 // tout par défaut dans les modules concernés (documents, CAPA) — laisser un membre partager
 // lui-même reviendrait à le laisser s'auto-accorder ou accorder à d'autres un accès qu'il n'a

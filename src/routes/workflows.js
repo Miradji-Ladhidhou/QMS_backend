@@ -3,6 +3,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
+import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { logAudit } from '../services/auditLog.js';
 import { requireCategoryPermission, resolveDocumentFromWorkflow } from '../middleware/documentPermissions.js';
 
@@ -18,9 +19,10 @@ function generateSignatureHash({ documentId, version, approverId, timestamp, dec
 }
 
 router.use(requireAuth);
+router.use(requireMenuVisible('documents'));
 
 // GET /api/workflows/mine — workflows en attente de MA décision (pour "Mes approbations")
-router.get('/mine', async (req, res) => {
+router.get('/mine', requireMenuVisible('my-approvals'), async (req, res) => {
   const { data, error } = await supabase
     .from('document_approvals')
     .select('id, decision, workflow:document_workflows(id, status, created_at, document:documents(id, number, title, version))')
@@ -67,6 +69,7 @@ router.get('/:id', requireCategoryPermission('view', resolveDocumentFromWorkflow
 // POST /api/workflows/:id/decide — un approbateur soumet sa décision
 router.post(
   '/:id/decide',
+  requireMenuVisible('my-approvals'),
   requireCategoryPermission('approve', resolveDocumentFromWorkflow),
   [
     body('decision').isIn(['approved', 'rejected']).withMessage('Décision invalide.'),

@@ -1,6 +1,11 @@
 import { supabase } from './supabase.js';
 import { aiModuleForRequest } from './aiModules.js';
 
+const AI_TO_APP_MODULE = {
+  management_reviews: 'management-reviews',
+  kpis: 'kpis',
+};
+
 export function isAiActionRequest(req) {
   return aiModuleForRequest(req) !== null;
 }
@@ -19,7 +24,8 @@ export async function settleAiAction(actionId, success) {
 export async function attachAiQuota(req, res) {
   if (!isAiActionRequest(req) || req.aiQuotaActionId) return true;
   const module = aiModuleForRequest(req);
-  const { data: tenant, error: moduleError } = await supabase.from('tenants').select('ai_modules').eq('id', req.tenantId).maybeSingle();
+  const { data: tenant, error: moduleError } = await supabase
+    .from('tenants').select('ai_modules, app_modules').eq('id', req.tenantId).maybeSingle();
   if (moduleError || !tenant) {
     console.error('[modules IA] lecture impossible :', moduleError?.message || 'Entreprise absente');
     res.status(503).json({ error: "Impossible de vérifier l'accès IA de votre entreprise." });
@@ -27,6 +33,15 @@ export async function attachAiQuota(req, res) {
   }
   if (tenant.ai_modules[module] === false) {
     res.status(403).json({ code: 'AI_MODULE_DISABLED', module, error: "L'assistance IA de ce module est désactivée pour votre entreprise. Contactez votre administrateur." });
+    return false;
+  }
+  const appModule = AI_TO_APP_MODULE[module] || module;
+  if (tenant.app_modules?.[appModule] === false) {
+    res.status(403).json({
+      code: 'APP_MODULE_DISABLED',
+      module: appModule,
+      error: "Ce module n'est pas inclus dans le forfait de votre entreprise. Contactez votre administrateur.",
+    });
     return false;
   }
   const { data, error } = await supabase.rpc('reserve_ai_module_action', {

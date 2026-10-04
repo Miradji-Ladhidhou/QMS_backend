@@ -219,7 +219,7 @@ router.post(
         return res.status(500).json({ error: 'Impossible de charger le forfait.' });
       }
       if (!data.configured) return res.status(409).json({ error: 'Configurez ce forfait avant de créer une entreprise avec celui-ci.' });
-      planSettings = { ai_plan_key: data.key, ai_modules: data.modules,
+      planSettings = { ai_plan_key: data.key, ai_modules: data.modules, app_modules: data.app_modules,
         ai_monthly_limit: data.monthly_limit, ai_default_user_limit: data.default_user_limit };
     }
     const baseSlug = slugify(name);

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { requireModuleForWrites } from '../middleware/menuVisibility.js';
 import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -25,6 +26,7 @@ function formatFrenchList(items) {
 }
 
 router.use(requireAuth);
+router.use(requireModuleForWrites('employees'));
 
 // GET /api/employees — liste de tout le personnel du tenant, actif et inactif (tous les
 // rôles, comme /services : la sélection d'un salarié pour enregistrer une formation doit

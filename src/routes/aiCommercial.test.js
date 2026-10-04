@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import app from '../app.js';
 import { admin, createTenant } from '../test-utils/tenant.js';
 import { effectiveAiModules } from '../services/aiModules.js';
+import { effectiveAppModules } from '../services/appModules.js';
 import { aiUsageMonth, summarizeAiUsage } from '../services/aiCommercial.js';
 import { getAiQuota, settleAiAction } from '../services/aiQuota.js';
 import { reserveGroqCall, finishGroqCall } from '../services/groqQuota.js';
@@ -115,6 +116,30 @@ it('exige une configuration valide avant attribution et journalise les changemen
   expect(audit.data.map((row) => row.action)).toContain('ai_plan_updated');
   expect((await get(tenant, '/tenants/invalid/commercial')).status).toBe(400);
   expect((await get(tenant, '/usage?month=2026-13')).status).toBe(400);
+});
+
+it('applique les modules métier du forfait et bloque leur accès direct côté API', async () => {
+  const tenant = await fixture();
+  await elevate(tenant);
+  const app_modules = effectiveAppModules({ documents: false });
+  await configure(tenant, { ...defaults, app_modules });
+
+  const applied = await apply(tenant);
+  expect(applied.status).toBe(200);
+  expect(applied.body.app_modules).toEqual(app_modules);
+
+  const profile = await request(app).get('/api/tenant').set('Authorization', `Bearer ${tenant.admin.token}`);
+  expect(profile.status).toBe(200);
+  expect(profile.body.app_modules).toEqual(app_modules);
+
+  const blocked = await request(app).get('/api/documents').set('Authorization', `Bearer ${tenant.admin.token}`);
+  expect(blocked.status).toBe(403);
+  expect(blocked.body).toMatchObject({ code: 'APP_MODULE_DISABLED', module: 'documents' });
+
+  const restored = await request(app).patch(`/api/ai-quota/tenants/${tenant.tenantId}/app-modules`)
+    .set('Authorization', `Bearer ${tenant.admin.token}`).send(effectiveAppModules({}));
+  expect(restored.status).toBe(200);
+  expect(restored.body.documents).toBe(true);
 });
 
 it('applique un forfait explicitement, conserve la consommation et les exceptions, sans modifier les autres entreprises', async () => {

@@ -6,6 +6,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole, requireSuperAdmin } from '../middleware/auth.js';
 import { MENU_ITEM_KEYS, CONFIGURABLE_ROLES, DEFAULT_HIDDEN_FOR_ROLE, getVisibleMenuKeys } from '../middleware/menuVisibility.js';
 import { sanitizeFileName } from '../utils/storagePath.js';
+import { effectiveAppModules } from '../services/appModules.js';
 
 const router = Router();
 // Un logo n'a besoin d'être qu'une image matricielle — exclut notamment image/svg+xml : un
@@ -158,7 +159,7 @@ router.delete('/account', requireSuperAdmin, [body('confirmation_name').trim().n
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key')
+    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key, app_modules')
     .eq('id', req.tenantId)
     .maybeSingle();
 
@@ -180,7 +181,11 @@ router.get('/', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .maybeSingle();
 
-  res.json({ ...tenantWithUnifiedPlan(data), storage_provider: storageSettings?.storage_provider || 'supabase' });
+  res.json({
+    ...tenantWithUnifiedPlan(data),
+    app_modules: effectiveAppModules(data.app_modules),
+    storage_provider: storageSettings?.storage_provider || 'supabase',
+  });
 });
 
 // PATCH /api/tenant — met à jour le nom et/ou le fuseau horaire de l'entreprise (admin uniquement)
@@ -237,7 +242,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key')
+      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key, app_modules')
       .single();
 
     if (error) {
@@ -249,7 +254,11 @@ router.patch(
       backfilledCount = await backfillReviewDates(req.tenantId, update.document_review_frequency_months);
     }
 
-    res.json({ ...tenantWithUnifiedPlan(data), backfilled_review_dates_count: backfilledCount });
+    res.json({
+      ...tenantWithUnifiedPlan(data),
+      app_modules: effectiveAppModules(data.app_modules),
+      backfilled_review_dates_count: backfilledCount,
+    });
   }
 );
 

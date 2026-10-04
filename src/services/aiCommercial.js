@@ -1,4 +1,5 @@
 import { AI_MODULES, effectiveAiModules } from './aiModules.js';
+import { effectiveAppModules } from './appModules.js';
 import { supabase } from './supabase.js';
 
 export const AI_PLAN_KEYS = ['essential', 'pro', 'premium'];
@@ -16,9 +17,13 @@ export function aiUsageMonth(value) {
 
 export async function getAiCommercialSettings(tenantId) {
   const { data, error } = await supabase.from('tenants')
-    .select('ai_plan_key, ai_monthly_limit, ai_default_user_limit, ai_modules').eq('id', tenantId).maybeSingle();
+    .select('ai_plan_key, ai_monthly_limit, ai_default_user_limit, ai_modules, app_modules').eq('id', tenantId).maybeSingle();
   if (error) throw new Error(`Lecture des réglages commerciaux IA impossible : ${error.message}`);
-  return data ? { ...data, ai_modules: effectiveAiModules(data.ai_modules) } : null;
+  return data ? {
+    ...data,
+    ai_modules: effectiveAiModules(data.ai_modules),
+    app_modules: effectiveAppModules(data.app_modules),
+  } : null;
 }
 
 const METRICS = ['succeeded', 'failed', 'pending', 'expired', 'calls', 'actual_tokens', 'estimated_tokens', 'pending_tokens'];

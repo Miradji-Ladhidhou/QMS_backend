@@ -3,6 +3,7 @@ import { param, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { logSuperAdminAction } from '../services/superAdminAudit.js';
 import { effectiveAiModules } from '../services/aiModules.js';
+import { effectiveAppModules, validAppModules } from '../services/appModules.js';
 import { AI_PLAN_KEYS, aiUsageMonth, getAiCommercialSettings, getAiUsage, validAiLimit, validAiModules } from '../services/aiCommercial.js';
 
 export function aiCommercialHandler(handler) {
@@ -29,20 +30,29 @@ router.get('/plans', aiCommercialHandler(async (req, res) => {
   const { data, error } = await supabase.from('ai_plans').select('*').order('key');
   if (error) throw error;
   res.json(AI_PLAN_KEYS.map((key) => data.find((plan) => plan.key === key))
-    .filter(Boolean).map((plan) => ({ ...plan, modules: effectiveAiModules(plan.modules) })));
+    .filter(Boolean).map((plan) => ({
+      ...plan,
+      modules: effectiveAiModules(plan.modules),
+      app_modules: effectiveAppModules(plan.app_modules),
+    })));
 }));
 router.patch('/plans/:key', aiCommercialHandler(async (req, res) => {
-  const { monthly_limit, default_user_limit, modules } = req.body || {};
+  const body = req.body || {};
+  const { monthly_limit, default_user_limit, modules, app_modules: appModules } = body;
   if (!AI_PLAN_KEYS.includes(req.params.key) || !validAiLimit(monthly_limit) || !validAiLimit(default_user_limit) ||
-    !validAiModules(modules) || Object.keys(req.body).some((key) => !['monthly_limit', 'default_user_limit', 'modules'].includes(key))) {
-    return res.status(400).json({ error: 'Forfait invalide : plafonds entiers de 0 à 1 000 000 ou null, et neuf modules booléens requis.' });
+    !validAiModules(modules) || (appModules !== undefined && !validAppModules(appModules)) ||
+    Object.keys(body).some((key) => !['monthly_limit', 'default_user_limit', 'modules', 'app_modules'].includes(key))) {
+    return res.status(400).json({ error: 'Forfait invalide : plafonds entiers, et configurations de modules valides requises.' });
   }
-  const { data, error } = await supabase.from('ai_plans').update({
+  const update = {
     monthly_limit, default_user_limit, modules, configured: true, updated_at: new Date().toISOString(),
-  }).eq('key', req.params.key).select('*').single();
+  };
+  if (appModules !== undefined) update.app_modules = appModules;
+  const { data, error } = await supabase.from('ai_plans').update(update)
+    .eq('key', req.params.key).select('*').single();
   if (error) throw error;
   await logSuperAdminAction({ actorId: req.user.id, action: 'ai_plan_updated', targetType: 'platform', details: data });
-  res.json(data);
+  res.json({ ...data, modules: effectiveAiModules(data.modules), app_modules: effectiveAppModules(data.app_modules) });
 }));
 router.get('/alerts', aiCommercialHandler(async (req, res) => {
   const { data, error } = await supabase.rpc('ai_tenant_quota_alerts');
@@ -80,6 +90,10 @@ router.post('/tenants/:id/plan', param('id').isUUID(), aiCommercialHandler(async
   if (applied.error) throw applied.error;
   await logSuperAdminAction({ actorId: req.user.id, action: 'ai_plan_applied', targetType: 'tenant',
     targetId: req.params.id, details: { before, after: applied.data } });
-  res.json({ ...applied.data, ai_modules: effectiveAiModules(applied.data.ai_modules) });
+  res.json({
+    ...applied.data,
+    ai_modules: effectiveAiModules(applied.data.ai_modules),
+    app_modules: effectiveAppModules(applied.data.app_modules),
+  });
 }));
 export default router;
