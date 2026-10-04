@@ -64,7 +64,7 @@ ${RESPONSE_CONTRACT}`;
 // feature : identifiant court de la fonctionnalité appelante (voir chaque site d'appel
 // ci-dessous, ex. 'qqoqccp', 'procedure_full_plan') — uniquement pour journaliser un échec
 // (voir logAiFailure), jamais utilisé pour changer le comportement de l'appel lui-même.
-async function callGroq(systemPrompt, userPrompt, feature) {
+async function callGroq(systemPrompt, userPrompt, feature, options = {}) {
   if (!groq) {
     throw new Error('GROQ_API_KEY manquant : impossible de générer une suggestion IA.');
   }
@@ -78,8 +78,14 @@ async function callGroq(systemPrompt, userPrompt, feature) {
         { role: 'user', content: userPrompt },
       ],
       response_format: { type: 'json_object' },
+      ...options,
     });
   } catch (err) {
+    if (err.error?.error?.code === 'json_validate_failed' || err.error?.code === 'json_validate_failed') {
+      const category = /max completion tokens|token limit/i.test(err.message) ? 'generation_limit' : 'malformed_response';
+      await logAiFailure(feature, category, err.message);
+      throw new Error("Groq n'a pas pu terminer une réponse JSON valide. Réessayez avec moins de dangers.");
+    }
     // Distinct de l'erreur de parsing JSON ci-dessous : celle-ci couvre l'appel réseau/API
     // lui-même (quota, authentification, timeout, indisponibilité de Groq).
     if (err instanceof Groq.RateLimitError) {
@@ -107,6 +113,10 @@ async function callGroq(systemPrompt, userPrompt, feature) {
     throw new Error("Échec de l'appel à Groq. Réessayez dans quelques instants.");
   }
 
+  if (completion.choices?.[0]?.finish_reason === 'length') {
+    await logAiFailure(feature, 'generation_limit', 'Completion token limit reached');
+    throw new Error("La réponse IA a atteint sa limite de génération avant d'être complète.");
+  }
   const raw = completion.choices?.[0]?.message?.content;
   if (!raw) {
     await logAiFailure(feature, 'empty_response', null);
@@ -249,11 +259,11 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette 
 }
 is_significant est un booléen indépendant de control_type. Les champs CCP ne seront repris dans les propositions que si control_type vaut 'ccp'. Les propositions restent des brouillons, même si l'IA suggère des informations complètes.`;
 
-function buildHaccpSurveillancePrompt(data) {
+function buildHaccpSurveillancePrompt(data, selectedIds) {
   const steps = data.steps.map((step, stepIndex) => ({
     name: step.name,
     description: step.description || '',
-    hazards: step.hazards.map((hazard) => ({
+    hazards: step.hazards.filter((hazard) => selectedIds.has(hazard.id)).map((hazard) => ({
       hazard_id: hazard.id,
       type: HAZARD_TYPE_FRENCH[hazard.hazard_type],
       description: hazard.description,
@@ -286,7 +296,23 @@ export async function generateHaccpSurveillanceSuggestion(data, validationIssues
   const repairInstruction = validationIssues.length
     ? `\nLa réponse précédente ne respectait pas le contrat : ${JSON.stringify(validationIssues)}. Régénère une réponse complète pour TOUS les dangers. Corrige ces erreurs de format sans inventer de preuves ni de mesures validées.`
     : '';
-  return callGroq(HACCP_SURVEILLANCE_RESPONSE_CONTRACT + repairInstruction, buildHaccpSurveillancePrompt(data), 'haccp_surveillance');
+  const hazardIds = data.steps.flatMap((step) => step.hazards.map((hazard) => hazard.id));
+  const summaries = [];
+  const suggestions = [];
+  // Keep every process step for downstream-control reasoning, but limit each JSON output.
+  for (let offset = 0; offset < hazardIds.length; offset += 5) {
+    const selectedIds = new Set(hazardIds.slice(offset, offset + 5));
+    const result = await callGroq(
+      HACCP_SURVEILLANCE_RESPONSE_CONTRACT + repairInstruction,
+      buildHaccpSurveillancePrompt(data, selectedIds),
+      'haccp_surveillance',
+      { max_completion_tokens: 8192 },
+    );
+    if (typeof result?.summary !== 'string' || !Array.isArray(result?.suggestions)) return result;
+    summaries.push(result.summary);
+    suggestions.push(...result.suggestions);
+  }
+  return { summary: summaries.join('\n\n'), suggestions };
 }
 
 const HACCP_SIGNIFICANCE_RESPONSE_CONTRACT = `Rédige la valeur de justification en français, quelle que soit la langue du contexte fourni en entrée.
