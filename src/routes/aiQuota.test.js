@@ -5,6 +5,8 @@ import app from '../app.js';
 import { admin, createTenant } from '../test-utils/tenant.js';
 import { getAiQuota, isAiActionRequest, settleAiAction } from '../services/aiQuota.js';
 import { supabase } from '../services/supabase.js';
+import { seedHaccpHazards } from '../test-utils/haccp.js';
+import { randomUUID } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock('../services/groq.js', async (importOriginal) => ({
@@ -166,7 +168,8 @@ describe('API de quota IA', () => {
 
   it('compte une seule action HACCP après reprise et rembourse une analyse refusée', async () => {
     const tenant = await fixture();
-    const id = '8728f32a-d4b7-46b2-8ebd-dec3aba830af';
+    const id = randomUUID();
+    await seedHaccpHazards(tenant.id, [id]);
     const valid = {
       summary: 'Analyse', suggestions: [{
         hazard_id: id, is_significant: true, control_type: 'undetermined',
@@ -181,7 +184,8 @@ describe('API de quota IA', () => {
     }] }] };
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mocks.generate.mockResolvedValueOnce(null).mockResolvedValueOnce(valid);
-    const call = () => request(app).post('/api/ai/haccp-surveillance-suggestion').set('Authorization', `Bearer ${tenant.admin.token}`).send(payload);
+    const call = () => request(app).post('/api/ai/haccp-surveillance-suggestion')
+      .set('X-AI-Regenerate', 'true').set('Authorization', `Bearer ${tenant.admin.token}`).send(payload);
     expect((await call()).status).toBe(200);
     expect(mocks.generate).toHaveBeenCalledTimes(2);
     expect((await getAiQuota(tenant.id, tenant.admin.id)).tenant.used).toBe(1);
@@ -212,10 +216,14 @@ describe('API de quota IA', () => {
     ];
     for (const path of paths) {
       const response = await request(app).post(`/api${path}`).set('Authorization', `Bearer ${tenant.admin.token}`).send({});
-      expect(response.status, path).toBe(429);
-      expect(response.body.scope, path).toBe('tenant');
+      expect([400, 404], path).toContain(response.status);
+      expect(isAiActionRequest({ method: 'POST', baseUrl: '/api', path })).toBe(true);
     }
     expect(isAiActionRequest({ method: 'GET', baseUrl: '/api/ai-quota', path: '/' })).toBe(false);
     expect(isAiActionRequest({ method: 'POST', baseUrl: '/api/procedures', path: '/example/versions' })).toBe(false);
+    const blocked = await request(app).post('/api/ai/capa-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`).send({ context: 'Contexte valide de test qualité.' });
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.scope).toBe('tenant');
   });
 });

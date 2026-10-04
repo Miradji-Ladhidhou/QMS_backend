@@ -110,10 +110,14 @@ export async function runProcedureFullDraftJob(jobId) {
     return;
   }
 
+  const { data: claimed, error: claimError } = await supabase.from('procedure_generation_jobs')
+    .update({ status: 'running' }).eq('tenant_id', job.tenant_id).eq('id', jobId)
+    .eq('status', 'pending').select('id').maybeSingle();
+  if (claimError) throw new Error(`Impossible de réserver l'exécution du job : ${claimError.message}`);
+  if (!claimed) return;
+
   let quotaSuccess = false;
   try {
-    await updateJob(jobId, { status: 'running' });
-
     const template = job.template_snapshot;
     let plan;
     try {
@@ -125,6 +129,9 @@ export async function runProcedureFullDraftJob(jobId) {
 
     const planSections = plan.plan || [];
     const totalSteps = planSections.reduce((sum, section) => sum + (section.subsections || []).length, 0);
+    if (!plan.title?.trim() || totalSteps === 0 || planSections.some((section) => !section.key || !section.label)) {
+      throw new Error('Le plan IA est incomplet ou invalide.');
+    }
     await updateJob(jobId, { total_steps: totalSteps, completed_steps: 0 });
 
     const resultSections = [];
@@ -152,6 +159,11 @@ export async function runProcedureFullDraftJob(jobId) {
             fixedInstructions: template?.fixed_instructions,
             wantsCallout: wantsCallout(subsectionTitle),
           });
+          if (!subsection || typeof subsection.intro !== 'string' || !subsection.intro.trim()
+            || !Array.isArray(subsection.actions)
+            || subsection.actions.some((action) => typeof action.text !== 'string' || !action.text.trim())) {
+            throw new Error('La sous-section IA est incomplète ou invalide.');
+          }
 
           generatedSubsections.push({
             title: subsectionTitle,
@@ -159,7 +171,6 @@ export async function runProcedureFullDraftJob(jobId) {
             actions: subsection.actions || [],
             callout: subsection.callout || null,
             photo_placeholders: subsection.photo_placeholders || [],
-            generation_status: 'ok',
           });
 
           if (subsection.summary_sentence) {
@@ -168,14 +179,8 @@ export async function runProcedureFullDraftJob(jobId) {
         } catch (err) {
           console.error(`Échec de génération de la sous-section "${subsectionTitle}" :`, err.message);
           failedSubsections.push({ section_key: planSection.key, subsection_title: subsectionTitle });
-          generatedSubsections.push({
-            title: subsectionTitle,
-            intro: null,
-            actions: [],
-            callout: null,
-            photo_placeholders: [],
-            generation_status: 'failed',
-          });
+          await updateJob(jobId, { status: 'failed', result: null, failed_subsections: failedSubsections, error: err.message });
+          return;
         }
 
         await updateJob(jobId, {
@@ -184,21 +189,7 @@ export async function runProcedureFullDraftJob(jobId) {
         });
       }
 
-      // Un bloc paragraphe unique "À compléter manuellement" en cas d'échec — plus une
-      // sous-structure séparée (generation_status) hors du modèle à blocs : le bloc EST le
-      // contenu, l'éditeur manuel peut le corriger comme n'importe quel autre bloc.
-      const blocks = generatedSubsections.flatMap((subsection) =>
-        subsection.generation_status === 'failed'
-          ? [
-              { type: 'sous_titre', id: makeBlockId(), text: subsection.title },
-              {
-                type: 'paragraphe',
-                id: makeBlockId(),
-                text: 'À compléter manuellement — la génération automatique de cette sous-section a échoué.',
-              },
-            ]
-          : subsectionToBlocks(subsection.title, subsection)
-      );
+      const blocks = generatedSubsections.flatMap((subsection) => subsectionToBlocks(subsection.title, subsection));
 
       resultSections.push({
         key: planSection.key,
@@ -211,10 +202,8 @@ export async function runProcedureFullDraftJob(jobId) {
       // title : intitulé court reformulé par l'IA (voir generateProcedureFullPlan) — jamais
       // job.subject brut, qui peut être un texte long collé par l'utilisateur (bug réel
       // constaté : un sujet de plusieurs dizaines de lignes utilisé tel quel comme titre de
-      // procédure a fait gonfler l'export PDF à 444 pages, voir pdfTheme.js). Repli sur le
-      // sujet tronqué si jamais l'IA ne renvoyait rien, pour ne jamais laisser le titre vide —
-      // mais ce repli ne doit normalement jamais s'activer.
-      title: plan.title || job.subject.slice(0, 120),
+      // procédure a fait gonfler l'export PDF à 444 pages, voir pdfTheme.js).
+      title: plan.title,
       // Objet/domaine d'application/responsabilités ne sont plus des champs séparés : ce sont
       // des sections ordinaires du gabarit (voir data/defaultProcedureSections.js), déjà
       // couvertes par resultSections comme n'importe quelle autre section du plan.
@@ -242,6 +231,18 @@ export async function runProcedureFullDraftJob(jobId) {
         console.error('[quota IA] job :', err.message);
         await updateJob(jobId, { status: 'failed', result: null, error: 'Impossible de finaliser le quota IA.' });
       }
+    }
+    const { data: finishedJob, error: jobError } = await supabase.from('procedure_generation_jobs')
+      .select('status, error').eq('tenant_id', job.tenant_id).eq('id', jobId).single();
+    if (jobError) {
+      console.error('[IA] état final du job :', jobError.message);
+    } else {
+      const { error } = await supabase.from('ai_generations').update({
+        status: finishedJob.status === 'completed' ? 'completed' : 'failed',
+        error: finishedJob.error,
+        updated_at: new Date().toISOString(),
+      }).eq('tenant_id', job.tenant_id).eq('user_id', job.created_by).eq('job_id', jobId);
+      if (error) console.error('[IA] finalisation de la génération :', error.message);
     }
   }
 }

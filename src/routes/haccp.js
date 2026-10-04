@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { prepareAiResult, aiResultRoute, insertAiApplication } from '../services/aiGenerations.js';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -559,10 +560,10 @@ router.delete('/steps/:id', requireRole('admin', 'manager'), async (req, res) =>
 
 // --- Analyse des dangers -------------------------------------------------------------------
 
-// POST /api/haccp/steps/:stepId/hazard-suggestion — suggestion IA, rien n'est persisté ici :
+// POST /api/haccp/steps/:stepId/hazard-suggestion — proposition IA persistée :
 // le frontend affiche les suggestions dans une liste à cocher, chacune acceptée devient un
 // POST /steps/:stepId/hazards distinct (avec ai_generated: true).
-router.post('/steps/:stepId/hazard-suggestion', requireRole('admin', 'manager'), async (req, res) => {
+aiResultRoute(router, '/steps/:stepId/hazard-suggestion', requireRole('admin', 'manager'), async (req, res) => {
   const { data: step, error: fetchError } = await supabase
     .from('haccp_process_steps')
     .select('id, name, description')
@@ -575,6 +576,7 @@ router.post('/steps/:stepId/hazard-suggestion', requireRole('admin', 'manager'),
   }
 
   try {
+    if (!(await prepareAiResult(req, res))) return;
     const suggestion = await generateHaccpHazardSuggestion({ stepName: step.name, stepDescription: step.description });
     res.json(suggestion);
   } catch (err) {
@@ -631,9 +633,9 @@ router.post(
       return res.status(400).json({ error: 'Justifiez la décision de maîtrise du danger.' });
     }
 
-    const { data, error } = await supabase
-      .from('haccp_hazards')
-      .insert({
+    const application = await insertAiApplication(req, res, {
+      table: 'haccp_hazards', endpoint: `/api/haccp/steps/${step.id}/hazard-suggestion`,
+      row: {
         tenant_id: req.tenantId,
         step_id: step.id,
         hazard_type: hazardType,
@@ -647,9 +649,10 @@ router.post(
         decision_justification: decisionJustification || null,
         ai_generated: aiGenerated || false,
         created_by: req.user.id,
-      })
-      .select('*')
-      .single();
+      },
+    });
+    if (!application) return;
+    const { data, error } = application;
 
     if (error) {
       return res.status(500).json({ error: 'Erreur lors de la création du danger.' });

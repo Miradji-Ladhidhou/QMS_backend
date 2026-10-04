@@ -32,6 +32,8 @@ import {
 } from '../services/groq.js';
 import { createProcedureFullDraftJob, runProcedureFullDraftJob } from '../services/procedureFullDraftJob.js';
 import { DEFAULT_PROCEDURE_SECTIONS } from '../data/defaultProcedureSections.js';
+import { prepareAiResult, aiResultRoute, linkAiGenerationJob } from '../services/aiGenerations.js';
+import { validAiResult } from '../services/aiResultValidation.js';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -219,9 +221,8 @@ async function fetchTenantTemplate(tenantId) {
 }
 
 // POST /api/procedures/generate-draft — appelé depuis le formulaire de création, AVANT que la
-// procédure existe : rien n'est persisté ici, le frontend préremplit juste l'éditeur avec le
-// résultat (éditable, jamais publié tel quel — voir POST /:id/versions pour la vraie création).
-router.post(
+// procédure existe : le brouillon personnel est persisté, sans créer ni publier de procédure.
+aiResultRoute(router,
   '/generate-draft',
   [
     body('title').trim().notEmpty().withMessage('Le titre est requis.'),
@@ -236,6 +237,7 @@ router.post(
     const template = await fetchTenantTemplate(req.tenantId);
 
     try {
+      if (!(await prepareAiResult(req, res))) return;
       const draft = await generateProcedureDraft({ title: req.body.title, process: req.body.process }, template);
       // draftToBlockContent : convertit sections[].content (texte à plat, voir
       // PROCEDURE_DRAFT_RESPONSE_CONTRACT dans groq.js) en sections[].blocks — la forme
@@ -247,12 +249,10 @@ router.post(
   }
 );
 
-// POST /api/procedures/generate-full-draft — même principe que /generate-draft (rien n'est
-// persisté par cette route elle-même, le frontend propose juste le résultat dans l'éditeur),
-// mais lance un pipeline multi-appels asynchrone (voir services/procedureFullDraftJob.js) au
+// POST /api/procedures/generate-full-draft — lance un job persistant multi-appels asynchrone au
 // lieu d'un unique appel Groq synchrone : la réponse renvoie immédiatement un job à suivre via
 // GET /generation-jobs/:jobId ci-dessous plutôt que d'attendre les ~10-15 appels IA en ligne.
-router.post(
+aiResultRoute(router,
   '/generate-full-draft',
   [
     // max généreux (un sujet collé peut légitimement faire plusieurs dizaines de lignes,
@@ -266,6 +266,7 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
+    if (!(await prepareAiResult(req, res))) return;
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { count } = await supabase
       .from('procedure_generation_jobs')
@@ -289,7 +290,14 @@ router.post(
         template,
         aiQuotaActionId: req.aiQuotaActionId,
       });
+      await linkAiGenerationJob(req, job);
     } catch (err) {
+      if (job) {
+        const { error } = await supabase.from('procedure_generation_jobs')
+          .update({ status: 'failed', error: 'Impossible de préparer le suivi persistant de la génération.' })
+          .eq('tenant_id', req.tenantId).eq('id', job.id);
+        if (error) console.error('[IA] état du job :', error.message);
+      }
       return res.status(500).json({ error: err.message });
     }
 
@@ -304,6 +312,23 @@ router.post(
 // /generate-full-draft ci-dessus, interrogé par le frontend via polling (pas de WebSocket/SSE
 // dans cette app — voir le plan). Ouvert à tout rôle authentifié du tenant, comme le reste du
 // module.
+router.get('/generation-jobs/latest', async (req, res) => {
+  let query = supabase.from('procedure_generation_jobs').select('*')
+    .eq('tenant_id', req.tenantId).eq('created_by', req.user.id);
+  if (req.query.subject) query = query.eq('subject', req.query.subject);
+  const { data, error } = await query.order('created_at', { ascending: false }).limit(1).maybeSingle();
+  if (error) return res.status(503).json({ error: 'Impossible de retrouver la génération complète.' });
+  let previousJob = null;
+  if (data?.status === 'failed') {
+    const { data: previous, error: previousError } = await supabase.from('procedure_generation_jobs').select('*')
+      .eq('tenant_id', req.tenantId).eq('created_by', req.user.id).eq('subject', data.subject)
+      .eq('status', 'completed').order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (previousError) return res.status(503).json({ error: 'Impossible de retrouver le dernier document complet enregistré.' });
+    previousJob = previous;
+  }
+  res.json({ job: data, previous_job: previousJob });
+});
+
 router.get('/generation-jobs/:jobId', async (req, res) => {
   const { data, error } = await supabase
     .from('procedure_generation_jobs')
@@ -320,13 +345,13 @@ router.get('/generation-jobs/:jobId', async (req, res) => {
 });
 
 // POST /api/procedures/generate-draft-from-qqoqccp — même principe que /generate-draft ci-
-// dessus (rien n'est persisté, préremplit juste le formulaire de création), mais informé par
+// dessus (brouillon persisté avant création), mais informé par
 // une analyse QQOQCCP existante plutôt qu'un titre/processus tapés à la main : la procédure
 // est créée PARCE QUE ce diagnostic a révélé un manque à formaliser (voir
 // QqoqccpDetail.jsx#handleCreateProcedure). Même vérification de permission que
 // GET /api/qqoqccp/:id (catégorie restreinte ou partage individuel), dupliquée ici plutôt que
 // mutualisée : ce n'est qu'une lecture, pas une action sur l'analyse elle-même.
-router.post(
+aiResultRoute(router,
   '/generate-draft-from-qqoqccp',
   [body('qqoqccp_id').isUUID().withMessage('Analyse QQOQCCP invalide.')],
   async (req, res) => {
@@ -371,6 +396,7 @@ router.post(
     const template = await fetchTenantTemplate(req.tenantId);
 
     try {
+      if (!(await prepareAiResult(req, res))) return;
       const draft = await generateProcedureDraftFromQqoqccp(analysis, template);
       res.json({ ...draftToBlockContent(draft), title: analysis.title });
     } catch (err) {
@@ -1338,15 +1364,15 @@ router.get('/:id/versions/:versionId/attachment', async (req, res) => {
 });
 
 // POST /api/procedures/:id/versions/:versionId/check-compliance — vérifie le contenu de cette
-// version contre le gabarit du tenant. Rien n'est persisté (ni le résultat, ni un flag sur la
-// version) : c'est une aide avant soumission, pas une décision enregistrée.
-router.post('/:id/versions/:versionId/check-compliance', async (req, res) => {
+// version contre le gabarit du tenant. Le résultat est persisté, sans décision de validation.
+aiResultRoute(router, '/:id/versions/:versionId/check-compliance', async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
 
   const template = await fetchTenantTemplate(req.tenantId);
 
   try {
+    if (!(await prepareAiResult(req, res))) return;
     const result = await checkProcedureTemplateCompliance(version.content, template);
     res.json(result);
   } catch (err) {
@@ -1357,11 +1383,10 @@ router.post('/:id/versions/:versionId/check-compliance', async (req, res) => {
 // POST /api/procedures/:id/versions/:versionId/compliance-fix — suite de check-compliance :
 // à partir d'une anomalie déjà détectée (section_key/issue/severity, tels que renvoyés par
 // check-compliance), propose un contenu corrigé pour cette seule section. Même garde que
-// check-compliance (aucune, lecture seule pour tout membre du tenant) : rien n'est persisté
-// ici non plus, l'auteur applique la correction proposée lui-même dans l'éditeur avant
+// check-compliance : la proposition est persistée ; l'auteur l'applique dans l'éditeur avant
 // d'enregistrer via PUT /:id/versions/:versionId, qui reste seul à vérifier canActOnVersion/
 // le statut "draft".
-router.post(
+aiResultRoute(router,
   '/:id/versions/:versionId/compliance-fix',
   [
     body('section_key').trim().notEmpty().withMessage('Section requise.'),
@@ -1388,6 +1413,7 @@ router.post(
     const section = (version.content?.sections || []).find((s) => s.key === req.body.section_key);
 
     try {
+      if (!(await prepareAiResult(req, res))) return;
       const result = await generateProcedureComplianceFix({
         procedureTitle: procedure?.title,
         procedureProcess: procedure?.process,
@@ -1409,7 +1435,7 @@ router.post(
 // POST /api/procedures/:id/versions/:versionId/compare — compare cette version à celle qui la
 // précède immédiatement pour la même procédure (previous = null pour une toute première
 // version, voir compareProcedureVersions dans groq.js qui gère ce cas explicitement).
-router.post('/:id/versions/:versionId/compare', async (req, res) => {
+aiResultRoute(router, '/:id/versions/:versionId/compare', async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
 
@@ -1424,6 +1450,7 @@ router.post('/:id/versions/:versionId/compare', async (req, res) => {
     .maybeSingle();
 
   try {
+    if (!(await prepareAiResult(req, res))) return;
     const result = await compareProcedureVersions(previousVersion?.content ?? null, version.content);
     res.json(result);
   } catch (err) {
@@ -1438,7 +1465,7 @@ router.post('/:id/versions/:versionId/compare', async (req, res) => {
 // Contrairement à check-compliance/compare, PERSISTÉ sur la version (voir schema.sql) pour
 // être réaffiché en priorité dans la bannière d'accusé de lecture de ProcedureDetail.jsx à
 // chaque chargement, pas seulement au moment de sa génération.
-router.post(
+aiResultRoute(router,
   '/:id/versions/:versionId/distribution-sheet',
   [body('target_audience').optional({ values: 'falsy' }).trim()],
   async (req, res) => {
@@ -1451,7 +1478,16 @@ router.post(
 
     let sheet;
     try {
+      if (!(await prepareAiResult(req, res, {
+        existingResult: version.distribution_sheet ? version : null,
+        onDelete: async () => {
+          const { error } = await supabase.from('procedure_versions').update({ distribution_sheet: null })
+            .eq('tenant_id', req.tenantId).eq('id', version.id);
+          if (error) throw new Error('Impossible de supprimer la fiche de diffusion.');
+        },
+      }))) return;
       sheet = await generateProcedureDistributionSheet(version.content, req.body.target_audience);
+      if (!validAiResult('/api/procedures/distribution-sheet', { distribution_sheet: sheet })) throw new Error('Fiche IA incomplète ou invalide.');
     } catch (err) {
       return res.status(503).json({ error: `Impossible de générer la fiche de diffusion : ${err.message}` });
     }
@@ -1540,9 +1576,9 @@ router.post('/:id/versions/:versionId/export-word', async (req, res) => {
 
 // POST /api/procedures/:id/suggest-revision-from-capa — à partir d'un CAPA déjà lié à cette
 // procédure (voir procedure_capa_links / POST .../link-capa), propose les sections à réviser.
-// Ne persiste rien (comme generate-draft) : le résultat n'est qu'une proposition, à l'auteur
+// Persiste la proposition sans modifier la procédure : à l'auteur
 // de choisir de préremplir une nouvelle version avec ou de l'ignorer.
-router.post('/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMessage('CAPA invalide.')], async (req, res) => {
+aiResultRoute(router, '/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMessage('CAPA invalide.')], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
@@ -1571,6 +1607,8 @@ router.post('/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMes
     return res.status(404).json({ error: 'Procédure introuvable.' });
   }
 
+  if (!(await requireProcedureView(req, res, procedure.id))) return;
+
   let currentContent = null;
   if (procedure.current_version_id) {
     const { data: currentVersion } = await supabase
@@ -1584,6 +1622,7 @@ router.post('/:id/suggest-revision-from-capa', [body('capa_id').isUUID().withMes
   }
 
   try {
+    if (!(await prepareAiResult(req, res))) return;
     const suggestion = await suggestProcedureRevisionFromCapa(link.capa, currentContent);
     res.json(suggestion);
   } catch (err) {

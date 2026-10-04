@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
 import { generateAuditChecklist } from '../services/groq.js';
+import { prepareAiResult, aiResultRoute, aiApplicationSeed, aiApplicationId } from '../services/aiGenerations.js';
 import {
   CHECKLIST_ANSWERS,
   MAX_CHECKLIST_ITEMS,
@@ -75,15 +76,20 @@ router.get('/:id/checklist', readGuards, async (req, res) => {
 // Insère des questions à la suite de celles existantes (position = dernier + 1…), dans la limite de
 // MAX_CHECKLIST_ITEMS par audit. Retourne { created } ou { error, status }.
 async function appendQuestions(req, audit, questions, source) {
-  const { items: existing } = await loadItems(req.tenantId, audit.id);
+  const { items: existing, error: readError } = await loadItems(req.tenantId, audit.id);
+  if (readError) return { status: 503, error: 'Impossible de lire la check-list avant enregistrement.' };
   if (existing.length + questions.length > MAX_CHECKLIST_ITEMS) {
     return { status: 400, error: `Une check-list ne peut pas dépasser ${MAX_CHECKLIST_ITEMS} questions.` };
   }
   const start = existing.reduce((max, item) => Math.max(max, item.position), 0);
-  const { data, error } = await supabase
-    .from('audit_checklist_items')
-    .insert(questions.map((question, index) => ({ tenant_id: req.tenantId, audit_id: audit.id, position: start + index + 1, question, source })))
-    .select(ITEM_SELECT);
+  const rows = questions.map((question, index) => ({
+    tenant_id: req.tenantId, audit_id: audit.id, position: start + index + 1, question, source,
+    ...(req.aiApplicationSeed ? { id: aiApplicationId(req.aiApplicationSeed, `/api/audits/${audit.id}/checklist/generate`, { question }) } : {}),
+  }));
+  const query = supabase.from('audit_checklist_items');
+  const { data, error } = await (req.aiApplicationSeed
+    ? query.upsert(rows, { onConflict: 'id', ignoreDuplicates: true })
+    : query.insert(rows)).select(ITEM_SELECT);
   if (error) return { status: 500, error: "Erreur lors de l'ajout des questions." };
   return { created: data };
 }
@@ -120,9 +126,18 @@ router.post(
     const audit = await findAudit(req);
     if (!audit) return notFound(res);
 
+    req.aiApplicationSeed = await aiApplicationSeed(req, res, `/api/audits/${audit.id}/checklist/generate`);
+    if (req.aiApplicationSeed === undefined) return;
     const { items: existing } = await loadItems(req.tenantId, audit.id);
     const questions = cleanQuestions(req.body.questions, existing.map((item) => item.question));
-    if (questions.length === 0) return res.status(400).json({ error: 'Aucune nouvelle question valide (vides, trop longues ou déjà présentes).' });
+    if (questions.length === 0) {
+      const proposed = cleanQuestions(req.body.questions, []);
+      if (req.aiApplicationSeed && proposed.length > 0 && proposed.every((question) =>
+        existing.some((item) => item.question === question && item.source === 'ai'))) {
+        return res.status(200).json({ created: [] });
+      }
+      return res.status(400).json({ error: 'Aucune nouvelle question valide (vides, trop longues ou déjà présentes).' });
+    }
 
     const result = await appendQuestions(req, audit, questions, req.body.source || 'manual');
     if (result.error) return res.status(result.status).json({ error: result.error });
@@ -188,10 +203,9 @@ router.delete('/:id/checklist/items/:itemId', writeGuards, async (req, res) => {
 });
 
 // POST /api/audits/:id/checklist/generate { count } — l'IA propose des questions à partir des
-// informations de l'audit (titre, type, périmètre, service, procédures liées, constats). RIEN n'est
-// enregistré : le frontend affiche la liste à relire ; les questions retenues sont ensuite ajoutées
+// informations de l'audit. La proposition est enregistrée séparément ; les questions retenues sont ensuite ajoutées
 // par POST .../items/bulk (source 'ai').
-router.post(
+aiResultRoute(router,
   '/:id/checklist/generate',
   writeGuards,
   [body('count').optional().isInt({ min: 3, max: 25 }).withMessage('Demandez entre 3 et 25 questions.').toInt()],
@@ -201,6 +215,7 @@ router.post(
     const audit = await findAudit(req);
     if (!audit) return notFound(res);
 
+    if (!(await prepareAiResult(req, res))) return;
     const count = req.body.count || 10;
     const [{ items: existing }, { data: findings }, { data: links }] = await Promise.all([
       loadItems(req.tenantId, audit.id),

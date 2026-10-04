@@ -4,6 +4,8 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { generateQqoqccpSuggestion } from '../services/groq.js';
+import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
+import { validAiResult } from '../services/aiResultValidation.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
@@ -319,7 +321,7 @@ router.patch(
 );
 
 // POST /api/qqoqccp/:id/generate — suggestion IA (Groq) à partir des réponses déjà saisies
-router.post('/:id/generate', async (req, res) => {
+aiResultRoute(router, '/:id/generate', async (req, res) => {
   const { data: analysis, error: fetchError } = await supabase
     .from('qqoqccp_analyses')
     .select('*')
@@ -330,6 +332,27 @@ router.post('/:id/generate', async (req, res) => {
   if (fetchError || !analysis) {
     return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
   }
+
+  if (!MANAGER_ROLES.includes(req.userRole) && analysis.created_by !== req.user.id) {
+    return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
+  }
+  if (req.userRole !== 'admin') {
+    const shared = await isSharedWithUser({
+      tenantId: req.tenantId, resourceType: 'qqoqccp', resourceId: analysis.id, userId: req.user.id, userRole: req.userRole,
+    });
+    if (!shared && !(await hasGenericCategoryPermission({
+      tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, categoryId: analysis.category_id, permission: 'view',
+    }))) return res.status(404).json({ error: 'Analyse QQOQCCP introuvable.' });
+  }
+  if (!(await prepareAiResult(req, res, {
+    existingResult: analysis.ai_synthesis ? analysis : null,
+    onDelete: async () => {
+      const { error } = await supabase.from('qqoqccp_analyses')
+        .update({ ai_synthesis: null, ai_suggested_actions: null, status: analysis.status === 'ai_generated' ? 'draft' : analysis.status })
+        .eq('tenant_id', req.tenantId).eq('id', analysis.id);
+      if (error) throw new Error("Impossible de supprimer la suggestion de l'analyse.");
+    },
+  }))) return;
 
   const filledCount = QQOQCCP_FIELDS.filter((field) => analysis[field]).length;
   if (filledCount < 3) {
@@ -347,6 +370,7 @@ router.post('/:id/generate', async (req, res) => {
       combien: analysis.combien,
       pourquoi: analysis.pourquoi,
     });
+    if (!validAiResult('/api/ai/capa-suggestion', suggestion)) throw new Error('Réponse IA incomplète ou invalide.');
   } catch (err) {
     // L'analyse elle-même n'est pas touchée : aucune écriture en base n'a encore eu lieu
     // à ce stade, elle reste consultable normalement même si Groq échoue.

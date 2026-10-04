@@ -2,6 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
 import { createTenant } from '../test-utils/tenant.js';
+import { seedHaccpHazards } from '../test-utils/haccp.js';
+import { randomUUID } from 'node:crypto';
 
 const aiMocks = vi.hoisted(() => ({
   generateHaccpSurveillanceSuggestion: vi.fn(),
@@ -24,6 +26,24 @@ afterEach(async () => {
     await tenant.cleanup();
     tenant = undefined;
   }
+});
+
+it('refuse des dangers du même tenant appartenant à un autre plan avant tout appel IA', async () => {
+  tenant = await createTenant();
+  const hazardId = randomUUID();
+  await seedHaccpHazards(tenant.tenantId, [hazardId]);
+  const { plan } = await seedHaccpHazards(tenant.tenantId, [randomUUID()]);
+  const response = await request(app).post('/api/ai/haccp-surveillance-suggestion')
+    .set('Authorization', `Bearer ${tenant.admin.token}`)
+    .send({
+      planId: plan.id, planTitle: 'Plan de test',
+      steps: [{ name: 'Stockage', hazards: [{
+        id: hazardId, hazard_type: 'biological', description: 'Danger microbiologique',
+        likelihood: 2, severity: 3, is_significant: true, has_ccp: false,
+      }] }],
+    });
+  expect(response.status).toBe(404);
+  expect(aiMocks.generateHaccpSurveillanceSuggestion).not.toHaveBeenCalled();
 });
 
 // POST /api/ai/capa-suggestion appelle Groq en direct : comme pour POST /qqoqccp/:id/generate,
@@ -92,6 +112,7 @@ describe('POST /api/ai/haccp-significance-suggestion — authentification et val
     tenant = await createTenant();
     const call = () => request(app)
       .post('/api/ai/haccp-significance-suggestion')
+      .set('X-AI-Regenerate', 'true')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .send({ hazardType: 'biological', description: 'Listeria', likelihood: 2, severity: 4 });
     for (const [is_significant, control_type] of [[true, 'prp'], [false, 'ccp']]) {
@@ -171,7 +192,8 @@ describe('POST /api/ai/haccp-ccp-suggestion — authentification et validation',
 describe('POST /api/ai/haccp-surveillance-suggestion — authentification et validation', () => {
   it('réessaie une seule fois les réponses invalides et ne renvoie jamais de propositions partielles', async () => {
     tenant = await createTenant();
-    const hazardId = '8728f32a-d4b7-46b2-8ebd-dec3aba830af';
+    const hazardId = randomUUID();
+    await seedHaccpHazards(tenant.tenantId, [hazardId]);
     const payload = {
       planTitle: 'Plan HACCP',
       steps: [{
@@ -196,6 +218,7 @@ describe('POST /api/ai/haccp-surveillance-suggestion — authentification et val
     };
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     const call = () => request(app).post('/api/ai/haccp-surveillance-suggestion')
+      .set('X-AI-Regenerate', 'true')
       .set('Authorization', `Bearer ${tenant.admin.token}`).send(payload);
     aiMocks.generateHaccpSurveillanceSuggestion.mockResolvedValueOnce({ suggestions: [] }).mockResolvedValueOnce(valid);
     const recovered = await call();
@@ -274,7 +297,8 @@ describe('POST /api/ai/haccp-surveillance-suggestion — authentification et val
 
   it('sépare la significativité du contrôle et ne retourne des propositions que pour les choix CCP', async () => {
     tenant = await createTenant();
-    const hazardIds = ['8728f32a-d4b7-46b2-8ebd-dec3aba830af', '8728f32a-d4b7-46b2-8ebd-dec3aba830ae'];
+    const hazardIds = [randomUUID(), randomUUID()];
+    await seedHaccpHazards(tenant.tenantId, hazardIds);
     const ccpText = {
       critical_limits: 'À confirmer par essai',
       monitoring_procedure: '',

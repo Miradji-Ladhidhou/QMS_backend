@@ -94,6 +94,58 @@ describe('POST /api/procedures/generate-draft (IA mockée)', () => {
     expect(template.section_structure).toEqual([{ key: 'etapes', label: 'Étapes du processus' }]);
   });
 
+  describe('Persistance et reprise des jobs complets', () => {
+    it('lie le job à la génération, ne relance pas un job en cours et conserve le document après une régénération échouée', async () => {
+      tenant = await createTenant();
+      let finishPlan;
+      const waitingPlan = new Promise((resolve) => { finishPlan = resolve; });
+      groq.generateProcedureFullPlan.mockImplementationOnce(() => waitingPlan);
+      groq.generateProcedureSubsectionContent.mockResolvedValueOnce({
+        intro: 'Introduction de la procédure.',
+        actions: [{ text: 'Contrôler les lots.', sub_bullets: [] }],
+        callout: null, photo_placeholders: [], summary_sentence: 'Contrôle des lots.',
+      });
+      const subject = 'Test de persistance complète';
+      const start = () => request(app).post('/api/procedures/generate-full-draft')
+        .set('Authorization', `Bearer ${tenant.admin.token}`).set('X-AI-Regenerate', 'true').send({ subject });
+      const accepted = await start();
+      expect(accepted.status).toBe(202);
+      await vi.waitFor(() => expect(groq.generateProcedureFullPlan).toHaveBeenCalledTimes(1));
+      const { data: reservation } = await admin.from('ai_generations').select('*').eq('job_id', accepted.body.id).single();
+      expect(reservation).toMatchObject({ status: 'running', tenant_id: tenant.tenantId, user_id: tenant.admin.id });
+      expect(reservation.quota_action_id).toBeTruthy();
+      const duplicate = await start();
+      expect(duplicate.status).toBe(202);
+      expect(duplicate.body.id).toBe(accepted.body.id);
+      finishPlan({
+        title: 'Procédure de contrôle des lots', documents_associes: [],
+        plan: [{ key: 'etapes', label: 'Étapes', subsections: ['Contrôle'] }],
+      });
+      await vi.waitFor(async () => {
+        const { data } = await admin.from('ai_generations').select('status').eq('id', reservation.id).single();
+        expect(data.status).toBe('completed');
+      });
+      await runProcedureFullDraftJob(accepted.body.id);
+      expect(groq.generateProcedureFullPlan).toHaveBeenCalledTimes(1);
+      const resumed = await request(app).get('/api/procedures/generation-jobs/latest')
+        .set('Authorization', `Bearer ${tenant.admin.token}`).query({ subject });
+      expect(resumed.body.job.result.title).toBe('Procédure de contrôle des lots');
+      groq.generateProcedureFullPlan.mockRejectedValueOnce(new Error('Génération indisponible (test).'));
+      const regeneration = await start();
+      expect(regeneration.status).toBe(202);
+      await vi.waitFor(async () => {
+        const { data } = await admin.from('ai_generations').select('status').eq('job_id', regeneration.body.id).single();
+        expect(data.status).toBe('failed');
+      });
+      const afterFailure = await request(app).get('/api/procedures/generation-jobs/latest')
+        .set('Authorization', `Bearer ${tenant.admin.token}`).query({ subject });
+      expect(afterFailure.body.job.status).toBe('failed');
+      expect(afterFailure.body.previous_job.id).toBe(accepted.body.id);
+      expect(afterFailure.body.previous_job.result).toEqual(resumed.body.job.result);
+      expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 1, pending: 0 });
+    });
+  });
+
   it('renvoie 503 (jamais un crash) quand le service IA échoue sur une réponse malformée', async () => {
     tenant = await createTenant();
     groq.generateProcedureDraft.mockRejectedValueOnce(
@@ -400,7 +452,7 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 1, pending: 0 });
   });
 
-  it('ne fait pas échouer tout le document si une sous-section échoue — la marque à compléter manuellement et continue', async () => {
+  it('échoue sans enregistrer de document partiel et arrête les appels si une sous-section échoue', async () => {
     tenant = await createTenant();
 
     groq.generateProcedureFullPlan.mockResolvedValueOnce({
@@ -424,16 +476,10 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     const jobRes = await request(app)
       .get(`/api/procedures/generation-jobs/${job.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
-    expect(jobRes.body.status).toBe('completed');
-    expect(groq.generateProcedureSubsectionContent).toHaveBeenCalledTimes(2);
+    expect(jobRes.body.status).toBe('failed');
+    expect(groq.generateProcedureSubsectionContent).toHaveBeenCalledTimes(1);
     expect(jobRes.body.failed_subsections).toEqual([{ section_key: 'processus', subsection_title: 'Étape 1' }]);
-    const blocks = jobRes.body.result.sections[0].blocks;
-    // Étape 1 (échouée) : sous_titre + paragraphe "À compléter manuellement" (voir
-    // runProcedureFullDraftJob dans procedureFullDraftJob.js). Étape 2 (réussie) : sous_titre
-    // normal, aucun bloc "à compléter".
-    expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 1')).toBe(true);
-    expect(blocks.some((b) => b.type === 'paragraphe' && b.text.includes('À compléter manuellement'))).toBe(true);
-    expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 2')).toBe(true);
+    expect(jobRes.body.result).toBeNull();
     expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 0, pending: 0 });
   });
 

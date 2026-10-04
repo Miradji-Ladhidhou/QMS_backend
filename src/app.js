@@ -95,7 +95,7 @@ const frontendUrl = new URL(process.env.FRONTEND_URL);
 const allowedOrigins = ['localhost', '127.0.0.1'].includes(frontendUrl.hostname)
   ? ['localhost', '127.0.0.1'].map((host) => `${frontendUrl.protocol}//${host}${frontendUrl.port ? `:${frontendUrl.port}` : ''}`)
   : process.env.FRONTEND_URL;
-app.use(cors({ origin: allowedOrigins, credentials: true }));
+app.use(cors({ origin: allowedOrigins, credentials: true, exposedHeaders: ['X-AI-Generation-ID'] }));
 // Compresse les réponses JSON (gzip) — les listes (CAPA, documents, risques...) peuvent
 // dépasser plusieurs centaines de Ko décompressées ; sur une connexion mobile, réduire le
 // volume transféré compte au moins autant que le nombre d'allers-retours réseau déjà réduit

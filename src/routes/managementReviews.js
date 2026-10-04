@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { prepareAiResult, aiResultRoute, insertAiApplication } from '../services/aiGenerations.js';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
@@ -312,15 +313,16 @@ router.get('/:id/xlsx', async (req, res) => {
 });
 
 // POST /api/management-reviews/:id/ai-draft — brouillon IA des conclusions, des opportunités d'amélioration et
-// des décisions, d'après les éléments d'entrée de la revue et le suivi des actions précédentes. RIEN n'est
-// enregistré : le frontend présente la proposition, la direction retient et corrige ; les décisions retenues
+// des décisions, d'après les éléments d'entrée de la revue et le suivi des actions précédentes. La proposition
+// est enregistrée séparément ; la direction retient et corrige ; les décisions retenues
 // deviennent des actions (source « ai »).
-router.post('/:id/ai-draft', requireRole('admin', 'manager'), async (req, res) => {
+aiResultRoute(router, '/:id/ai-draft', requireRole('admin', 'manager'), async (req, res) => {
   const data = await loadReviewForExport(req, res);
   if (!data) return;
   const { review, previousReview } = data;
   if (review.validated_at) return res.status(409).json({ error: VALIDATED_MESSAGE, code: 'review_validated' });
 
+  if (!(await prepareAiResult(req, res))) return;
   const blocks = buildInputBlocks(review);
   if (blocks.length === 0) {
     return res.status(400).json({ error: "Aucune donnée d'entrée pour cette revue : définissez une période (Modifier la revue) pour que l'IA puisse s'appuyer sur des chiffres." });
@@ -930,9 +932,9 @@ router.post(
     }
 
     const status = req.body.status || 'open';
-    const { data, error } = await supabase
-      .from('management_review_actions')
-      .insert({
+    const application = await insertAiApplication(req, res, {
+      table: 'management_review_actions', endpoint: `/api/management-reviews/${review.id}/ai-draft`, select: ACTION_SELECT,
+      row: {
         tenant_id: req.tenantId,
         review_id: review.id,
         description: req.body.description,
@@ -942,9 +944,10 @@ router.post(
         completed_at: status === 'done' ? new Date().toISOString() : null,
         source: req.body.source || 'manual',
         created_by: req.user.id,
-      })
-      .select(ACTION_SELECT)
-      .single();
+      },
+    });
+    if (!application) return;
+    const { data, error } = application;
 
     if (error) {
       return res.status(500).json({ error: "Erreur lors de la création de l'action." });

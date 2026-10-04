@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { generateRiskSuggestion } from '../services/groq.js';
+import { prepareAiResult, aiResultRoute, insertAiApplication } from '../services/aiGenerations.js';
 import {
   assessmentChanged,
   fetchAssessments,
@@ -262,9 +263,9 @@ router.post(
       ai_generated: aiGenerated,
     } = req.body;
 
-    const { data, error } = await supabase
-      .from('risks')
-      .insert({
+    const application = await insertAiApplication(req, res, {
+      table: 'risks', endpoint: '/api/risks/service-suggestion', select: RISK_SELECT,
+      row: {
         tenant_id: req.tenantId,
         title,
         type: type || undefined,
@@ -280,25 +281,26 @@ router.post(
         category_id: categoryId || null,
         ai_generated: aiGenerated || false,
         created_by: req.user.id,
-      })
-      .select(RISK_SELECT)
-      .single();
+      },
+    });
+    if (!application) return;
+    const { data, error, reused } = application;
 
     if (error) {
       return res.status(500).json({ error: 'Erreur lors de la création du risque.' });
     }
 
-    await recordAssessment({ tenantId: req.tenantId, risk: data, userId: req.user.id, reason: 'Cotation initiale' });
+    if (!reused) await recordAssessment({ tenantId: req.tenantId, risk: data, userId: req.user.id, reason: 'Cotation initiale' });
     res.status(201).json(data);
   }
 );
 
 // POST /api/risks/service-suggestion — suggestion IA de risques/opportunités à partir d'un
 // service et d'une description libre de son activité (voir AiRiskSuggestion.jsx). Admin/manager
-// uniquement, comme la création de risques : rien n'est persisté ici, le frontend affiche les
+// uniquement, comme la création de risques : la proposition est persistée, le frontend affiche les
 // suggestions dans une liste à cocher, chacune acceptée devient un POST /risks distinct (avec
 // ai_generated: true) — même mécanique que POST /haccp/steps/:stepId/hazard-suggestion.
-router.post(
+aiResultRoute(router,
   '/service-suggestion',
   requireRole('admin', 'manager'),
   [
@@ -313,6 +315,7 @@ router.post(
     }
 
     try {
+      if (!(await prepareAiResult(req, res))) return;
       const suggestion = await generateRiskSuggestion({ serviceName: req.body.service_name, context: req.body.context, evidence: req.body.evidence });
       res.json(suggestion);
     } catch (err) {

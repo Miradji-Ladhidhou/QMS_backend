@@ -5,6 +5,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { generatePdcaPhaseSuggestion } from '../services/groq.js';
+import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildPdcaPdf } from '../services/pdcaPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
@@ -283,10 +284,8 @@ router.patch(
 // cycle, à partir du titre/description du projet et de ce qui est déjà documenté pour les
 // étapes précédentes. Permission identique à PATCH/:id et POST /:id/advance (admin/manager ou
 // créateur) : c'est la même personne qui documente qui peut se faire aider à rédiger. Ne
-// persiste rien — le frontend ne fait que préremplir le brouillon de la phase, à valider ou
-// corriger avant d'enregistrer via PATCH /:id (même principe que le reste des suggestions IA de
-// l'app, voir services/groq.js).
-router.post('/:id/generate', async (req, res) => {
+// conserve le brouillon par phase ; son application au projet reste une sauvegarde PATCH.
+aiResultRoute(router, '/:id/generate', async (req, res) => {
   const { data: existing, error: fetchError } = await supabase
     .from('pdca_projects')
     .select('*')
@@ -309,6 +308,7 @@ router.post('/:id/generate', async (req, res) => {
 
   let suggestion;
   try {
+    if (!(await prepareAiResult(req, res, { suffix: existing.status }))) return;
     suggestion = await generatePdcaPhaseSuggestion({
       phase: existing.status,
       title: existing.title,

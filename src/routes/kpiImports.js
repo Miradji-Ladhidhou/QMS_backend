@@ -9,6 +9,7 @@ import { KPI_CALC_TYPES, RECORDS_SELECT } from './kpis.js';
 import { groupRowsByPeriod, normalizeAnyDate, summarizeGroups, validateFilters } from '../services/kpiCalculation.js';
 import { parseExcelBuffer } from '../services/excelParsing.js';
 import { generateKpiImportSuggestion } from '../services/groq.js';
+import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
 
 const router = Router();
 
@@ -135,9 +136,10 @@ router.get('/:importId', async (req, res) => {
 });
 
 // POST /api/kpi-imports/:importId/ai-suggestion — suggestion facultative, jamais appliquée automatiquement.
-router.post('/:importId/ai-suggestion', requireRole('admin', 'manager'), async (req, res) => {
+aiResultRoute(router, '/:importId/ai-suggestion', requireRole('admin', 'manager'), async (req, res) => {
   const { data: importRow, error: importError } = await supabase.from('kpi_raw_imports').select('detected_columns, row_count').eq('tenant_id', req.tenantId).eq('id', req.params.importId).single();
   if (importError || !importRow) return res.status(404).json({ error: 'Import introuvable.' });
+  if (!(await prepareAiResult(req, res))) return;
 
   const pageSize = 1000;
   const allRows = [];
