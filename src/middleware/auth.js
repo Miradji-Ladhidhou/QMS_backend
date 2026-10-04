@@ -44,7 +44,10 @@ export async function requireAuth(req, res, next) {
     console.error('[maintenance] impossible de lire platform_settings :', maintenanceError.message);
   }
   if (maintenance?.value?.enabled && !profile.is_super_admin) {
-    return res.status(503).json({ error: maintenance.value.message || 'Maintenance en cours.' });
+    return res.status(503).json({
+      code: 'PLATFORM_MAINTENANCE',
+      error: maintenance.value.message || 'Maintenance en cours.',
+    });
   }
 
   if (!profile.is_active) {

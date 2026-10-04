@@ -14,6 +14,31 @@ afterEach(async () => {
   }
 });
 
+describe('Maintenance de la plateforme', () => {
+  it('identifie explicitement le 503 de maintenance pour le frontend', async () => {
+    tenant = await createTenant();
+    const originalFrom = supabase.from.bind(supabase);
+    vi.spyOn(supabase, 'from').mockImplementation((table) => {
+      if (table !== 'platform_settings') return originalFrom(table);
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { value: { enabled: true, message: 'Maintenance planifiée.' } },
+              error: null,
+            }),
+          }),
+        }),
+      };
+    });
+
+    const res = await request(app).get('/api/tenant').set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(503);
+    expect(res.body).toEqual({ code: 'PLATFORM_MAINTENANCE', error: 'Maintenance planifiée.' });
+  });
+});
+
 describe('GET /api/tenant — erreurs de lecture', () => {
   function mockTenantRead(result) {
     const originalFrom = supabase.from.bind(supabase);

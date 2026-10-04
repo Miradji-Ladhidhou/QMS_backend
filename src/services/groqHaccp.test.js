@@ -7,7 +7,10 @@ vi.mock('groq-sdk', () => ({
   },
 }));
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.clearAllMocks();
+});
 
 it('requires undetermined control decisions for missing product evidence without asserting absent later controls', async () => {
   vi.stubEnv('GROQ_API_KEY', 'test-only-key');
@@ -32,4 +35,22 @@ it('requires undetermined control decisions for missing product evidence without
   expect(messages[0].content).toContain('Les mesures proposées par une IA ne sont pas des mesures existantes');
   expect(messages[0].content).toContain('is_significant reste une analyse indépendante');
   expect(messages[1].content).toContain('ne pas supposer que cette étape est la dernière');
+});
+
+it('aligns surveillance instructions and JSON example and includes repair feedback', async () => {
+  vi.stubEnv('GROQ_API_KEY', 'test-only-key');
+  mocks.create.mockResolvedValue({ choices: [{ message: { content: '{"summary":"Analyse","suggestions":[]}' } }] });
+  const { generateHaccpSurveillanceSuggestion } = await import('./groq.js');
+  await generateHaccpSurveillanceSuggestion({
+    planTitle: 'Plan test',
+    steps: [{ name: 'Stockage', hazards: [] }],
+  }, ['suggestions[0].routine_frequency: required for non-CCP']);
+
+  const prompt = mocks.create.mock.calls[0][0].messages[0].content;
+  expect(prompt).toContain('jamais null ni omis');
+  expect(prompt).toContain('routine_monitoring et routine_frequency sont non vides');
+  expect(prompt).toContain('sans inventer une maîtrise déjà validée');
+  expect(prompt).toContain('"routine_frequency": "Avant la décision');
+  expect(prompt).toContain('suggestions[0].routine_frequency: required for non-CCP');
+  expect(prompt).toContain('TOUS les dangers');
 });

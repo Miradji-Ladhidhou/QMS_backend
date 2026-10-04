@@ -6,16 +6,20 @@ import { createTenant } from '../test-utils/tenant.js';
 const aiMocks = vi.hoisted(() => ({
   generateHaccpSurveillanceSuggestion: vi.fn(),
   generateHaccpSignificanceSuggestion: vi.fn(),
+  logAiFailure: vi.fn(),
 }));
 vi.mock('../services/groq.js', async (importOriginal) => ({
   ...(await importOriginal()),
   generateHaccpSurveillanceSuggestion: aiMocks.generateHaccpSurveillanceSuggestion,
   generateHaccpSignificanceSuggestion: aiMocks.generateHaccpSignificanceSuggestion,
+  logAiFailure: aiMocks.logAiFailure,
 }));
 
 let tenant;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.clearAllMocks();
   if (tenant) {
     await tenant.cleanup();
     tenant = undefined;
@@ -165,6 +169,53 @@ describe('POST /api/ai/haccp-ccp-suggestion — authentification et validation',
 });
 
 describe('POST /api/ai/haccp-surveillance-suggestion — authentification et validation', () => {
+  it('réessaie une seule fois les réponses invalides et ne renvoie jamais de propositions partielles', async () => {
+    tenant = await createTenant();
+    const hazardId = '8728f32a-d4b7-46b2-8ebd-dec3aba830af';
+    const payload = {
+      planTitle: 'Plan HACCP',
+      steps: [{
+        name: 'Stockage',
+        hazards: [{
+          id: hazardId, hazard_type: 'biological', description: 'Danger microbiologique',
+          likelihood: 2, severity: 3, is_significant: true, has_ccp: false,
+        }],
+      }],
+    };
+    const valid = {
+      summary: 'Analyse à instruire.',
+      suggestions: [{
+        hazard_id: hazardId, is_significant: true, control_type: 'undetermined',
+        decision_justification: 'Les preuves de maîtrise restent à documenter.',
+        justification: '', routine_monitoring: 'Documenter les données manquantes.',
+        routine_frequency: 'Avant la décision de maîtrise.',
+        critical_limits: '', monitoring_procedure: '', monitoring_frequency: '',
+        corrective_action_procedure: '', verification_procedure: '',
+        verification_frequency: '', record_keeping_procedure: '',
+      }],
+    };
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const call = () => request(app).post('/api/ai/haccp-surveillance-suggestion')
+      .set('Authorization', `Bearer ${tenant.admin.token}`).send(payload);
+    aiMocks.generateHaccpSurveillanceSuggestion.mockResolvedValueOnce({ suggestions: [] }).mockResolvedValueOnce(valid);
+    const recovered = await call();
+    expect(recovered.status).toBe(200);
+    expect(recovered.body.suggestions).toHaveLength(1);
+    expect(recovered.body.proposals).toEqual([]);
+    expect(aiMocks.generateHaccpSurveillanceSuggestion).toHaveBeenCalledTimes(2);
+    expect(aiMocks.generateHaccpSurveillanceSuggestion.mock.calls[1][1]).toContain(`hazard_id ${hazardId}: missing suggestion`);
+    expect(aiMocks.logAiFailure).toHaveBeenCalledWith('haccp_surveillance', 'invalid_contract', expect.any(String));
+    expect(log).toHaveBeenCalled();
+
+    aiMocks.generateHaccpSurveillanceSuggestion.mockClear();
+    aiMocks.generateHaccpSurveillanceSuggestion.mockResolvedValue(null);
+    const rejected = await call();
+    expect(rejected.status).toBe(503);
+    expect(rejected.body.error).toContain('proposition exploitable');
+    expect(rejected.body).not.toHaveProperty('proposals');
+    expect(aiMocks.generateHaccpSurveillanceSuggestion).toHaveBeenCalledTimes(2);
+  });
+
   it('401 sans authentification', async () => {
     const res = await request(app).post('/api/ai/haccp-surveillance-suggestion').send({ planTitle: 'Plan HACCP', steps: [] });
     expect(res.status).toBe(401);

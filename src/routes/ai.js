@@ -7,7 +7,9 @@ import {
   generateHaccpSignificanceSuggestion,
   generateHaccpCcpSuggestion,
   generateHaccpSurveillanceSuggestion,
+  logAiFailure,
 } from '../services/groq.js';
+import { validateHaccpAiSuggestions } from '../services/haccpAiValidation.js';
 
 const router = Router();
 
@@ -111,41 +113,21 @@ router.post(
     }
 
     try {
-      const suggestion = await generateHaccpSurveillanceSuggestion(req.body);
-      const knownHazardIds = new Set(req.body.steps.flatMap((step) => step.hazards.map((hazard) => hazard.id)));
-      const suggestionById = new Map();
-      const textFields = [
-        'justification',
-        'decision_justification',
-        'routine_monitoring',
-        'routine_frequency',
-        'critical_limits',
-        'monitoring_procedure',
-        'monitoring_frequency',
-        'corrective_action_procedure',
-        'verification_procedure',
-        'verification_frequency',
-        'record_keeping_procedure',
-      ];
-      for (const item of suggestion.suggestions || []) {
-        if (
-          !knownHazardIds.has(item.hazard_id) ||
-          suggestionById.has(item.hazard_id) ||
-          typeof item.is_significant !== 'boolean' ||
-          !HAZARD_CONTROL_TYPES.includes(item.control_type) ||
-          typeof item.decision_justification !== 'string' ||
-          item.decision_justification.trim().length < 8 ||
-          textFields.some((field) => typeof item[field] !== 'string') ||
-          (item.control_type !== 'ccp' && (!item.routine_monitoring.trim() || !item.routine_frequency.trim()))
-        ) {
-          continue;
-        }
-        suggestionById.set(item.hazard_id, { ...item, justification: item.justification || item.decision_justification });
+      const hazardIds = req.body.steps.flatMap((step) => step.hazards.map((hazard) => hazard.id));
+      let suggestion = await generateHaccpSurveillanceSuggestion(req.body);
+      let validation = validateHaccpAiSuggestions(suggestion, hazardIds);
+      if (validation.issues.length) {
+        console.error('[haccp IA] réponse rejetée :', validation.issues);
+        await logAiFailure('haccp_surveillance', 'invalid_contract', validation.issues.join('; '));
+        suggestion = await generateHaccpSurveillanceSuggestion(req.body, validation.issues);
+        validation = validateHaccpAiSuggestions(suggestion, hazardIds);
       }
-      if (typeof suggestion.summary !== 'string' || suggestionById.size !== knownHazardIds.size) {
+      if (validation.issues.length) {
+        console.error('[haccp IA] nouvelle réponse rejetée :', validation.issues);
+        await logAiFailure('haccp_surveillance', 'invalid_contract', validation.issues.join('; '));
         return res.status(503).json({ error: "L'analyse IA n'a pas fourni une proposition exploitable pour chaque danger. Veuillez réessayer." });
       }
-      const validatedSuggestions = [...suggestionById.values()];
+      const validatedSuggestions = validation.suggestions;
       const proposals = validatedSuggestions
         .filter((item) => item.control_type === 'ccp')
         .map((item) => ({
