@@ -4,6 +4,7 @@
 // rejetée non gérée qui laisse la requête pendre indéfiniment sans réponse (piège classique
 // d'Express 4 — corrigé nativement dans Express 5, mais ce projet est encore en 4).
 import 'express-async-errors';
+import aiQuotaRoutes from './routes/aiQuota.js';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -127,6 +128,7 @@ app.use('/api/pdca', pdcaRoutes);
 app.use('/api/haccp', haccpRoutes);
 app.use('/api/suppliers', suppliersRoutes);
 app.use('/api/ai', aiRoutes);
+app.use('/api/ai-quota', aiQuotaRoutes);
 app.use('/api/trainings', trainingQuizRoutes);
 app.use('/api/trainings', trainingsRoutes);
 // Pages publiques (sans authentification) du QCM de formation — voir routes/publicQuiz.js.

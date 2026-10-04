@@ -1743,7 +1743,7 @@ create table ai_call_failures (
   id          uuid primary key default gen_random_uuid(),
   tenant_id   uuid,
   feature     text not null,
-  category    text not null check (category in ('rate_limit', 'auth', 'timeout', 'network', 'empty_response', 'malformed_response', 'unexpected')),
+  category    text not null check (category in ('rate_limit', 'auth', 'timeout', 'network', 'empty_response', 'malformed_response', 'unexpected', 'invalid_contract', 'generation_limit')),
   message     text,
   created_at  timestamptz not null default now()
 );

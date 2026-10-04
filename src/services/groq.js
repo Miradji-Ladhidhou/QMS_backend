@@ -2,8 +2,9 @@ import Groq from 'groq-sdk';
 import { blocksToPlainText } from '../lib/procedureBlocks.js';
 import { supabase } from './supabase.js';
 import { getRequestContext } from './requestContext.js';
+import { DEFAULT_GROQ_COMPLETION_BUDGET, finishGroqCall, fitGroqCompletionBudget, getGroqQuota, groqTokenBudget, reserveGroqCall } from './groqQuota.js';
 
-const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY }) : null;
+const groq = process.env.GROQ_API_KEY ? new Groq({ apiKey: process.env.GROQ_API_KEY, maxRetries: 0 }) : null;
 
 // Journalise un appel IA en échec (voir ai_call_failures dans schema.sql, GET
 // /api/super-admin/ai-failures, SystemTab côté frontend) — pour qu'un tenant qui dit "l'IA ne
@@ -23,6 +24,8 @@ export async function logAiFailure(feature, category, message) {
 }
 
 const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
+
+class AiGenerationLimitError extends Error {}
 
 // Même structure de sortie pour tous les appels IA de l'app (QQOQCCP et, depuis, tous les
 // flux "créer une CAPA depuis X" — audits, revues, réclamations, risques, fournisseurs) :
@@ -65,11 +68,25 @@ ${RESPONSE_CONTRACT}`;
 // ci-dessous, ex. 'qqoqccp', 'procedure_full_plan') — uniquement pour journaliser un échec
 // (voir logAiFailure), jamais utilisé pour changer le comportement de l'appel lui-même.
 async function callGroq(systemPrompt, userPrompt, feature, options = {}) {
+  const context = getRequestContext();
+  if (context.tenantId && context.userId && !context.aiQuotaActionId) {
+    console.error('[quota IA] appel sans réservation :', feature);
+    throw new Error("Le quota de cette action IA n'a pas été réservé.");
+  }
   if (!groq) {
     throw new Error('GROQ_API_KEY manquant : impossible de générer une suggestion IA.');
   }
 
   let completion;
+  const quota = await getGroqQuota();
+  const tokensMinute = quota.limits.tokens_minute ?? (MODEL === 'openai/gpt-oss-120b' ? 8000 : null);
+  const completionBudget = fitGroqCompletionBudget(
+    systemPrompt, userPrompt, options.max_completion_tokens || DEFAULT_GROQ_COMPLETION_BUDGET, tokensMinute,
+  );
+  if (completionBudget === null) {
+    throw new AiGenerationLimitError("Le contexte IA est trop volumineux pour le plafond de tokens par minute. Réduisez sa taille ou adaptez l'offre Groq.");
+  }
+  const callId = await reserveGroqCall(MODEL, groqTokenBudget(systemPrompt, userPrompt, completionBudget), { waitForMinute: true });
   try {
     completion = await groq.chat.completions.create({
       model: MODEL,
@@ -79,12 +96,18 @@ async function callGroq(systemPrompt, userPrompt, feature, options = {}) {
       ],
       response_format: { type: 'json_object' },
       ...options,
+      max_completion_tokens: completionBudget,
+      ...(MODEL.startsWith('openai/gpt-oss-') ? { reasoning_effort: 'low' } : {}),
     });
   } catch (err) {
+    await finishGroqCall(callId, null);
     if (err.error?.error?.code === 'json_validate_failed' || err.error?.code === 'json_validate_failed') {
       const category = /max completion tokens|token limit/i.test(err.message) ? 'generation_limit' : 'malformed_response';
       await logAiFailure(feature, category, err.message);
-      throw new Error("Groq n'a pas pu terminer une réponse JSON valide. Réessayez avec moins de dangers.");
+      if (category === 'generation_limit') {
+        throw new AiGenerationLimitError("Groq n'a pas pu terminer une réponse JSON valide : limite de génération atteinte.");
+      }
+      throw new Error("Groq n'a pas pu produire une réponse JSON valide. Veuillez réessayer.");
     }
     // Distinct de l'erreur de parsing JSON ci-dessous : celle-ci couvre l'appel réseau/API
     // lui-même (quota, authentification, timeout, indisponibilité de Groq).
@@ -113,9 +136,10 @@ async function callGroq(systemPrompt, userPrompt, feature, options = {}) {
     throw new Error("Échec de l'appel à Groq. Réessayez dans quelques instants.");
   }
 
+  await finishGroqCall(callId, completion.usage);
   if (completion.choices?.[0]?.finish_reason === 'length') {
     await logAiFailure(feature, 'generation_limit', 'Completion token limit reached');
-    throw new Error("La réponse IA a atteint sa limite de génération avant d'être complète.");
+    throw new AiGenerationLimitError("La réponse IA a atteint sa limite de génération avant d'être complète.");
   }
   const raw = completion.choices?.[0]?.message?.content;
   if (!raw) {
@@ -297,17 +321,37 @@ export async function generateHaccpSurveillanceSuggestion(data, validationIssues
     ? `\nLa réponse précédente ne respectait pas le contrat : ${JSON.stringify(validationIssues)}. Régénère une réponse complète pour TOUS les dangers. Corrige ces erreurs de format sans inventer de preuves ni de mesures validées.`
     : '';
   const hazardIds = data.steps.flatMap((step) => step.hazards.map((hazard) => hazard.id));
+  async function generateBatch(ids, tokenBudget = 2048) {
+    try {
+      return await callGroq(
+        HACCP_SURVEILLANCE_RESPONSE_CONTRACT + repairInstruction +
+          '\nReste concis : résumé de 2 à 3 phrases et textes de 1 à 2 phrases par champ, sans omettre aucun champ obligatoire.',
+        buildHaccpSurveillancePrompt(data, new Set(ids)),
+        'haccp_surveillance',
+        { max_completion_tokens: tokenBudget },
+      );
+    } catch (err) {
+      if (!(err instanceof AiGenerationLimitError)) throw err;
+      if (ids.length === 1) {
+        if (tokenBudget === 2048) return generateBatch(ids, 4096);
+        throw err;
+      }
+      const middle = Math.ceil(ids.length / 2);
+      const left = await generateBatch(ids.slice(0, middle));
+      if (typeof left?.summary !== 'string' || !Array.isArray(left?.suggestions)) return left;
+      const right = await generateBatch(ids.slice(middle));
+      if (typeof right?.summary !== 'string' || !Array.isArray(right?.suggestions)) return right;
+      return {
+        summary: [left.summary, right.summary].join('\n\n'),
+        suggestions: [...left.suggestions, ...right.suggestions],
+      };
+    }
+  }
   const summaries = [];
   const suggestions = [];
   // Keep every process step for downstream-control reasoning, but limit each JSON output.
   for (let offset = 0; offset < hazardIds.length; offset += 5) {
-    const selectedIds = new Set(hazardIds.slice(offset, offset + 5));
-    const result = await callGroq(
-      HACCP_SURVEILLANCE_RESPONSE_CONTRACT + repairInstruction,
-      buildHaccpSurveillancePrompt(data, selectedIds),
-      'haccp_surveillance',
-      { max_completion_tokens: 8192 },
-    );
+    const result = await generateBatch(hazardIds.slice(offset, offset + 5));
     if (typeof result?.summary !== 'string' || !Array.isArray(result?.suggestions)) return result;
     summaries.push(result.summary);
     suggestions.push(...result.suggestions);

@@ -1,6 +1,7 @@
 import { supabase } from './supabase.js';
 import { generateProcedureFullPlan, generateProcedureSubsectionContent } from './groq.js';
 import { makeBlockId } from '../lib/procedureBlocks.js';
+import { settleAiAction } from './aiQuota.js';
 
 // Mots-clés déclenchant un encadré "Point d'attention" — recherchés sur le TITRE de la
 // sous-section (connu avant l'appel IA, donc décision déterministe et testable), jamais sur le
@@ -64,7 +65,7 @@ function subsectionToBlocks(subsectionTitle, { intro, actions, callout, photo_pl
 // tenantId/userId/subject : voir POST /api/procedures/generate-full-draft. template : la ligne
 // procedure_templates du tenant (ou le repli par défaut) — snapshotée dans le job pour ne pas
 // mélanger deux gabarits si l'admin le modifie pendant l'exécution (voir schema.sql).
-export async function createProcedureFullDraftJob({ tenantId, userId, subject, template }) {
+export async function createProcedureFullDraftJob({ tenantId, userId, subject, template, aiQuotaActionId }) {
   const { data, error } = await supabase
     .from('procedure_generation_jobs')
     .insert({
@@ -76,6 +77,7 @@ export async function createProcedureFullDraftJob({ tenantId, userId, subject, t
         fixed_instructions: template?.fixed_instructions || null,
       },
       status: 'pending',
+      ai_quota_action_id: aiQuotaActionId || null,
     })
     .select()
     .single();
@@ -88,7 +90,8 @@ export async function createProcedureFullDraftJob({ tenantId, userId, subject, t
 }
 
 async function updateJob(jobId, patch) {
-  await supabase.from('procedure_generation_jobs').update(patch).eq('id', jobId);
+  const { error } = await supabase.from('procedure_generation_jobs').update(patch).eq('id', jobId);
+  if (error) throw new Error(`Mise à jour du job impossible : ${error.message}`);
 }
 
 // Exécute le pipeline complet (1 appel plan + 1 appel par sous-section, séquentiel) et met à
@@ -107,6 +110,7 @@ export async function runProcedureFullDraftJob(jobId) {
     return;
   }
 
+  let quotaSuccess = false;
   try {
     await updateJob(jobId, { status: 'running' });
 
@@ -226,8 +230,18 @@ export async function runProcedureFullDraftJob(jobId) {
     };
 
     await updateJob(jobId, { status: 'completed', result, failed_subsections: failedSubsections });
+    quotaSuccess = failedSubsections.length === 0;
   } catch (err) {
     console.error('Échec inattendu du job de génération complète :', err);
     await updateJob(jobId, { status: 'failed', error: err.message });
+  } finally {
+    if (job.ai_quota_action_id) {
+      try {
+        await settleAiAction(job.ai_quota_action_id, quotaSuccess);
+      } catch (err) {
+        console.error('[quota IA] job :', err.message);
+        await updateJob(jobId, { status: 'failed', result: null, error: 'Impossible de finaliser le quota IA.' });
+      }
+    }
   }
 }

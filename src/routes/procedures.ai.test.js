@@ -4,6 +4,7 @@ import app from '../app.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
 import * as groq from '../services/groq.js';
 import { createProcedureFullDraftJob, runProcedureFullDraftJob } from '../services/procedureFullDraftJob.js';
+import { getAiQuota } from '../services/aiQuota.js';
 
 // Première introduction du mock dans ce projet (voir le reste de la suite Procédures, qui
 // vérifie les chemins permission/validation et laisse l'appel IA réel "vérifié manuellement",
@@ -333,11 +334,14 @@ describe('POST /api/procedures/:id/suggest-revision-from-capa (IA mockée)', () 
 // disputeraient les mêmes mockResolvedValueOnce). Le comportement fire-and-forget de la route
 // elle-même est vérifié séparément, sans mock, dans le describe ci-dessous.
 async function createJobDirectly(tenant, subject, sectionStructure) {
+  const { data: reservation, error } = await admin.rpc('reserve_ai_action', { p_tenant_id: tenant.tenantId, p_user_id: tenant.admin.id });
+  if (error) throw error;
   return createProcedureFullDraftJob({
     tenantId: tenant.tenantId,
     userId: tenant.admin.id,
     subject,
     template: { section_structure: sectionStructure, fixed_instructions: null },
+    aiQuotaActionId: reservation.action_id,
   });
 }
 
@@ -393,6 +397,7 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     const secondCallArgs = groq.generateProcedureSubsectionContent.mock.calls[1][0];
     expect(secondCallArgs.rollingSummary).toContain('La réception a été décrite.');
     expect(secondCallArgs.wantsCallout).toBe(true); // "Contrôle final" contient le mot-clé "contrôle"
+    expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 1, pending: 0 });
   });
 
   it('ne fait pas échouer tout le document si une sous-section échoue — la marque à compléter manuellement et continue', async () => {
@@ -429,6 +434,7 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 1')).toBe(true);
     expect(blocks.some((b) => b.type === 'paragraphe' && b.text.includes('À compléter manuellement'))).toBe(true);
     expect(blocks.some((b) => b.type === 'sous_titre' && b.text === 'Étape 2')).toBe(true);
+    expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 0, pending: 0 });
   });
 
   it('échec total si l’étape de plan échoue — status failed, aucun appel de sous-section', async () => {
@@ -445,10 +451,44 @@ describe('runProcedureFullDraftJob (pipeline multi-appels, IA mockée)', () => {
     expect(jobRes.body.status).toBe('failed');
     expect(jobRes.body.error).toContain('Quota Groq');
     expect(groq.generateProcedureSubsectionContent).not.toHaveBeenCalled();
+    expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 0, pending: 0 });
   });
 });
 
 describe('POST /api/procedures/generate-full-draft (validation, garde-fou, isolation)', () => {
+  it('garde une seule réservation pendant le job et ne la consomme qu’à son aboutissement', async () => {
+    tenant = await createTenant();
+    const { error } = await admin.from('tenants').update({ ai_monthly_limit: 1 }).eq('id', tenant.tenantId);
+    if (error) throw error;
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    groq.generateProcedureFullPlan.mockImplementationOnce(async () => {
+      await gate;
+      return { title: 'Procédure test', documents_associes: [], plan: [{ key: 'etapes', label: 'Étapes', subsections: ['Étape test'] }] };
+    });
+    groq.generateProcedureSubsectionContent.mockResolvedValueOnce({
+      intro: 'Introduction test.', actions: [], callout: null,
+    });
+    try {
+      const started = await request(app).post('/api/procedures/generate-full-draft')
+        .set('Authorization', `Bearer ${tenant.admin.token}`).send({ subject: 'Procédure de test' });
+      expect(started.status).toBe(202);
+      expect(started.body.ai_quota_action_id).toBeTruthy();
+      expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 0, pending: 1, remaining: 0 });
+      const blocked = await request(app).post('/api/procedures/generate-draft')
+        .set('Authorization', `Bearer ${tenant.admin.token}`).send({ title: 'Autre action' });
+      expect(blocked.status).toBe(429);
+      release();
+      await vi.waitFor(async () => {
+        expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 1, pending: 0 });
+      }, { timeout: 5000 });
+      expect(groq.generateProcedureFullPlan).toHaveBeenCalledTimes(1);
+      expect(groq.generateProcedureSubsectionContent).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+    }
+  });
+
   it('400 sur un sujet vide ou trop court', async () => {
     tenant = await createTenant();
     const res = await request(app)

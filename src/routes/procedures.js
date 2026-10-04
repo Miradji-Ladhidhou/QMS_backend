@@ -287,11 +287,13 @@ router.post(
         userId: req.user.id,
         subject: req.body.subject,
         template,
+        aiQuotaActionId: req.aiQuotaActionId,
       });
     } catch (err) {
       return res.status(500).json({ error: err.message });
     }
 
+    req.aiQuotaDeferred = true;
     runProcedureFullDraftJob(job.id).catch((err) => console.error('Échec du job de génération complète :', err));
 
     res.status(202).json(job);

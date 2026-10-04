@@ -1,5 +1,6 @@
 import { supabase } from '../services/supabase.js';
 import { runWithRequestContext } from '../services/requestContext.js';
+import { attachAiQuota } from '../services/aiQuota.js';
 
 export async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -58,12 +59,13 @@ export async function requireAuth(req, res, next) {
   req.tenantId = profile.tenant_id;
   req.userRole = profile.role;
   req.isSuperAdmin = profile.is_super_admin;
+  if (!(await attachAiQuota(req, res))) return;
 
   // Établit le contexte de requête (voir services/requestContext.js) pour toute la suite du
   // traitement de CETTE requête — englobe next() pour couvrir aussi bien les middlewares/routes
   // synchrones que leurs opérations asynchrones (Node propage l'AsyncLocalStorage à travers
   // await/Promise/setTimeout automatiquement).
-  runWithRequestContext({ tenantId: profile.tenant_id, userId: user.id }, next);
+  runWithRequestContext({ tenantId: profile.tenant_id, userId: user.id, aiQuotaActionId: req.aiQuotaActionId }, next);
 }
 
 export function requireRole(...roles) {
