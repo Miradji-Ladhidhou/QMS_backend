@@ -23,6 +23,19 @@ afterEach(() => {
   mocks.create.mockReset();
 });
 
+it('tailors CCP preparation to the step and separates source/evidence guidance from real validation', async () => {
+  vi.stubEnv('GROQ_API_KEY', 'test-only-key');
+  mocks.create.mockResolvedValue({ choices: [{ message: { content: '{"critical_limits":"Température ≤ 4 °C"}' } }] });
+  const { generateHaccpCcpSuggestion } = await import('./groq.js');
+  await generateHaccpCcpSuggestion({ hazardType: 'biological', description: 'Croissance microbienne', likelihood: 3, severity: 4, stepName: 'Réception' });
+  const { messages } = mocks.create.mock.calls[0][0];
+  expect(messages[1].content).toContain('Étape du procédé : Réception');
+  expect(messages[0].content).toContain('"validation_source_guidance"');
+  expect(messages[0].content).toContain('"validation_evidence_guidance"');
+  expect(messages[0].content).toContain('jamais déclarer des essais déjà réalisés');
+  expect(messages[0].content).toContain('Ne propose aucun responsable nominatif');
+});
+
 it('requires undetermined control decisions for missing product evidence without asserting absent later controls', async () => {
   vi.stubEnv('GROQ_API_KEY', 'test-only-key');
   const suggestion = {

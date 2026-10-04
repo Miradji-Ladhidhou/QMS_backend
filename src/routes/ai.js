@@ -244,6 +244,7 @@ aiResultRoute(router,
 aiResultRoute(router,
   '/haccp-ccp-suggestion',
   [
+    body('stepName').optional().isString().trim().isLength({ max: 500 }).withMessage('Étape du procédé invalide.'),
     body('hazardType').isIn(HAZARD_TYPES).withMessage('Type de danger invalide.'),
     body('description').trim().notEmpty().withMessage('Description requise.'),
     body('likelihood').isInt({ min: 1, max: 5 }).withMessage('Probabilité invalide.'),

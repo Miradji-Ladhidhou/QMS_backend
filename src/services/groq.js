@@ -413,13 +413,18 @@ Réponds STRICTEMENT en JSON, sans texte avant ni après, avec exactement cette 
   "corrective_action_procedure": "string",
   "verification_procedure": "string",
   "verification_frequency": "string",
-  "record_keeping_procedure": "string"
+  "record_keeping_procedure": "string",
+  "validation_source_guidance": "string",
+  "validation_evidence_guidance": "string"
 }
 critical_limits : des valeurs mesurables et vérifiables (température, durée, pH, concentration...), jamais une formulation vague du type "produit conforme".
 monitoring_procedure/monitoring_frequency : comment et à quelle fréquence on vérifie le respect des limites critiques.
 corrective_action_procedure : ce qui doit être fait immédiatement si une limite critique est dépassée (produit, procédé, enregistrement).
 verification_procedure/verification_frequency : comment et à quelle fréquence on vérifie que le système de surveillance lui-même fonctionne correctement (distinct de la surveillance elle-même).
-record_keeping_procedure : quels enregistrements conserver et où.`;
+record_keeping_procedure : quels enregistrements conserver et où.
+validation_source_guidance : sources pertinentes à consulter pour ce produit, ce danger et cette étape ; ne pas inventer de référence, version ou page consultée.
+validation_evidence_guidance : preuves réelles à réunir pour confirmer ces limites et ces mesures ; proposer des essais à réaliser et les documents à collecter, jamais déclarer des essais déjà réalisés, des résultats ou une conformité acquise.
+Ces deux aides ne sont pas des preuves de validation. Ne propose aucun responsable nominatif.`;
 
 const HACCP_CCP_SYSTEM_PROMPT = `Tu es un expert en sécurité alimentaire (méthode HACCP, Codex Alimentarius) qui aide à définir un point critique de maîtrise (CCP) pour un danger déjà jugé significatif.
 
@@ -427,8 +432,9 @@ const HACCP_CCP_SYSTEM_PROMPT = `Tu es un expert en sécurité alimentaire (mét
 
 ${HACCP_CCP_RESPONSE_CONTRACT}`;
 
-function buildCcpUserPrompt({ hazardType, description, existingControls, likelihood, severity, justification }) {
-  return `Type de danger : ${HAZARD_TYPE_FRENCH[hazardType] || hazardType}
+function buildCcpUserPrompt({ hazardType, description, existingControls, likelihood, severity, justification, stepName }) {
+  return `Étape du procédé : ${stepName || 'non renseignée — ne pas supposer une autre étape'}
+Type de danger : ${HAZARD_TYPE_FRENCH[hazardType] || hazardType}
 Description : ${description}
 Mesures de maîtrise déjà en place : ${existingControls || 'aucune renseignée'}
 Probabilité : ${likelihood}/5, Gravité : ${severity}/5
