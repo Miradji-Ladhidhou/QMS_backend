@@ -130,16 +130,27 @@ describe('Validation des CCP et exploitation des brouillons', () => {
         limit_max: 4,
         limit_unit: '°C',
         monitoring_procedure: 'Relever et enregistrer la température de chaque lot avec une sonde étalonnée.',
-        monitoring_frequency: 'À chaque lot',
+        monitoring_frequency: 'Par lot',
         monitoring_responsible: tenant.admin.id,
         corrective_action_procedure: 'Isoler le produit et rétablir les conditions de conservation.',
         verification_procedure: 'Vérifier les relevés et l’étalonnage de la sonde.',
-        verification_frequency: 'Chaque semaine',
+        verification_frequency: 'Mensuel',
         record_keeping_procedure: 'Conserver les relevés, lots et décisions de disposition.',
         validation_source: source,
         validation_evidence: evidence,
       });
     expect(completed.status).toBe(200);
+
+    for (const frequency of ['', 'TBD', 'à compléter']) {
+      const changed = await admin.from('haccp_ccps').update({ verification_frequency: frequency }).eq('id', created.body.id);
+      if (changed.error) throw changed.error;
+      const blocked = await request(app).post(`/api/haccp/ccps/${created.body.id}/approve`)
+        .set(auth(tenant.admin.token)).send({});
+      expect(blocked.status).toBe(400);
+      expect(blocked.body.details).toContain('La fréquence de vérification est requise.');
+    }
+    const restored = await admin.from('haccp_ccps').update({ verification_frequency: 'Mensuel' }).eq('id', created.body.id);
+    if (restored.error) throw restored.error;
 
     const approved = await request(app)
       .post(`/api/haccp/ccps/${created.body.id}/approve`)

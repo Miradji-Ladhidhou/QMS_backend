@@ -838,7 +838,8 @@ function ccpApprovalErrors(ccp) {
     record_keeping_procedure: 'La procédure de tenue des enregistrements est requise.',
   };
   for (const [field, message] of Object.entries(required)) {
-    const minLength = field === 'validation_evidence' ? 20 : field === 'validation_source' ? 5 : 8;
+    const isFrequency = field === 'monitoring_frequency' || field === 'verification_frequency';
+    const minLength = field === 'validation_evidence' ? 20 : field === 'validation_source' ? 5 : isFrequency ? 1 : 8;
     if (field === 'monitoring_responsible' ? !ccp[field] : !substantiveText(ccp[field], minLength)) errors.push(message);
   }
 
