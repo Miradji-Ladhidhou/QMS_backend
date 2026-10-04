@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { getRequestContext } from './requestContext.js';
 
 export const GROQ_LIMIT_KEYS = ['requests_minute', 'requests_day', 'tokens_minute', 'tokens_day'];
 export const DEFAULT_GROQ_COMPLETION_BUDGET = 2048;
@@ -24,8 +25,11 @@ export async function getGroqQuota() {
 
 export async function reserveGroqCall(model, tokenBudget, { waitForMinute = false } = {}) {
   const deadline = Date.now() + 65000;
+  const { aiQuotaActionId } = getRequestContext();
   while (true) {
-    const { data, error } = await supabase.rpc('reserve_groq_call', { p_model: model, p_token_budget: tokenBudget });
+    const { data, error } = await supabase.rpc(aiQuotaActionId ? 'reserve_groq_action_call' : 'reserve_groq_call', {
+      p_model: model, p_token_budget: tokenBudget, ...(aiQuotaActionId ? { p_action_id: aiQuotaActionId } : {}),
+    });
     if (error) {
       console.error('[quota Groq] réservation impossible :', error.message);
       throw new Error('Le contrôle des limites globales IA est indisponible. Aucun appel envoyé à Groq.');

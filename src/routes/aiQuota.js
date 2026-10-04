@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { body, param, validationResult } from 'express-validator';
-import { requireAuth, requireSuperAdmin } from '../middleware/auth.js';
+import { requireAuth, requireRole, requireSuperAdmin } from '../middleware/auth.js';
 import { supabase } from '../services/supabase.js';
 import { getAiQuota } from '../services/aiQuota.js';
 import { logSuperAdminAction } from '../services/superAdminAudit.js';
 import { getGroqQuota, GROQ_LIMIT_KEYS } from '../services/groqQuota.js';
 import { AI_MODULES, effectiveAiModules } from '../services/aiModules.js';
+import aiCommercialRouter, { aiUsageHandler } from './aiCommercial.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -18,7 +19,9 @@ router.get('/', async (req, res) => {
     res.status(503).json({ error: 'Impossible de charger le quota IA.' });
   }
 });
+router.get('/usage', requireRole('admin'), aiUsageHandler);
 router.use(requireSuperAdmin);
+router.use(aiCommercialRouter);
 router.get('/tenants/:id/modules', param('id').isUUID(), async (req, res) => {
   if (!validationResult(req).isEmpty()) return res.status(400).json({ error: 'Entreprise invalide.' });
   const { data, error } = await supabase.from('tenants').select('ai_modules').eq('id', req.params.id).maybeSingle();

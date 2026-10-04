@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { tenantWithUnifiedPlan } from '../services/aiCommercial.js';
 import multer from 'multer';
 import { body, validationResult } from 'express-validator';
 import { supabase } from '../services/supabase.js';
@@ -157,7 +158,7 @@ router.delete('/account', requireSuperAdmin, [body('confirmation_name').trim().n
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules')
+    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key')
     .eq('id', req.tenantId)
     .maybeSingle();
 
@@ -179,7 +180,7 @@ router.get('/', async (req, res) => {
     .eq('tenant_id', req.tenantId)
     .maybeSingle();
 
-  res.json({ ...data, storage_provider: storageSettings?.storage_provider || 'supabase' });
+  res.json({ ...tenantWithUnifiedPlan(data), storage_provider: storageSettings?.storage_provider || 'supabase' });
 });
 
 // PATCH /api/tenant — met à jour le nom et/ou le fuseau horaire de l'entreprise (admin uniquement)
@@ -236,7 +237,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules')
+      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules, ai_plan_key')
       .single();
 
     if (error) {
@@ -248,7 +249,7 @@ router.patch(
       backfilledCount = await backfillReviewDates(req.tenantId, update.document_review_frequency_months);
     }
 
-    res.json({ ...data, backfilled_review_dates_count: backfilledCount });
+    res.json({ ...tenantWithUnifiedPlan(data), backfilled_review_dates_count: backfilledCount });
   }
 );
 
@@ -272,14 +273,14 @@ router.post('/logo', requireRole('admin'), upload.single('file'), async (req, re
     .from('tenants')
     .update({ logo_url: logoPath })
     .eq('id', req.tenantId)
-    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
+    .select('id, name, slug, plan, ai_plan_key, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
     .single();
 
   if (error) {
     return res.status(500).json({ error: 'Erreur lors de la mise à jour du logo.' });
   }
 
-  res.json(data);
+  res.json(tenantWithUnifiedPlan(data));
 });
 
 function isValidRoleHiddenItems(value) {

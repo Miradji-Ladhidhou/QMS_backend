@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { fitGroqCompletionBudget, groqTokenBudget, reserveGroqCall } from './groqQuota.js';
+import { runWithRequestContext } from './requestContext.js';
 
 const mocks = vi.hoisted(() => ({ rpc: vi.fn(), sleep: vi.fn() }));
 vi.mock('./supabase.js', () => ({ supabase: { rpc: mocks.rpc } }));
@@ -36,9 +37,22 @@ it('waits and atomically rechecks a minute limit before obtaining one reservatio
   mocks.rpc.mockResolvedValueOnce(blocked()).mockResolvedValueOnce({
     data: { allowed: true, call_id: 'reserved' }, error: null,
   });
+
   expect(await reserveGroqCall('model', 2000, { waitForMinute: true })).toBe('reserved');
   expect(mocks.rpc).toHaveBeenCalledTimes(2);
   expect(mocks.sleep).toHaveBeenCalledWith(2000);
+});
+
+it('keeps all paced reservations linked to the originating action', async () => {
+  mocks.rpc.mockResolvedValueOnce(blocked()).mockResolvedValueOnce({
+    data: { allowed: true, call_id: 'tracked-call' }, error: null,
+  });
+  const id = await runWithRequestContext({ aiQuotaActionId: 'action-id' },
+    () => reserveGroqCall('model', 2000, { waitForMinute: true }));
+  expect(id).toBe('tracked-call');
+  for (const call of mocks.rpc.mock.calls) expect(call).toEqual([
+    'reserve_groq_action_call', { p_model: 'model', p_token_budget: 2000, p_action_id: 'action-id' },
+  ]);
 });
 
 it.each([

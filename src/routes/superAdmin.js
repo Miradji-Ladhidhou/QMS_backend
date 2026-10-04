@@ -14,9 +14,9 @@ import {
 import { uploadBackupToDrive, listDriveBackups, downloadFromDrive } from '../services/googleDriveService.js';
 import { slugify } from './auth.js';
 import { ASSIGNABLE_ROLES, sendInviteEmail } from './users.js';
+import { AI_PLAN_KEYS, tenantWithUnifiedPlan } from '../services/aiCommercial.js';
 
 const router = Router();
-const PLANS = ['free', 'starter', 'pro', 'enterprise'];
 const TENANT_EXPORT_TABLES = [
   'users', 'document_categories', 'documents', 'document_versions', 'document_workflows', 'document_approvals',
   'capas', 'capa_comments', 'trainings', 'training_records', 'kpis', 'kpi_records', 'groups', 'group_members',
@@ -35,7 +35,7 @@ router.use(requireSuperAdmin);
 router.get('/tenants', async (req, res) => {
   const { data: tenants, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, is_suspended, created_at')
+    .select('id, name, slug, plan, ai_plan_key, is_suspended, created_at')
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -53,7 +53,7 @@ router.get('/tenants', async (req, res) => {
     userCountByTenant[tenantId] = (userCountByTenant[tenantId] || 0) + 1;
   }
 
-  res.json(tenants.map((tenant) => ({ ...tenant, user_count: userCountByTenant[tenant.id] || 0 })));
+  res.json(tenants.map((tenant) => ({ ...tenantWithUnifiedPlan(tenant), user_count: userCountByTenant[tenant.id] || 0 })));
 });
 
 // Export métier d'un tenant pour le support et la portabilité — liste blanche de tables,
@@ -61,7 +61,7 @@ router.get('/tenants', async (req, res) => {
 router.get('/tenants/:id/export', async (req, res) => {
   const { data: tenant, error: tenantError } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, is_suspended, timezone, created_at')
+    .select('id, name, slug, plan, ai_plan_key, is_suspended, timezone, created_at')
     .eq('id', req.params.id)
     .single();
   if (tenantError || !tenant) return res.status(404).json({ error: 'Tenant introuvable.' });
@@ -79,7 +79,7 @@ router.get('/tenants/:id/export', async (req, res) => {
     details: { tenant_name: tenant.name, table_count: Object.keys(tables).length },
   });
   res.setHeader('Content-Disposition', `attachment; filename="qms-tenant-${tenant.slug}.json"`);
-  res.json({ exported_at: new Date().toISOString(), tenant, tables });
+  res.json({ exported_at: new Date().toISOString(), tenant: tenantWithUnifiedPlan(tenant), tables });
 });
 
 // Comptes par module pour la fiche détaillée d'un tenant — un count(head:true) par table
@@ -133,7 +133,7 @@ async function resolveActors(logRows) {
 router.get('/tenants/:id', async (req, res) => {
   const { data: tenant, error: tenantError } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, is_suspended, created_at')
+    .select('id, name, slug, plan, ai_plan_key, logo_url, is_suspended, created_at')
     .eq('id', req.params.id)
     .single();
 
@@ -184,7 +184,7 @@ router.get('/tenants/:id', async (req, res) => {
     driveConnection = { ...driveConnectionRow, connected_by_name: connectedByUser?.full_name || null };
   }
 
-  res.json({ tenant, users, module_counts: moduleCounts, recent_actions: recentActions, drive_connection: driveConnection || null });
+  res.json({ tenant: tenantWithUnifiedPlan(tenant), users, module_counts: moduleCounts, recent_actions: recentActions, drive_connection: driveConnection || null });
 });
 
 // POST /api/super-admin/tenants — crée un tenant, avec repli sur un slug suffixé en cas de
@@ -197,7 +197,8 @@ router.post(
   '/tenants',
   [
     body('name').trim().notEmpty().withMessage('Le nom est requis.'),
-    body('plan').optional({ values: 'falsy' }).isIn(PLANS).withMessage('Plan invalide.'),
+    body('plan').not().exists().withMessage('Utilisez le forfait unique ai_plan_key, pas le plan historique.'),
+    body('ai_plan_key').optional({ nullable: true }).isIn(AI_PLAN_KEYS).withMessage('Forfait invalide.'),
     body('admin').optional().isObject().withMessage('Administrateur invalide.'),
     body('admin.email').if(body('admin').exists()).isEmail().withMessage('Adresse email invalide.'),
     body('admin.full_name').if(body('admin').exists()).trim().notEmpty().withMessage("Le nom complet de l'administrateur est requis."),
@@ -209,7 +210,18 @@ router.post(
       return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
     }
 
-    const { name, plan, admin: adminInput } = req.body;
+    const { name, ai_plan_key: planKey, admin: adminInput } = req.body;
+    let planSettings = {};
+    if (planKey) {
+      const { data, error } = await supabase.from('ai_plans').select('*').eq('key', planKey).single();
+      if (error) {
+        console.error('[forfait] chargement impossible :', error.message);
+        return res.status(500).json({ error: 'Impossible de charger le forfait.' });
+      }
+      if (!data.configured) return res.status(409).json({ error: 'Configurez ce forfait avant de créer une entreprise avec celui-ci.' });
+      planSettings = { ai_plan_key: data.key, ai_modules: data.modules,
+        ai_monthly_limit: data.monthly_limit, ai_default_user_limit: data.default_user_limit };
+    }
     const baseSlug = slugify(name);
 
     let tenant = null;
@@ -219,8 +231,8 @@ router.post(
       const slug = attempt === 0 ? baseSlug : `${baseSlug}-${Math.random().toString(36).slice(2, 6)}`;
       const { data, error } = await supabase
         .from('tenants')
-        .insert({ name, slug, plan: plan || 'free' })
-        .select('id, name, slug, plan, is_suspended, created_at')
+        .insert({ name, slug, ...planSettings })
+        .select('id, name, slug, plan, ai_plan_key, is_suspended, created_at')
         .single();
 
       if (!error) {
@@ -323,19 +335,21 @@ router.post(
       req,
     });
 
-    res.status(201).json({ ...tenant, user_count: createdAdmin ? 1 : 0, admin: createdAdmin });
+    res.status(201).json({ ...tenantWithUnifiedPlan(tenant), user_count: createdAdmin ? 1 : 0, admin: createdAdmin });
   }
 );
 
-// PATCH /api/super-admin/tenants/:id — modifie n'importe quel champ du tenant (nom, slug,
-// plan, suspension). requireAuth bloque simplement les utilisateurs d'un tenant suspendu,
+// PATCH /api/super-admin/tenants/:id — modifie le nom, slug et la suspension du tenant.
+// Le forfait est attribué explicitement via le routeur commercial.
+// requireAuth bloque simplement les utilisateurs d'un tenant suspendu,
 // aucune autre donnée n'est touchée (voir middleware/auth.js).
 router.patch(
   '/tenants/:id',
   [
     body('name').optional().trim().notEmpty().withMessage('Le nom ne peut pas être vide.'),
     body('slug').optional().trim().notEmpty().withMessage('Le slug ne peut pas être vide.'),
-    body('plan').optional().isIn(PLANS).withMessage('Plan invalide.'),
+    body('plan').not().exists().withMessage('Attribuez le forfait depuis Forfait et accès. Le plan historique est en lecture seule.'),
+    body('ai_plan_key').not().exists().withMessage('Attribuez le forfait depuis Forfait et accès.'),
     body('is_suspended').optional().isBoolean().withMessage('Valeur invalide.'),
   ],
   async (req, res) => {
@@ -349,7 +363,7 @@ router.patch(
     }
 
     const update = {};
-    for (const field of ['name', 'slug', 'plan', 'is_suspended']) {
+    for (const field of ['name', 'slug', 'is_suspended']) {
       if (field in req.body) update[field] = req.body[field];
     }
 
@@ -361,7 +375,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.params.id)
-      .select('id, name, slug, plan, is_suspended, created_at')
+      .select('id, name, slug, plan, ai_plan_key, is_suspended, created_at')
       .single();
 
     if (error) {
@@ -397,7 +411,7 @@ router.patch(
       req,
     });
 
-    res.json(data);
+    res.json(tenantWithUnifiedPlan(data));
   }
 );
 
@@ -735,7 +749,7 @@ router.get('/activity-log', async (req, res) => {
 // JS plutôt qu'en SQL date_trunc : le volume de tenants attendu ne justifie pas une requête
 // agrégée dédiée, et ça reste lisible/déboguable côté route).
 router.get('/stats', async (req, res) => {
-  const { data: tenants, error: tenantsError } = await supabase.from('tenants').select('plan, is_suspended, created_at');
+  const { data: tenants, error: tenantsError } = await supabase.from('tenants').select('ai_plan_key, is_suspended, created_at');
 
   if (tenantsError) {
     return res.status(500).json({ error: 'Impossible de récupérer les statistiques.' });
@@ -752,7 +766,8 @@ router.get('/stats', async (req, res) => {
   const byPlan = {};
   let suspendedCount = 0;
   for (const tenant of tenants) {
-    byPlan[tenant.plan] = (byPlan[tenant.plan] || 0) + 1;
+    const plan = tenant.ai_plan_key || 'manual';
+    byPlan[plan] = (byPlan[plan] || 0) + 1;
     if (tenant.is_suspended) suspendedCount += 1;
   }
 

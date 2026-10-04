@@ -29,13 +29,19 @@ export async function attachAiQuota(req, res) {
     res.status(403).json({ code: 'AI_MODULE_DISABLED', module, error: "L'assistance IA de ce module est désactivée pour votre entreprise. Contactez votre administrateur." });
     return false;
   }
-  const { data, error } = await supabase.rpc('reserve_ai_action', { p_tenant_id: req.tenantId, p_user_id: req.user.id });
+  const { data, error } = await supabase.rpc('reserve_ai_module_action', {
+    p_tenant_id: req.tenantId, p_user_id: req.user.id, p_module: module,
+  });
   if (error) {
     console.error('[quota IA] réservation impossible :', error.message);
     res.status(503).json({ code: 'AI_QUOTA_UNAVAILABLE', error: 'Le contrôle du quota IA est indisponible. Veuillez réessayer.' });
     return false;
   }
   if (!data.allowed) {
+    if (data.scope === 'module') {
+      res.status(403).json({ code: 'AI_MODULE_DISABLED', module, error: "L'assistance IA de ce module n'est pas incluse dans les accès de votre entreprise. Contactez votre administrateur." });
+      return false;
+    }
     res.status(429).json({
       code: 'AI_QUOTA_EXCEEDED', scope: data.scope, quota: data.quota,
       error: data.scope === 'tenant' ? "Le quota IA mensuel de votre entreprise est atteint." : 'Votre quota IA mensuel est atteint.',

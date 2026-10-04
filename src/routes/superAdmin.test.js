@@ -211,7 +211,7 @@ describe('GET /api/super-admin/stats', () => {
     expect(res.body.total_tenants).toBeGreaterThanOrEqual(1);
     expect(res.body.total_users).toBeGreaterThanOrEqual(1);
     expect(res.body.tenants_created_by_month).toHaveLength(6);
-    expect(res.body.by_plan.free).toBeGreaterThanOrEqual(1);
+    expect(res.body.by_plan.manual).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -385,11 +385,12 @@ describe('POST /api/super-admin/tenants — création', () => {
     const res = await request(app)
       .post('/api/super-admin/tenants')
       .set('Authorization', `Bearer ${tenant.admin.token}`)
-      .send({ name: 'CRUD Test Co', plan: 'pro' });
+      .send({ name: 'CRUD Test Co', ai_plan_key: null });
 
     expect(res.status).toBe(201);
     expect(res.body.name).toBe('CRUD Test Co');
-    expect(res.body.plan).toBe('pro');
+    expect(res.body.plan).toBe('manual');
+    expect(res.body.legacy_plan).toBe('free');
     expect(res.body.user_count).toBe(0);
     expect(res.body.admin).toBeNull();
 
