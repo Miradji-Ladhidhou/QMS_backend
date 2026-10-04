@@ -5,6 +5,7 @@ import { supabase } from '../services/supabase.js';
 import { getAiQuota } from '../services/aiQuota.js';
 import { logSuperAdminAction } from '../services/superAdminAudit.js';
 import { getGroqQuota, GROQ_LIMIT_KEYS } from '../services/groqQuota.js';
+import { AI_MODULES, effectiveAiModules } from '../services/aiModules.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -18,6 +19,33 @@ router.get('/', async (req, res) => {
   }
 });
 router.use(requireSuperAdmin);
+router.get('/tenants/:id/modules', param('id').isUUID(), async (req, res) => {
+  if (!validationResult(req).isEmpty()) return res.status(400).json({ error: 'Entreprise invalide.' });
+  const { data, error } = await supabase.from('tenants').select('ai_modules').eq('id', req.params.id).maybeSingle();
+  if (error) {
+    console.error('[modules IA]', error.message);
+    return res.status(500).json({ error: 'Impossible de charger les modules IA.' });
+  }
+  if (!data) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  res.json(effectiveAiModules(data.ai_modules));
+});
+router.patch('/tenants/:id/modules', param('id').isUUID(), async (req, res) => {
+  if (!validationResult(req).isEmpty() || !req.body || Array.isArray(req.body) ||
+    Object.keys(req.body).length !== AI_MODULES.length ||
+    AI_MODULES.some((key) => typeof req.body[key] !== 'boolean')) {
+    return res.status(400).json({ error: 'Configuration des modules IA invalide.' });
+  }
+  const { data, error } = await supabase.from('tenants').update({ ai_modules: req.body }).eq('id', req.params.id).select('ai_modules').maybeSingle();
+  if (error) {
+    console.error('[modules IA]', error.message);
+    return res.status(500).json({ error: 'Impossible de modifier les modules IA.' });
+  }
+  if (!data) return res.status(404).json({ error: 'Entreprise introuvable.' });
+  await logSuperAdminAction({
+    actorId: req.user.id, action: 'ai_modules_updated', targetType: 'tenant', targetId: req.params.id, details: req.body,
+  });
+  res.json(effectiveAiModules(data.ai_modules));
+});
 router.get('/groq', async (req, res) => {
   try {
     res.json(await getGroqQuota());

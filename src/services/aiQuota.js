@@ -1,21 +1,8 @@
 import { supabase } from './supabase.js';
-
-const AI_ACTION_PATHS = [
-  /^\/api\/ai\/(?:capa-suggestion|risk-treatment-suggestion|haccp-surveillance-suggestion|haccp-significance-suggestion|haccp-ccp-suggestion)$/,
-  /^\/api\/(?:qqoqccp|pdca)\/[^/]+\/generate$/,
-  /^\/api\/risks\/service-suggestion$/,
-  /^\/api\/haccp\/steps\/[^/]+\/hazard-suggestion$/,
-  /^\/api\/audits\/[^/]+\/checklist\/generate$/,
-  /^\/api\/management-reviews\/[^/]+\/ai-draft$/,
-  /^\/api\/procedures\/(?:generate-draft|generate-full-draft|generate-draft-from-qqoqccp)$/,
-  /^\/api\/kpi-imports\/[^/]+\/ai-suggestion$/,
-  /^\/api\/procedures\/[^/]+\/suggest-revision-from-capa$/,
-  /^\/api\/procedures\/[^/]+\/versions\/[^/]+\/(?:check-compliance|compliance-fix|compare|distribution-sheet)$/,
-];
+import { aiModuleForRequest } from './aiModules.js';
 
 export function isAiActionRequest(req) {
-  const path = `${req.baseUrl}${req.path}`.replace(/\/$/, '');
-  return req.method === 'POST' && AI_ACTION_PATHS.some((pattern) => pattern.test(path));
+  return aiModuleForRequest(req) !== null;
 }
 
 export async function getAiQuota(tenantId, userId = null) {
@@ -31,6 +18,17 @@ export async function settleAiAction(actionId, success) {
 
 export async function attachAiQuota(req, res) {
   if (!isAiActionRequest(req) || req.aiQuotaActionId) return true;
+  const module = aiModuleForRequest(req);
+  const { data: tenant, error: moduleError } = await supabase.from('tenants').select('ai_modules').eq('id', req.tenantId).maybeSingle();
+  if (moduleError || !tenant) {
+    console.error('[modules IA] lecture impossible :', moduleError?.message || 'Entreprise absente');
+    res.status(503).json({ error: "Impossible de vérifier l'accès IA de votre entreprise." });
+    return false;
+  }
+  if (tenant.ai_modules[module] === false) {
+    res.status(403).json({ code: 'AI_MODULE_DISABLED', module, error: "L'assistance IA de ce module est désactivée pour votre entreprise. Contactez votre administrateur." });
+    return false;
+  }
   const { data, error } = await supabase.rpc('reserve_ai_action', { p_tenant_id: req.tenantId, p_user_id: req.user.id });
   if (error) {
     console.error('[quota IA] réservation impossible :', error.message);

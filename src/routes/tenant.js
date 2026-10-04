@@ -157,7 +157,7 @@ router.delete('/account', requireSuperAdmin, [body('confirmation_name').trim().n
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('tenants')
-    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
+    .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules')
     .eq('id', req.tenantId)
     .maybeSingle();
 
@@ -236,7 +236,7 @@ router.patch(
       .from('tenants')
       .update(update)
       .eq('id', req.tenantId)
-      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
+      .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months, ai_modules')
       .single();
 
     if (error) {
