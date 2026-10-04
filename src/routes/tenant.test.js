@@ -1,15 +1,59 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app.js';
 import { createTenant } from '../test-utils/tenant.js';
+import { supabase } from '../services/supabase.js';
 
 let tenant;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (tenant) {
     await tenant.cleanup();
     tenant = undefined;
   }
+});
+
+describe('GET /api/tenant — erreurs de lecture', () => {
+  function mockTenantRead(result) {
+    const originalFrom = supabase.from.bind(supabase);
+    vi.spyOn(supabase, 'from').mockImplementation((table) => {
+      if (table !== 'tenants') return originalFrom(table);
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => result,
+          }),
+        }),
+      };
+    });
+  }
+
+  it.each([
+    ['42703', 'column tenants.company_address does not exist'],
+    ['PGRST204', 'Column missing from schema cache'],
+    ['08006', 'Database connection failure'],
+  ])('renvoie 500 et journalise une erreur de base %s sans la masquer en 404', async (code, message) => {
+    tenant = await createTenant();
+    mockTenantRead({ data: null, error: { code, message } });
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const res = await request(app).get('/api/tenant').set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: "Impossible de charger les informations de l'entreprise." });
+    expect(log).toHaveBeenCalledWith('[tenant] lecture impossible :', code, message);
+  });
+
+  it('conserve le 404 pour une entreprise réellement absente', async () => {
+    tenant = await createTenant();
+    mockTenantRead({ data: null, error: null });
+
+    const res = await request(app).get('/api/tenant').set('Authorization', `Bearer ${tenant.admin.token}`);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Entreprise introuvable.' });
+  });
 });
 
 describe('GET/PATCH /api/tenant — identité des documents', () => {

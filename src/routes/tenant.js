@@ -159,9 +159,13 @@ router.get('/', async (req, res) => {
     .from('tenants')
     .select('id, name, slug, plan, logo_url, timezone, company_address, company_phone, company_legal_mentions, document_review_frequency_months, management_review_frequency_months')
     .eq('id', req.tenantId)
-    .single();
+    .maybeSingle();
 
-  if (error || !data) {
+  if (error) {
+    console.error('[tenant] lecture impossible :', error.code, error.message);
+    return res.status(500).json({ error: "Impossible de charger les informations de l'entreprise." });
+  }
+  if (!data) {
     return res.status(404).json({ error: 'Entreprise introuvable.' });
   }
 
