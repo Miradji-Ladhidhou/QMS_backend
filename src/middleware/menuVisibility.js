@@ -27,11 +27,15 @@ export async function getVisibleMenuKeys({ tenantId, userId, userRole, appModule
   const appModules = effectiveAppModules(configuredModules);
   if (userRole === 'admin') return new Set(MENU_ITEM_KEYS.filter((key) => appModules[key]));
 
-  const { data: settings } = await supabase
+  const { data: settings, error: settingsError } = await supabase
     .from('tenant_menu_settings')
     .select('role_hidden_items, user_overrides')
     .eq('tenant_id', tenantId)
     .maybeSingle();
+  if (settingsError) {
+    console.error('[modules métier] lecture des permissions impossible :', settingsError.message);
+    throw new Error('Impossible de vérifier les permissions de cet utilisateur.');
+  }
 
   // undefined (rôle jamais configuré) => défaut ; [] explicite (l'admin a choisi de tout
   // montrer) => respecté tel quel — même distinction que GET /menu.

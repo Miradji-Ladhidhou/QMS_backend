@@ -23,6 +23,22 @@ afterEach(() => {
   mocks.create.mockReset();
 });
 
+it('restricts guide recommendations to supplied catalog identifiers with no routes or external tools', async () => {
+  vi.stubEnv('GROQ_API_KEY', 'test-only-key');
+  mocks.create.mockResolvedValue({ choices: [{ message: { content: '{"recommendations":[{"id":"risks","score":100}]}' } }] });
+  const { generateProblemGuideRecommendations } = await import('./groq.js');
+  expect(await generateProblemGuideRecommendations('Situation inhabituelle', [
+    { id: 'risks', label: 'Risques', description: 'Évaluer les risques', path: '/risks', keywords: ['secret'] },
+  ])).toEqual({ recommendations: [{ id: 'risks', score: 100 }] });
+  const input = mocks.create.mock.calls[0][0];
+  expect(JSON.parse(input.messages[1].content)).toEqual({
+    problem: 'Situation inhabituelle',
+    modules: [{ id: 'risks', label: 'Risques', description: 'Évaluer les risques' }],
+  });
+  expect(input.messages[0].content).toContain('Aucun module, outil, route ou fonctionnalité supplémentaire');
+  expect(input.max_completion_tokens).toBeLessThanOrEqual(1024);
+});
+
 it('tailors CCP preparation to the step and separates source/evidence guidance from real validation', async () => {
   vi.stubEnv('GROQ_API_KEY', 'test-only-key');
   mocks.create.mockResolvedValue({ choices: [{ message: { content: '{"critical_limits":"Température ≤ 4 °C"}' } }] });

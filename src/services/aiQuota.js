@@ -36,7 +36,7 @@ export async function attachAiQuota(req, res) {
     return false;
   }
   const appModule = AI_TO_APP_MODULE[module] || module;
-  if (tenant.app_modules?.[appModule] === false) {
+  if (module !== 'problem_guide' && tenant.app_modules?.[appModule] === false) {
     res.status(403).json({
       code: 'APP_MODULE_DISABLED',
       module: appModule,

@@ -18,6 +18,7 @@ afterEach(async () => {
 });
 
 const PATHS = {
+  problem_guide: ['/ai/problem-guide-search'],
   capas: ['/ai/capa-suggestion'],
   qqoqccp: ['/qqoqccp/example/generate'],
   pdca: ['/pdca/example/generate'],
@@ -67,7 +68,8 @@ it.each(AI_MODULES)('bloque tous les appels du module %s sans consommer de quota
   const changed = await admin.from('tenants').update({ ai_modules: { [module]: false } }).eq('id', tenant.tenantId);
   if (changed.error) throw changed.error;
   for (const path of PATHS[module]) {
-    const response = await request(app).post(`/api${path}`).set('Authorization', `Bearer ${tenant.admin.token}`).send({});
+    const response = await request(app).post(`/api${path}`).set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send(module === 'problem_guide' ? { query: 'Une situation métier ambiguë' } : {});
     expect(response.status, path).toBe(403);
     expect(response.body.code).toBe('AI_MODULE_DISABLED');
     expect(response.body.module).toBe(module);

@@ -1,6 +1,7 @@
-export const AI_MODULES = ['capas', 'qqoqccp', 'pdca', 'risks', 'haccp', 'audits', 'management_reviews', 'procedures', 'kpis'];
+export const AI_MODULES = ['capas', 'qqoqccp', 'pdca', 'risks', 'haccp', 'audits', 'management_reviews', 'procedures', 'kpis', 'problem_guide'];
 
 const ACTIONS = [
+  ['problem_guide', /^\/api\/ai\/problem-guide-search$/],
   ['capas', /^\/api\/ai\/capa-suggestion$/],
   ['risks', /^\/api\/(?:ai\/risk-treatment-suggestion|risks\/service-suggestion)$/],
   ['haccp', /^\/api\/(?:ai\/haccp-(?:surveillance|significance|ccp)-suggestion|haccp\/steps\/[^/]+\/hazard-suggestion)$/],
