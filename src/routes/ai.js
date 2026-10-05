@@ -8,48 +8,23 @@ import {
   generateHaccpCcpSuggestion,
   generateHaccpSurveillanceSuggestion,
   logAiFailure,
-  generateProblemGuideRecommendations,
 } from '../services/groq.js';
 import { validateHaccpAiSuggestions } from '../services/haccpAiValidation.js';
 import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
 import { supabase } from '../services/supabase.js';
 import { getVisibleMenuKeys } from '../middleware/menuVisibility.js';
-import { attachAiQuota } from '../services/aiQuota.js';
-import { getRequestContext } from '../services/requestContext.js';
-import { mergeGuideSearch, prepareProblemGuideSearch, validateProblemGuideResponse } from '../services/problemGuide.js';
 
 const router = Router();
 
 router.use(requireAuth);
 
-router.post('/problem-guide-search',
-  body('query').isString().bail().trim().isLength({ min: 3, max: 1200 }),
-  async (req, res) => {
-    if (!validationResult(req).isEmpty()) {
-      return res.status(400).json({ error: 'Décrivez le problème avec 3 à 1200 caractères.' });
-    }
-    try {
-      const getMenus = () => getVisibleMenuKeys({
-        tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole,
-      });
-      const search = prepareProblemGuideSearch(req.body.query, await getMenus());
-      if (!search.needsFallback) {
-        return res.json({ recommendations: mergeGuideSearch(search.local, [], search.access) });
-      }
-      if (!(await attachAiQuota(req, res))) return;
-      getRequestContext().aiQuotaActionId = req.aiQuotaActionId;
-      const result = await generateProblemGuideRecommendations(req.body.query, search.modules);
-      const remote = validateProblemGuideResponse(result, search.modules);
-      // Les droits peuvent avoir changé pendant l'appel au fournisseur.
-      const currentAccess = { visibleMenuKeys: [...await getMenus()] };
-      res.json({ recommendations: mergeGuideSearch(search.local, remote, currentAccess) });
-    } catch (error) {
-      console.error('[guide résolution] recherche impossible :', error.message);
-      await logAiFailure('problem_guide', 'search_failure', error.message);
-      res.status(503).json({ error: 'La recherche est temporairement indisponible. Veuillez réessayer.' });
-    }
-  },
-);
+router.post('/problem-guide-search', (_req, res) => {
+  res.status(403).json({
+    code: 'AI_MODULE_DISABLED',
+    module: 'problem_guide',
+    error: 'L’assistance IA du guide de résolution est temporairement désactivée. Utilisez les sélecteurs de secteur et de problème.',
+  });
+});
 
 router.get('/drafts', async (req, res) => {
   const modules = {

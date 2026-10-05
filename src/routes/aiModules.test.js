@@ -77,7 +77,11 @@ it.each(AI_MODULES)('bloque tous les appels du module %s sans consommer de quota
   expect((await getAiQuota(tenant.tenantId, tenant.admin.id)).tenant).toMatchObject({ used: 0, pending: 0 });
   const other = await fixture();
   const available = await request(app).post(`/api${PATHS[module][0]}`).set('Authorization', `Bearer ${other.admin.token}`).send({});
-  expect(available.body.code).not.toBe('AI_MODULE_DISABLED');
+  if (module === 'problem_guide') {
+    expect(available.body.code).toBe('AI_MODULE_DISABLED');
+  } else {
+    expect(available.body.code).not.toBe('AI_MODULE_DISABLED');
+  }
   expect(available.status).not.toBe(200);
 });
 

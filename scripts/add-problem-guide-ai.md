@@ -1,5 +1,17 @@
 # Guide de resolution : deploiement
 
+## Assistance temporairement desactivee
+
+Le guide utilise maintenant deux selecteurs locaux (secteur et type de probleme).
+`POST /api/ai/problem-guide-search` renvoie HTTP 403 avec `AI_MODULE_DISABLED`
+pour toute session, independamment des reglages entreprise et forfait.
+Aucun appel fournisseur ni reservation de quota n'est effectue.
+Les autres fonctions IA de l'application restent inchangees.
+La migration ci-dessous reste utile pour les installations ayant deploye
+la version precedente ; aucune nouvelle migration n'est necessaire pour les selecteurs.
+
+## Infrastructure historique du secours
+
 Avant de deployer le backend et le frontend, executer
 [add-problem-guide-ai.sql](./add-problem-guide-ai.sql) sur la base cible,
 apres `add-ai-commercial-settings.sql`.
@@ -11,11 +23,6 @@ La cle IA `problem_guide` permet de desactiver le secours dans les reglages
 entreprise ou les modeles de forfait. Une cle absente est active, comme pour les
 autres fonctions IA. Les quotas entreprise/utilisateur et les limites Groq
 existants restent appliques.
-
-`POST /api/ai/problem-guide-search` exige une session et un texte de 3 a 1200
-caracteres. Le serveur verifie la recherche locale et les acces avant de reserver
-une action. Il ne propose que des modules accessibles, rejette les identifiants
-inventes et recontrole les permissions apres generation.
 
 La bibliotheque locale est copiee depuis le depot frontend pour permettre les
 deploiements independants. Depuis le workspace contenant les deux depots :
