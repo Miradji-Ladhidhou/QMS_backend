@@ -25,7 +25,7 @@ describe('Super Admin — accès réservé', () => {
   it('un admin de tenant classique (non super admin) reçoit 403 sur toutes les routes', async () => {
     tenant = await createTenant();
 
-    const routes = ['/api/super-admin/tenants', '/api/super-admin/audit-log', '/api/super-admin/stats', '/api/super-admin/health'];
+    const routes = ['/api/super-admin/tenants', '/api/super-admin/audit-log', '/api/super-admin/stats', '/api/super-admin/health', '/api/super-admin/resources'];
     for (const route of routes) {
       const res = await request(app).get(route).set('Authorization', `Bearer ${tenant.admin.token}`);
       expect(res.status).toBe(403);

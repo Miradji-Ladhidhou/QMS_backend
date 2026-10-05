@@ -15,6 +15,7 @@ import { uploadBackupToDrive, listDriveBackups, downloadFromDrive } from '../ser
 import { slugify } from './auth.js';
 import { ASSIGNABLE_ROLES, sendInviteEmail } from './users.js';
 import { AI_PLAN_KEYS, tenantWithUnifiedPlan } from '../services/aiCommercial.js';
+import { adminResourcesRouter } from './resources.js';
 
 const router = Router();
 const TENANT_EXPORT_TABLES = [
@@ -27,6 +28,7 @@ const TENANT_EXPORT_TABLES = [
 
 router.use(requireAuth);
 router.use(requireSuperAdmin);
+router.use('/resources', adminResourcesRouter);
 
 // GET /api/super-admin/tenants — tous les tenants de la plateforme, avec le nombre
 // d'utilisateurs de chacun. Contourne volontairement le filtre tenant_id habituel (c'est

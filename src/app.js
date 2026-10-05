@@ -53,6 +53,7 @@ import qualityPolicyRoutes from './routes/qualityPolicy.js';
 import nonconformingOutputsRoutes from './routes/nonconformingOutputs.js';
 import customerSatisfactionRoutes from './routes/customerSatisfaction.js';
 import supportRoutes from './routes/support.js';
+import resourcesRoutes from './routes/resources.js';
 
 // Échoue au démarrage plutôt qu'en silence — même principe que services/supabase.js pour
 // SUPABASE_URL/SUPABASE_SERVICE_KEY. Sans ça, un FRONTEND_URL absent en production ferait
@@ -147,6 +148,7 @@ app.use('/api/tasks', tasksRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/planning', planningRoutes);
 app.use('/api/super-admin', superAdminRoutes);
+app.use('/api/resources', resourcesRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/drive', driveIntegrationRoutes);
 app.use('/api/procedures', proceduresRoutes);
