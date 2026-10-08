@@ -5,6 +5,9 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { buildEvidenceRecordPdf, buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -19,6 +22,64 @@ router.use(requireMenuVisible('accidents'));
 
 const ACCIDENT_SELECT =
   '*, service:services(id, name), injured_user:users!accidents_injured_user_id_fkey(id, full_name), injured_employee:employees(id, full_name), linked_capa:capas!accidents_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
+
+async function exportAccidentReport(req, res, format) {
+  const { data: accident, error } = await supabase
+    .from('accidents')
+    .select(ACCIDENT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (error || !accident) return res.status(404).json({ error: 'Accident introuvable.' });
+  const allowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: accident.category_id,
+    permission: 'view',
+  });
+  if (!allowed) return res.status(404).json({ error: 'Accident introuvable.' });
+
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'accidents', recordId: accident.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const [{ data: tenant }, { data: user }] = await Promise.all([
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+  ]);
+  const data = {
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    title: accident.title,
+    facts: [
+      { label: 'Type', value: accident.incident_type === 'near_miss' ? 'Presqu’accident' : 'Accident du travail' },
+      { label: 'Date', value: accident.occurred_at },
+      { label: 'Heure', value: accident.occurred_time },
+      { label: 'Lieu', value: accident.location },
+      { label: 'Gravité', value: accident.severity },
+      { label: 'Personne concernée', value: accident.injured_user?.full_name || accident.injured_employee?.full_name },
+      { label: 'Service', value: accident.service?.name },
+      { label: 'Témoin', value: accident.witness_name },
+      { label: 'Arrêt de travail', value: accident.with_lost_time ? `${accident.lost_days || 0} jour(s)` : 'Non' },
+    ],
+    sections: [
+      { title: 'Faits observés', content: accident.description },
+      { title: 'Cause immédiate', content: accident.immediate_cause },
+      { title: 'Mesures immédiates', content: accident.immediate_actions },
+      { title: 'Cause racine', content: accident.root_cause },
+    ],
+    evidence,
+    generatedBy: user?.full_name,
+  };
+  const buffer = format === 'pdf' ? await buildEvidenceRecordPdf(data) : await buildEvidenceRecordWord(data);
+  const ext = format === 'pdf' ? 'pdf' : 'docx';
+  res.setHeader('Content-Type', format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="accident-${accident.id}.${ext}"`);
+  res.send(buffer);
+}
 
 // GET /api/accidents — liste tenant-wide, tous les rôles (comme risks.js/audits.js : le
 // registre concerne le SMQ dans son ensemble). Une catégorie explicitement restreinte
@@ -56,6 +117,9 @@ router.get('/:id', async (req, res) => {
     categoryId: data.category_id,
     permission: 'view',
   });
+
+  router.get('/:id/report.pdf', async (req, res) => exportAccidentReport(req, res, 'pdf'));
+  router.get('/:id/report.word', async (req, res) => exportAccidentReport(req, res, 'word'));
   if (!categoryAllowed) {
     return res.status(404).json({ error: 'Accident introuvable.' });
   }

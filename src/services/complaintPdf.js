@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 
 // Même couleur sémantique de retard que capaPdf.js/pdcaPdf.js (pas une couleur de marque).
 const RED = '#dc2626';
@@ -69,7 +70,7 @@ function drawFactsGrid(doc, facts) {
 
 // complaint : ligne complaints jointe (assigned/service/category/linked_capa résolus, voir
 // routes/complaints.js#COMPLAINT_SELECT).
-export function buildComplaintPdf({ tenantName, tenantLogo, complaint }) {
+export function buildComplaintPdf({ tenantName, tenantLogo, complaint, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -145,6 +146,8 @@ export function buildComplaintPdf({ tenantName, tenantLogo, complaint }) {
     const offset = complaint.product_service ? 2 : 1;
     drawSection(doc, offset + 1, 'Cause identifiée', complaint.root_cause);
     drawSection(doc, offset + 2, 'Résolution apportée', complaint.resolution);
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté — même construction que capaPdf.js/pdcaPdf.js.
     const range = doc.bufferedPageRange();

@@ -154,6 +154,11 @@ export async function getDriveFileStream(accessToken, fileId) {
   return response.data;
 }
 
+export async function deleteDriveFile(accessToken, fileId) {
+  const drive = driveClientFromAccessToken(accessToken);
+  await drive.files.delete({ fileId });
+}
+
 // webViewLink n'est jamais persisté en base : demandé à la volée (Prompt F2, icône "Ouvrir
 // dans Google Drive") plutôt qu'au moment de l'upload, pour rester valide même si Google le
 // fait évoluer, et pour fonctionner aussi sur des fichiers déjà uploadés avant l'ajout de

@@ -30,6 +30,7 @@ import { sendImmediateNotification } from '../services/notificationHelpers.js';
 import { buildHaccpAuditWord } from '../services/haccpAuditWord.js';
 import { buildHaccpCcpPdf } from '../services/haccpCcpPdf.js';
 import { buildHaccpRecordSheetPdf } from '../services/haccpRecordSheetPdf.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -1514,7 +1515,19 @@ router.get('/plans/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildHaccpAuditPdf({ tenantName: tenant?.name, tenantLogo, plans: assembled, monitoringSummaryByCcpId });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const pdfBuffer = await buildHaccpAuditPdf({
+    tenantName: tenant?.name,
+    tenantLogo,
+    plans: assembled,
+    monitoringSummaryByCcpId,
+    evidenceByPlanId: { [plan.id]: evidence },
+  });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="haccp-${plan.id}.pdf"`);
@@ -1552,7 +1565,15 @@ router.post('/plans/pdf', [body('ids').optional().isArray().withMessage('Liste i
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildHaccpAuditPdf({ tenantName: tenant?.name, tenantLogo, plans: assembled, monitoringSummaryByCcpId });
+  let evidenceByPlanId;
+  try {
+    evidenceByPlanId = Object.fromEntries(await Promise.all(
+      assembled.map(async (plan) => [plan.id, await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id })])
+    ));
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const pdfBuffer = await buildHaccpAuditPdf({ tenantName: tenant?.name, tenantLogo, plans: assembled, monitoringSummaryByCcpId, evidenceByPlanId });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="haccp-analyses-${new Date().toISOString().slice(0, 10)}.pdf"`);
@@ -1746,7 +1767,19 @@ router.get('/plans/:id/word', async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
   const { tenantName, tenantLogo } = await tenantIdentity(req.tenantId);
-  const buffer = await buildHaccpAuditWord({ tenantName, tenantLogo, plans: assembled, monitoringSummaryByCcpId });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const buffer = await buildHaccpAuditWord({
+    tenantName,
+    tenantLogo,
+    plans: assembled,
+    monitoringSummaryByCcpId,
+    evidenceByPlanId: { [plan.id]: evidence },
+  });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(`haccp-${safeFileName(plan.title)}.docx`)}"`);
   res.send(buffer);

@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 
 // RED/AMBER restent des couleurs sémantiques (retard/efficacité non vérifiée), pas des
 // couleurs de marque — volontairement non touchées par le passage à l'en-tête neutre.
@@ -74,7 +75,7 @@ function drawFactsGrid(doc, facts) {
 }
 
 // capa : ligne capas jointe (assigned/service/category résolus, voir routes/capas.js#CAPA_SELECT).
-export function buildCapaPdf({ tenantName, tenantLogo, capa }) {
+export function buildCapaPdf({ tenantName, tenantLogo, capa, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -146,6 +147,8 @@ export function buildCapaPdf({ tenantName, tenantLogo, capa }) {
     if (capa.comment) {
       drawSection(doc, capa.effectiveness_notes ? 6 : 5, 'Commentaire', capa.comment);
     }
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté — même construction que procedurePdf.js/qqoqccpPdf.js.
     const range = doc.bufferedPageRange();

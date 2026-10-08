@@ -5,6 +5,9 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { buildEvidenceRecordPdf, buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
+import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
 
@@ -18,6 +21,62 @@ router.use(requireMenuVisible('nonconforming-outputs'));
 
 const OUTPUT_SELECT =
   '*, service:services(id, name), assignee:users!nonconforming_outputs_assigned_to_fkey(id, full_name), decider:users!nonconforming_outputs_decided_by_fkey(id, full_name), linked_capa:capas!nonconforming_outputs_linked_capa_id_fkey(id, number, title, status), category:categories(id, name, color, is_restricted, owner_user_id)';
+
+async function exportOutputReport(req, res, format) {
+  const { data: output, error } = await supabase
+    .from('nonconforming_outputs')
+    .select(OUTPUT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (error || !output) return res.status(404).json({ error: 'Non-conformité introuvable.' });
+  const allowed = await hasGenericCategoryPermission({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    categoryId: output.category_id,
+    permission: 'view',
+  });
+  if (!allowed) return res.status(404).json({ error: 'Non-conformité introuvable.' });
+
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'nonconforming-outputs', recordId: output.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const [{ data: tenant }, { data: user }] = await Promise.all([
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+  ]);
+  const data = {
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    title: output.title,
+    facts: [
+      { label: 'Date de détection', value: output.detected_at },
+      { label: 'Référence du lot / produit', value: output.lot_reference },
+      { label: 'Service', value: output.service?.name },
+      { label: 'Statut', value: output.status },
+      { label: 'Traitement', value: output.disposition },
+      { label: 'Assigné à', value: output.assignee?.full_name },
+      { label: 'Client informé', value: output.customer_informed ? 'Oui' : 'Non' },
+    ],
+    sections: [
+      { title: 'Description', content: output.description },
+      { title: 'Mesure de confinement immédiate', content: output.containment_action },
+      { title: 'Action réalisée', content: output.action_taken },
+      { title: 'Référence de dérogation', content: output.concession_reference },
+    ],
+    evidence,
+    generatedBy: user?.full_name,
+  };
+  const buffer = format === 'pdf' ? await buildEvidenceRecordPdf(data) : await buildEvidenceRecordWord(data);
+  const ext = format === 'pdf' ? 'pdf' : 'docx';
+  res.setHeader('Content-Type', format === 'pdf' ? 'application/pdf' : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="non-conformite-${output.id}.${ext}"`);
+  res.send(buffer);
+}
 
 // GET /api/nonconforming-outputs — liste tenant-wide, tous les rôles (comme accidents.js : le
 // registre concerne le SMQ dans son ensemble). Filtrable par statut. Une catégorie
@@ -58,6 +117,9 @@ router.get('/:id', async (req, res) => {
     categoryId: data.category_id,
     permission: 'view',
   });
+
+  router.get('/:id/report.pdf', async (req, res) => exportOutputReport(req, res, 'pdf'));
+  router.get('/:id/report.word', async (req, res) => exportOutputReport(req, res, 'word'));
   if (!categoryAllowed) {
     return res.status(404).json({ error: 'Non-conformité introuvable.' });
   }

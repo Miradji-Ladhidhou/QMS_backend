@@ -9,6 +9,8 @@ import { buildCapaPdf } from '../services/capaPdf.js';
 import { requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
 import { sendPaginatedOrArray } from '../utils/pagination.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
 
 const router = Router();
 
@@ -252,11 +254,67 @@ router.get('/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildCapaPdf({ tenantName: tenant?.name, tenantLogo, capa });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const pdfBuffer = await buildCapaPdf({ tenantName: tenant?.name, tenantLogo, capa, evidence });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${capa.number || capa.id}.pdf"`);
   res.send(pdfBuffer);
+});
+
+router.get('/:id/word', async (req, res) => {
+  const { data: capa, error } = await supabase.from('capas').select(CAPA_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
+  if (error || !capa) return res.status(404).json({ error: 'CAPA introuvable.' });
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'capa',
+    item: capa,
+  });
+  if (!canAccess) return res.status(404).json({ error: 'CAPA introuvable.' });
+
+  const [{ data: tenant }, { data: user }] = await Promise.all([
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+  ]);
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const buffer = await buildEvidenceRecordWord({
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    title: `${capa.number ? `${capa.number} — ` : ''}${capa.title}`,
+    facts: [
+      { label: 'Créée le', value: capa.created_at },
+      { label: 'Origine', value: capa.origin },
+      { label: 'Statut', value: capa.status },
+      { label: 'Priorité', value: capa.priority },
+      { label: 'Responsable', value: capa.assigned?.full_name },
+      { label: 'Service', value: capa.service?.name },
+      { label: 'Échéance', value: capa.due_date },
+    ],
+    sections: [
+      { title: 'Description de la non-conformité', content: capa.description },
+      { title: 'Cause identifiée', content: capa.root_cause },
+      { title: 'Action corrective', content: capa.corrective_action },
+      { title: 'Action préventive', content: capa.preventive_action },
+      { title: 'Vérification d’efficacité', content: capa.effectiveness_notes },
+    ],
+    evidence,
+    generatedBy: user?.full_name,
+  });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="${capa.number || capa.id}.docx"`);
+  res.send(buffer);
 });
 
 // POST /api/capas — création, numérotation automatique CAPA-{année}-{seq}

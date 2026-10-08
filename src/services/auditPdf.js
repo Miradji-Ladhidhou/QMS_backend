@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 import { CHECKLIST_ANSWER_LABELS, summarizeChecklist } from './auditChecklist.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
@@ -51,7 +52,7 @@ function drawFactsGrid(doc, facts) {
 // audit : ligne audits jointe (lead/service/category) ; findings : constats (linked_capa résolue) ;
 // checklistItems : questions et réponses ; linkedProcedures : procédures liées ;
 // qualificationText : phrase de qualification de l'auditeur (voir auditorQualification.js).
-export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checklistItems, linkedProcedures, qualificationText }) {
+export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checklistItems, linkedProcedures, qualificationText, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -145,6 +146,8 @@ export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checkli
         doc.fontSize(10).fillColor(INK).text(`• ${procedure.number} — ${procedure.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       });
     }
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté — même construction que capaPdf.js.
     const range = doc.bufferedPageRange();

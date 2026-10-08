@@ -18,6 +18,7 @@ import {
   TableLayoutType,
 } from 'docx';
 import { logoImageRun } from './wordLogo.js';
+import { evidenceWordBlocks } from './evidenceExport.js';
 import { describeLimits, numericLimitsOf } from './haccpMonitoring.js';
 
 // Équivalent Word de haccpAuditPdf.js : mêmes rubriques (infos générales, analyse des dangers, points critiques,
@@ -209,7 +210,7 @@ function planSection(plan, monitoringSummaryByCcpId) {
 
 // plans : plans déjà assemblés (voir loadPlanSteps) ; monitoringSummaryByCcpId : Map ccpId -> { total, outOfLimits,
 // linkedCapas, lastRecordedAt }. Un plan = une section (saut de page entre deux plans).
-export async function buildHaccpAuditWord({ tenantName, tenantLogo, plans, monitoringSummaryByCcpId }) {
+export async function buildHaccpAuditWord({ tenantName, tenantLogo, plans, monitoringSummaryByCcpId, evidenceByPlanId = {} }) {
   const logo = logoImageRun(tenantLogo);
   const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — Analyse HACCP`, size: 16, color: MUTED });
   const header = logo
@@ -240,7 +241,7 @@ export async function buildHaccpAuditWord({ tenantName, tenantLogo, plans, monit
           ],
         }),
       },
-      children: planSection(plan, monitoringSummaryByCcpId),
+      children: [...planSection(plan, monitoringSummaryByCcpId), ...evidenceWordBlocks(evidenceByPlanId[plan.id])],
     })),
   });
 

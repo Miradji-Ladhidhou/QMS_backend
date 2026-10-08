@@ -8,6 +8,8 @@ import { requireValidCategoryId } from '../middleware/genericCategoryPermissions
 import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
 import { buildComplaintPdf } from '../services/complaintPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
 
 const router = Router();
 
@@ -109,11 +111,71 @@ router.get('/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildComplaintPdf({ tenantName: tenant?.name, tenantLogo, complaint });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'complaints', recordId: complaint.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const pdfBuffer = await buildComplaintPdf({ tenantName: tenant?.name, tenantLogo, complaint, evidence });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="reclamation-${complaint.id}.pdf"`);
   res.send(pdfBuffer);
+});
+
+router.get('/:id/word', async (req, res) => {
+  const { data: complaint, error } = await supabase
+    .from('complaints')
+    .select(COMPLAINT_SELECT)
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .maybeSingle();
+  if (error || !complaint) return res.status(404).json({ error: 'Réclamation introuvable.' });
+
+  const canAccess = await canAccessOwnedRecord({
+    tenantId: req.tenantId,
+    userId: req.user.id,
+    userRole: req.userRole,
+    resourceType: 'complaint',
+    item: complaint,
+  });
+  if (!canAccess) return res.status(404).json({ error: 'Réclamation introuvable.' });
+
+  const [{ data: tenant }, { data: user }] = await Promise.all([
+    supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
+    supabase.from('users').select('full_name').eq('id', req.user.id).single(),
+  ]);
+  let evidence;
+  try {
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'complaints', recordId: complaint.id });
+  } catch (driveError) {
+    return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  const buffer = await buildEvidenceRecordWord({
+    tenantName: tenant?.name,
+    tenantLogo: await fetchTenantLogoBuffer(tenant?.logo_url),
+    title: `Réclamation — ${complaint.customer_name}`,
+    facts: [
+      { label: 'Reçue le', value: complaint.received_date },
+      { label: 'Échéance de réponse', value: complaint.due_date },
+      { label: 'Statut', value: complaint.status },
+      { label: 'Gravité', value: complaint.severity },
+      { label: 'Produit / service', value: complaint.product_service },
+      { label: 'Service concerné', value: complaint.service?.name },
+      { label: 'Assigné à', value: complaint.assigned?.full_name },
+    ],
+    sections: [
+      { title: 'Description', content: complaint.description },
+      { title: 'Cause identifiée', content: complaint.root_cause },
+      { title: 'Résolution apportée', content: complaint.resolution },
+    ],
+    evidence,
+    generatedBy: user?.full_name,
+  });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  res.setHeader('Content-Disposition', `attachment; filename="reclamation-${complaint.id}.docx"`);
+  res.send(buffer);
 });
 
 // POST /api/complaints — tous les rôles (comme CAPA : n'importe qui peut enregistrer une

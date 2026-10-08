@@ -10,6 +10,7 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildAuditPdf } from '../services/auditPdf.js';
 import { buildAuditWord } from '../services/auditWord.js';
 import { buildAuditXlsx } from '../services/auditXlsx.js';
+import { loadEvidenceForExport } from '../services/qmsEvidence.js';
 
 const router = Router();
 
@@ -115,6 +116,11 @@ async function loadAuditForExport(req, res) {
 router.get('/:id/pdf', async (req, res) => {
   const data = await loadAuditForExport(req, res);
   if (!data) return;
+  try {
+    data.evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'audits', recordId: data.audit.id });
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const pdfBuffer = await buildAuditPdf(data);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', 'inline; filename="audit.pdf"');
@@ -125,6 +131,11 @@ router.get('/:id/pdf', async (req, res) => {
 router.get('/:id/word', async (req, res) => {
   const data = await loadAuditForExport(req, res);
   if (!data) return;
+  try {
+    data.evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'audits', recordId: data.audit.id });
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const { data: me } = await supabase.from('users').select('full_name').eq('id', req.user.id).single();
   const buffer = await buildAuditWord({ ...data, generatedBy: me?.full_name });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');

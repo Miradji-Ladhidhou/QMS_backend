@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
 import { INK, MUTED, HEADER_FILL, ROW_ALT, drawLetterheadHeader } from './pdfTheme.js';
 import { describeLimits, numericLimitsOf } from './haccpMonitoring.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 
 // RED reste une couleur sémantique (danger significatif / dérive hors limites non couverte par
 // une CAPA), pas une couleur de marque — volontairement non touchée par l'en-tête neutre.
@@ -291,7 +292,7 @@ function drawPlanSection(doc, plan, monitoringSummaryByCcpId) {
 // plans : tableau de plans déjà assemblés (steps -> hazards -> ccp, voir loadPlanSteps dans
 // routes/haccp.js) — un seul élément pour l'export d'un plan précis, plusieurs pour un export
 // combiné ("analyses complètes"). Une page par plan.
-export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSummaryByCcpId }) {
+export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSummaryByCcpId, evidenceByPlanId = {} }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', layout: 'landscape', bufferPages: true });
     const chunks = [];
@@ -308,6 +309,7 @@ export function buildHaccpAuditPdf({ tenantName, tenantLogo, plans, monitoringSu
     plans.forEach((plan, index) => {
       if (index > 0) doc.addPage();
       drawPlanSection(doc, plan, monitoringSummaryByCcpId);
+      appendEvidenceToPdf(doc, evidenceByPlanId[plan.id], { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
     });
 
     const range = doc.bufferedPageRange();

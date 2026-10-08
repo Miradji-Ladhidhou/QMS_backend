@@ -18,6 +18,7 @@ import {
 } from 'docx';
 import { logoImageRun } from './wordLogo.js';
 import { CHECKLIST_ANSWER_LABELS, summarizeChecklist } from './auditChecklist.js';
+import { evidenceWordBlocks } from './evidenceExport.js';
 
 // Mêmes teintes neutres que les autres exports Word (voir listReportWord.js).
 const INK = '1E293B';
@@ -70,7 +71,7 @@ function textBlock(text) {
 // Fiche Word d'un audit : faits, qualification de l'auditeur, périmètre, conclusion, constats, check-list
 // (question par question, avec réponse et observation) et taux de conformité. Un vrai document vertical,
 // jamais un tableau à une ligne de 15 colonnes (illisible dès que la check-list est longue).
-export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, checklistItems, linkedProcedures, qualificationText, generatedBy }) {
+export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, checklistItems, linkedProcedures, qualificationText, generatedBy, evidence }) {
   const logo = logoImageRun(tenantLogo);
   const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — Audit ${audit.title}`, size: 16, color: MUTED });
   const header = logo
@@ -173,6 +174,8 @@ export async function buildAuditWord({ tenantName, tenantLogo, audit, findings, 
     ...(linkedProcedures.length > 0
       ? [heading('Procédures liées'), ...linkedProcedures.map((procedure) => new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: `${procedure.number} — ${procedure.title}`, size: 20 })] }))]
       : []),
+
+    ...evidenceWordBlocks(evidence),
 
     new Paragraph({ spacing: { before: 320 }, children: [new TextRun({ text: `Document généré par ${generatedBy || 'Utilisateur inconnu'} le ${new Date().toLocaleString('fr-FR')}`, italics: true, size: 16, color: MUTED })] }),
   ];
