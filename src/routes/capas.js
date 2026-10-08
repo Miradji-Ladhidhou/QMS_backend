@@ -45,6 +45,19 @@ const CAPA_COLUMNS =
   'id, tenant_id, number, title, origin, ref_document, priority, status, assigned_to, due_date, closed_at, created_by, created_at, updated_at, description, severity, root_cause, corrective_action, preventive_action, effectiveness_verified, effectiveness_notes, comment, qqoqccp_analysis_id, service_id, audit_finding_id, management_review_action_id, complaint_id, risk_id, supplier_evaluation_id, haccp_monitoring_log_id, accident_id, category_id';
 const CAPA_SELECT = `${CAPA_COLUMNS}, assigned:users!capas_assigned_to_fkey(id, full_name), service:services(id, name), category:categories(id, name, color, is_restricted, owner_user_id)`;
 
+function parseEvidenceSelection(req) {
+  if (req.query.evidenceSelection !== 'true') return { evidenceIds: undefined };
+  const rawIds = req.query.evidenceIds === undefined
+    ? []
+    : Array.isArray(req.query.evidenceIds) ? req.query.evidenceIds : [req.query.evidenceIds];
+  const evidenceIds = [...new Set(rawIds.flatMap((value) => String(value).split(',')).filter(Boolean))];
+  const isUuid = (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  if (evidenceIds.length > 10 || evidenceIds.some((value) => !isUuid(value))) {
+    return { error: 'La sélection des photos à exporter est invalide.' };
+  }
+  return { evidenceIds };
+}
+
 // Délai de traitement par défaut (en jours depuis la création) quand le tenant n'a pas
 // paramétré ses propres valeurs via PUT /api/capas/priority-delays.
 const DEFAULT_PRIORITY_DELAYS = { critical: 30, high: 60, medium: 90, low: 120 };
@@ -235,6 +248,8 @@ router.get('/:id', async (req, res) => {
 // /:id/pdf dans procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id (catégorie
 // restreinte ou partage individuel).
 router.get('/:id/pdf', async (req, res) => {
+  const selection = parseEvidenceSelection(req);
+  if (selection.error) return res.status(400).json({ error: selection.error });
   const { data: capa, error } = await supabase.from('capas').select(CAPA_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
 
   if (error || !capa) {
@@ -256,7 +271,7 @@ router.get('/:id/pdf', async (req, res) => {
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id });
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id, evidenceIds: selection.evidenceIds });
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -268,6 +283,8 @@ router.get('/:id/pdf', async (req, res) => {
 });
 
 router.get('/:id/word', async (req, res) => {
+  const selection = parseEvidenceSelection(req);
+  if (selection.error) return res.status(400).json({ error: selection.error });
   const { data: capa, error } = await supabase.from('capas').select(CAPA_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).maybeSingle();
   if (error || !capa) return res.status(404).json({ error: 'CAPA introuvable.' });
   const canAccess = await canAccessOwnedRecord({
@@ -285,7 +302,7 @@ router.get('/:id/word', async (req, res) => {
   ]);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id });
+    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'capas', recordId: capa.id, evidenceIds: selection.evidenceIds });
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }

@@ -11,19 +11,31 @@ export function appendEvidenceToPdf(doc, evidence = [], { marginX, contentWidth 
   doc.font('Body');
   doc.moveDown(0.5);
 
-  evidence.forEach((item, index) => {
-    const dimensions = imageSize(item.buffer);
-    const scale = Math.min(contentWidth / dimensions.width, 300 / dimensions.height, 1);
-    const width = dimensions.width * scale;
-    const height = dimensions.height * scale;
-    const caption = item.caption || item.file_name;
-    const captionHeight = doc.fontSize(9).heightOfString(caption, { width: contentWidth });
-    if (doc.y + height + captionHeight + 24 > doc.page.height - doc.page.margins.bottom) doc.addPage();
-    doc.image(item.buffer, marginX + (contentWidth - width) / 2, doc.y, { width, height });
-    doc.y += height + 6;
-    doc.fontSize(9).fillColor(INK).text(`${index + 1}. ${caption}`, marginX, doc.y, { width: contentWidth });
-    doc.moveDown(0.45);
-  });
+  const columnGap = 16;
+  const columnWidth = (contentWidth - columnGap) / 2;
+  const imageHeight = 190;
+  const rowHeight = 244;
+  const pageBottom = () => doc.page.height - doc.page.margins.bottom;
+
+  for (let index = 0; index < evidence.length; index += 2) {
+    if (doc.y + rowHeight > pageBottom()) doc.addPage();
+    const rowY = doc.y;
+    evidence.slice(index, index + 2).forEach((item, column) => {
+      const x = marginX + column * (columnWidth + columnGap);
+      const caption = Array.from(item.caption || item.file_name).slice(0, 100).join('');
+      const captionText = `${index + column + 1}. ${caption}${caption.length >= 100 ? '…' : ''}`;
+      doc.image(item.buffer, x, rowY, {
+        fit: [columnWidth, imageHeight],
+        align: 'center',
+        valign: 'center',
+      });
+      doc.fontSize(9).fillColor(INK).text(captionText, x, rowY + imageHeight + 8, {
+        width: columnWidth,
+        height: 34,
+      });
+    });
+    doc.y = rowY + rowHeight;
+  }
 }
 
 export function evidenceWordBlocks(evidence = []) {

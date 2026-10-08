@@ -33,14 +33,16 @@ export async function getEvidenceDriveConnection(tenantId) {
   }
 }
 
-export async function listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId = false }) {
-  const { data, error } = await supabase
+export async function listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId = false, evidenceIds }) {
+  if (evidenceIds?.length === 0) return [];
+  let query = supabase
     .from('qms_evidence_attachments')
     .select(`id, module_key, record_id, file_name, mime_type, file_size, caption, uploaded_by, created_at${includeDriveFileId ? ', drive_file_id' : ''}`)
     .eq('tenant_id', tenantId)
     .eq('module_key', moduleKey)
-    .eq('record_id', recordId)
-    .order('created_at', { ascending: true });
+    .eq('record_id', recordId);
+  if (evidenceIds) query = query.in('id', evidenceIds);
+  const { data, error } = await query.order('created_at', { ascending: true });
 
   if (error) throw new Error('Impossible de récupérer les photos de preuve.');
   return data || [];
@@ -123,8 +125,8 @@ export async function uploadEvidence({ tenantId, moduleKey, recordId, userId, fi
   return data;
 }
 
-export async function loadEvidenceForExport({ tenantId, moduleKey, recordId }) {
-  const evidence = await listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId: true });
+export async function loadEvidenceForExport({ tenantId, moduleKey, recordId, evidenceIds }) {
+  const evidence = await listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId: true, evidenceIds });
   if (evidence.length === 0) return [];
   const { accessToken } = await getEvidenceDriveConnection(tenantId);
   return Promise.all(
