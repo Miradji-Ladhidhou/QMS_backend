@@ -22,6 +22,11 @@ const MODULES = {
   complaints: { table: 'complaints', menu: 'complaints', ownedType: 'complaint' },
   capas: { table: 'capas', menu: 'capas', ownedType: 'capa' },
   haccp: { table: 'haccp_plans', menu: 'haccp', resourceType: 'haccp_plan' },
+  suppliers: { table: 'suppliers', menu: 'suppliers' },
+  'supplier-evaluations': { table: 'supplier_evaluations', menu: 'suppliers', parentTable: 'suppliers', parentIdColumn: 'supplier_id' },
+  risks: { table: 'risks', menu: 'risks' },
+  pdca: { table: 'pdca_projects', menu: 'pdca' },
+  qqoqccp: { table: 'qqoqccp_analyses', menu: 'qqoqccp' },
 };
 
 router.use(requireAuth);
@@ -46,11 +51,23 @@ async function loadAccessibleRecord(req, moduleKey) {
 
   const { data: record, error } = await supabase
     .from(config.table)
-    .select('*, category:categories(id, is_restricted, owner_user_id)')
+    .select(config.parentTable ? '*' : '*, category:categories(id, is_restricted, owner_user_id)')
     .eq('tenant_id', req.tenantId)
     .eq('id', req.params.recordId)
     .maybeSingle();
   if (error || !record) return { error: 'Fiche introuvable.', status: 404 };
+
+  let categoryRecord = record;
+  if (config.parentTable) {
+    const { data: parent, error: parentError } = await supabase
+      .from(config.parentTable)
+      .select('category_id')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', record[config.parentIdColumn])
+      .maybeSingle();
+    if (parentError || !parent) return { error: 'Fiche introuvable.', status: 404 };
+    categoryRecord = { ...record, category_id: parent.category_id };
+  }
 
   let allowed;
   if (config.ownedType) {
@@ -66,7 +83,7 @@ async function loadAccessibleRecord(req, moduleKey) {
       tenantId: req.tenantId,
       userId: req.user.id,
       userRole: req.userRole,
-      categoryId: record.category_id,
+      categoryId: categoryRecord.category_id,
       permission: 'view',
     });
   }
