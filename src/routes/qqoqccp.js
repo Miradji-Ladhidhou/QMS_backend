@@ -8,6 +8,9 @@ import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
 import { validAiResult } from '../services/aiResultValidation.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildQqoqccpPdf } from '../services/qqoqccpPdf.js';
+import { buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
@@ -113,7 +116,7 @@ router.get('/:id', async (req, res) => {
 // GET /api/qqoqccp/:id/pdf — rapport imprimable d'une analyse (7 questions, synthèse IA si
 // générée, CAPA liée si existante). Chemin à deux segments : ne rentre jamais en conflit
 // avec GET /:id ci-dessus, contrairement à /report dans kpis.js qui devait être placé avant.
-router.get('/:id/pdf', async (req, res) => {
+router.get(['/:id/pdf', '/:id/word'], evidenceExportSelection, async (req, res) => {
   const { data: analysis, error } = await supabase
     .from('qqoqccp_analyses')
     .select(
@@ -151,7 +154,43 @@ router.get('/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildQqoqccpPdf({ tenantName: tenant?.name, tenantLogo, analysis });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForRequest(req, 'qqoqccp', analysis.id);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  if (req.path.endsWith('/word')) {
+    const { data: user } = await supabase.from('users').select('full_name').eq('id', req.user.id).single();
+    const statuses = { draft: 'Brouillon', ai_generated: 'À valider', validated: 'Validée' };
+    const questions = [
+      ['qui', 'Qui ?'], ['quoi', 'Quoi ?'], ['ou_', 'Où ?'], ['quand_', 'Quand ?'],
+      ['comment_', 'Comment ?'], ['combien', 'Combien ?'], ['pourquoi', 'Pourquoi ?'],
+    ];
+    const buffer = await buildEvidenceRecordWord({
+      tenantName: tenant?.name,
+      tenantLogo,
+      title: `Analyse QQOQCCP — ${analysis.title}`,
+      facts: [
+        { label: 'Statut', value: statuses[analysis.status] || analysis.status },
+        { label: 'Créée le', value: new Date(analysis.created_at).toLocaleDateString('fr-FR') },
+        { label: 'CAPA liée', value: analysis.capa?.number },
+        { label: 'Dossier', value: analysis.category?.name },
+      ],
+      sections: [
+        ...questions.map(([key, title]) => ({ title, content: analysis[key] })),
+        { title: 'Synthèse', content: analysis.ai_synthesis },
+        { title: 'Causes racines probables', content: (analysis.ai_suggested_actions?.root_causes || []).join('\n') },
+        { title: 'Actions suggérées', content: (analysis.ai_suggested_actions?.suggested_actions || []).map((action) => [action.title, action.description].filter(Boolean).join(' — ')).join('\n') },
+      ],
+      evidence,
+      generatedBy: user?.full_name,
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="qqoqccp-${analysis.id}.docx"`);
+    return res.send(buffer);
+  }
+  const pdfBuffer = await buildQqoqccpPdf({ tenantName: tenant?.name, tenantLogo, analysis, evidence });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="qqoqccp-${analysis.id}.pdf"`);

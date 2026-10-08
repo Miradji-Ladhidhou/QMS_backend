@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
 // Même couleur sémantique de retard que capaPdf.js (pas une couleur de marque).
@@ -73,7 +74,7 @@ function drawFactsGrid(doc, facts) {
 
 // pdca : ligne pdca_projects jointe (service/owner_user/category/linked_capa résolus, voir
 // routes/pdca.js#PDCA_SELECT).
-export function buildPdcaPdf({ tenantName, tenantLogo, pdca }) {
+export function buildPdcaPdf({ tenantName, tenantLogo, pdca, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -133,6 +134,8 @@ export function buildPdcaPdf({ tenantName, tenantLogo, pdca }) {
     drawSection(doc, offset + 2, 'Do', pdca.do_content, pdca.do_completed_at, pdca.do_due_date);
     drawSection(doc, offset + 3, 'Check', pdca.check_content, pdca.check_completed_at, pdca.check_due_date);
     drawSection(doc, offset + 4, 'Act', pdca.act_content, pdca.act_completed_at, pdca.act_due_date);
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté — même construction que capaPdf.js/procedurePdf.js.
     const range = doc.bufferedPageRange();

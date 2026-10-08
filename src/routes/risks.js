@@ -19,6 +19,8 @@ import {
 import { RISK_LINK_KINDS, RISK_LINK_KIND_KEYS, fetchKpiRiskSuggestions, fetchRiskLinks, findLinkTarget, listLinkCandidates } from '../services/riskLinks.js';
 import { buildRiskPdf } from '../services/riskPdf.js';
 import { buildRiskWord } from '../services/riskWord.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
@@ -708,18 +710,28 @@ function riskFileName(risk, extension) {
 }
 
 // GET /api/risks/:id/pdf et /word — fiche imprimable d'un seul risque (cotation, mesures, CAPA liée, résiduel, historique).
-router.get('/:id/pdf', async (req, res) => {
+router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const data = await loadRiskExportData(req);
   if (!data) return res.status(404).json({ error: 'Risque introuvable.' });
+  try {
+    data.evidence = await loadEvidenceForRequest(req, 'risks', data.risk.id);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const buffer = await buildRiskPdf(data);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(riskFileName(data.risk, 'pdf'))}"`);
   res.send(buffer);
 });
 
-router.get('/:id/word', async (req, res) => {
+router.get('/:id/word', evidenceExportSelection, async (req, res) => {
   const data = await loadRiskExportData(req);
   if (!data) return res.status(404).json({ error: 'Risque introuvable.' });
+  try {
+    data.evidence = await loadEvidenceForRequest(req, 'risks', data.risk.id);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const buffer = await buildRiskWord(data);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(riskFileName(data.risk, 'docx'))}"`);

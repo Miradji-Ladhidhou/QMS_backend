@@ -10,7 +10,8 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildAuditPdf } from '../services/auditPdf.js';
 import { buildAuditWord } from '../services/auditWord.js';
 import { buildAuditXlsx } from '../services/auditXlsx.js';
-import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 
 const router = Router();
 
@@ -113,11 +114,11 @@ async function loadAuditForExport(req, res) {
 
 // GET /api/audits/:id/pdf — fiche imprimable : faits, qualification de l'auditeur, périmètre, conclusion,
 // constats, check-list (réponses et taux de conformité), procédures liées.
-router.get('/:id/pdf', async (req, res) => {
+router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const data = await loadAuditForExport(req, res);
   if (!data) return;
   try {
-    data.evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'audits', recordId: data.audit.id });
+    data.evidence = await loadEvidenceForRequest(req, 'audits', data.audit.id);
   } catch (error) {
     return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -128,11 +129,11 @@ router.get('/:id/pdf', async (req, res) => {
 });
 
 // GET /api/audits/:id/word — même contenu que la fiche PDF, en document Word modifiable.
-router.get('/:id/word', async (req, res) => {
+router.get('/:id/word', evidenceExportSelection, async (req, res) => {
   const data = await loadAuditForExport(req, res);
   if (!data) return;
   try {
-    data.evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'audits', recordId: data.audit.id });
+    data.evidence = await loadEvidenceForRequest(req, 'audits', data.audit.id);
   } catch (error) {
     return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
   }

@@ -17,6 +17,7 @@ import {
   TableLayoutType,
 } from 'docx';
 import { logoImageRun } from './wordLogo.js';
+import { evidenceWordBlocks } from './evidenceExport.js';
 import {
   CRITICALITY_LABELS,
   DECISION_LABELS,
@@ -77,7 +78,7 @@ function table(columns, rows) {
 
 // Fiche Word d'un fournisseur : mêmes rubriques que supplierPdf.js (la courbe des notes n'existe que dans le PDF ; le
 // tableau des évaluations porte les mêmes chiffres).
-export async function buildSupplierWord({ supplier, evaluations, documents, policy, tenantName, tenantLogo }) {
+export async function buildSupplierWord({ supplier, evaluations, documents, policy, tenantName, tenantLogo, evidence }) {
   const logo = logoImageRun(tenantLogo);
   const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — Fournisseur ${supplier.name}`, size: 16, color: MUTED });
   const header = logo
@@ -157,6 +158,7 @@ export async function buildSupplierWord({ supplier, evaluations, documents, poli
         ]),
   ];
 
+  body.push(...evidenceWordBlocks(evidence));
   const doc = new Document({
     sections: [
       {

@@ -8,7 +8,8 @@ import { requireValidCategoryId } from '../middleware/genericCategoryPermissions
 import { filterOwnedOrShared, canAccessOwnedRecord } from '../services/ownershipVisibility.js';
 import { buildComplaintPdf } from '../services/complaintPdf.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
-import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
 
 const router = Router();
@@ -86,7 +87,7 @@ router.get('/:id', async (req, res) => {
 // services/complaintPdf.js). Chemin à deux segments : ne rentre jamais en conflit avec GET /:id
 // ci-dessus, même principe que /:id/pdf dans capas.js/pdca.js/procedures.js. Même règle de
 // visibilité que GET /:id.
-router.get('/:id/pdf', async (req, res) => {
+router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const { data: complaint, error } = await supabase
     .from('complaints')
     .select(COMPLAINT_SELECT)
@@ -113,7 +114,7 @@ router.get('/:id/pdf', async (req, res) => {
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'complaints', recordId: complaint.id });
+    evidence = await loadEvidenceForRequest(req, 'complaints', complaint.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -124,7 +125,7 @@ router.get('/:id/pdf', async (req, res) => {
   res.send(pdfBuffer);
 });
 
-router.get('/:id/word', async (req, res) => {
+router.get('/:id/word', evidenceExportSelection, async (req, res) => {
   const { data: complaint, error } = await supabase
     .from('complaints')
     .select(COMPLAINT_SELECT)
@@ -148,7 +149,7 @@ router.get('/:id/word', async (req, res) => {
   ]);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'complaints', recordId: complaint.id });
+    evidence = await loadEvidenceForRequest(req, 'complaints', complaint.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }

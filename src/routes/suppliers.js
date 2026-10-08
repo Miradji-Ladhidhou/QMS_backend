@@ -24,6 +24,8 @@ import { safeStorageContentType } from '../services/tenantStorage.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildSupplierPdf } from '../services/supplierPdf.js';
 import { buildSupplierWord } from '../services/supplierWord.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 
 const router = Router();
 
@@ -788,19 +790,41 @@ async function loadSupplierExportData(req) {
 
 const supplierFileName = (supplier, extension) => `fournisseur-${supplier.name.replace(/[^A-Za-z0-9À-ÿ_-]+/g, '_').slice(0, 60)}.${extension}`;
 
+async function loadSupplierEvidence(req, data) {
+  const supplierEvidence = await loadEvidenceForRequest(req, 'suppliers', data.supplier.id);
+  const evaluationEvidence = await Promise.all(data.evaluations.map(async (evaluation) => {
+    const photos = await loadEvidenceForRequest(req, 'supplier-evaluations', evaluation.id);
+    return photos.map((photo) => ({
+      ...photo,
+      caption: `Évaluation du ${evaluation.evaluation_date} — ${photo.caption || photo.file_name}`,
+    }));
+  }));
+  return [...supplierEvidence, ...evaluationEvidence.flat()];
+}
+
 // GET /api/suppliers/:id/pdf et /word — fiche du fournisseur : identité, évaluations, évolution des notes, certificats.
-router.get('/:id/pdf', async (req, res) => {
+router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const data = await loadSupplierExportData(req);
   if (!data) return res.status(404).json({ error: 'Fournisseur introuvable.' });
+  try {
+    data.evidence = await loadSupplierEvidence(req, data);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const buffer = await buildSupplierPdf(data);
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(supplierFileName(data.supplier, 'pdf'))}"`);
   res.send(buffer);
 });
 
-router.get('/:id/word', async (req, res) => {
+router.get('/:id/word', evidenceExportSelection, async (req, res) => {
   const data = await loadSupplierExportData(req);
   if (!data) return res.status(404).json({ error: 'Fournisseur introuvable.' });
+  try {
+    data.evidence = await loadSupplierEvidence(req, data);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
   const buffer = await buildSupplierWord(data);
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(supplierFileName(data.supplier, 'docx'))}"`);

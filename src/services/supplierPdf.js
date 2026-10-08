@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 import { CONTENT_WIDTH, PAGE_MARGIN, PAGE_WIDTH, drawTable, ensureSpace } from './pdfSimpleTable.js';
 import {
@@ -78,7 +79,7 @@ function drawScoreChart(doc, evaluations, thresholds) {
 
 // Fiche d'un fournisseur : identité, situation d'évaluation, courbe des notes, historique des évaluations (avec les
 // poids en vigueur), certificats et pièces avec leur échéance. Même contenu que supplierWord.js.
-export function buildSupplierPdf({ supplier, evaluations, documents, policy, tenantName, tenantLogo }) {
+export function buildSupplierPdf({ supplier, evaluations, documents, policy, tenantName, tenantLogo, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -160,6 +161,7 @@ export function buildSupplierPdf({ supplier, evaluations, documents, policy, ten
       );
     }
 
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);

@@ -138,3 +138,9 @@ export async function loadEvidenceForExport({ tenantId, moduleKey, recordId, evi
     })
   );
 }
+
+export function loadEvidenceForRequest(req, moduleKey, recordId) {
+  const selection = req.evidenceExportSelection;
+  const evidenceIds = selection?.selections.get(`${moduleKey}:${recordId}`) ?? selection?.legacyIds;
+  return loadEvidenceForExport({ tenantId: req.tenantId, moduleKey, recordId, evidenceIds });
+}

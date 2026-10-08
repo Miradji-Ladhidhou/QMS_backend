@@ -30,7 +30,8 @@ import { sendImmediateNotification } from '../services/notificationHelpers.js';
 import { buildHaccpAuditWord } from '../services/haccpAuditWord.js';
 import { buildHaccpCcpPdf } from '../services/haccpCcpPdf.js';
 import { buildHaccpRecordSheetPdf } from '../services/haccpRecordSheetPdf.js';
-import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
 
 const router = Router();
@@ -1489,7 +1490,7 @@ async function loadPlansForPdf(tenantId, plans) {
 
 // GET /api/haccp/plans/:id/pdf — export détaillé d'UN plan (dangers, CCP, synthèse de
 // surveillance), même mécanique que GET /qqoqccp/:id/pdf.
-router.get('/plans/:id/pdf', async (req, res) => {
+router.get('/plans/:id/pdf', evidenceExportSelection, async (req, res) => {
   const plan = await loadPlanForTenant(req.tenantId, req.params.id);
   if (!plan) {
     return res.status(404).json({ error: 'Plan HACCP introuvable.' });
@@ -1517,7 +1518,7 @@ router.get('/plans/:id/pdf', async (req, res) => {
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id });
+    evidence = await loadEvidenceForRequest(req, 'haccp', plan.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -1537,7 +1538,7 @@ router.get('/plans/:id/pdf', async (req, res) => {
 // POST /api/haccp/plans/pdf — export combiné de plusieurs plans (une page par plan) : ids
 // explicites dans le body (même convention que /plans/bulk-category et /plans/bulk), ou tous
 // les plans visibles par l'appelant si absent/vide.
-router.post('/plans/pdf', [body('ids').optional().isArray().withMessage('Liste invalide.')], async (req, res) => {
+router.post('/plans/pdf', evidenceExportSelection, [body('ids').optional().isArray().withMessage('Liste invalide.')], async (req, res) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
@@ -1568,7 +1569,7 @@ router.post('/plans/pdf', [body('ids').optional().isArray().withMessage('Liste i
   let evidenceByPlanId;
   try {
     evidenceByPlanId = Object.fromEntries(await Promise.all(
-      assembled.map(async (plan) => [plan.id, await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id })])
+      assembled.map(async (plan) => [plan.id, await loadEvidenceForRequest(req, 'haccp', plan.id)])
     ));
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
@@ -1756,7 +1757,7 @@ router.get('/ccps/:ccpId/record-sheet', async (req, res) => {
 });
 
 // GET /api/haccp/plans/:id/word — l'analyse d'un plan au format Word (mêmes rubriques que le PDF).
-router.get('/plans/:id/word', async (req, res) => {
+router.get('/plans/:id/word', evidenceExportSelection, async (req, res) => {
   const plan = await findVisiblePlan(req);
   if (!plan) return res.status(404).json({ error: 'Plan HACCP introuvable.' });
 
@@ -1769,7 +1770,7 @@ router.get('/plans/:id/word', async (req, res) => {
   const { tenantName, tenantLogo } = await tenantIdentity(req.tenantId);
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'haccp', recordId: plan.id });
+    evidence = await loadEvidenceForRequest(req, 'haccp', plan.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }

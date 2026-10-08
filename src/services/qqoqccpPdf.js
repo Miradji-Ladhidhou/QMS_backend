@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 
 // Couleur d'accent de la synthèse et des actions proposées dans le rapport imprimé.
@@ -31,7 +32,7 @@ function formatDateTime(dateStr) {
 // contrairement aux sections KPI de hauteur bornée. pdfkit déclenche 'pageAdded' à chaque
 // saut de page automatique (overflow de texte) ou manuel — on l'utilise pour redessiner le
 // bandeau d'en-tête sur toutes les pages sans avoir à estimer l'espace restant nous-mêmes.
-export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
+export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -127,6 +128,8 @@ export function buildQqoqccpPdf({ tenantName, tenantLogo, analysis }) {
         });
       doc.y = boxTop + 24 + 8;
     }
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté — voir listReportPdf.js pour la même construction.
     const range = doc.bufferedPageRange();

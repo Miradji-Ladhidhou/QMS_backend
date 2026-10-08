@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { useUnicodeFont } from './pdfFonts.js';
+import { appendEvidenceToPdf } from './evidenceExport.js';
 import { INK, MUTED, drawLetterheadHeader } from './pdfTheme.js';
 import { CONTENT_WIDTH, PAGE_MARGIN, PAGE_WIDTH, drawTable, ensureSpace } from './pdfSimpleTable.js';
 import {
@@ -29,7 +30,7 @@ function drawParagraph(doc, text) {
 
 // Fiche imprimable d'un seul risque : identité, cotation brute et résiduelle, verdict d'acceptabilité,
 // mesures, CAPA liée, liens et historique de cotation. Même contenu que riskWord.js.
-export function buildRiskPdf({ risk, assessments, links, threshold, tenantName, tenantLogo, tenantTimezone }) {
+export function buildRiskPdf({ risk, assessments, links, threshold, tenantName, tenantLogo, tenantTimezone, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -103,6 +104,8 @@ export function buildRiskPdf({ risk, assessments, links, threshold, tenantName, 
         ])
       );
     }
+
+    appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
     // Pied de page numéroté avec la date d'édition.
     const range = doc.bufferedPageRange();

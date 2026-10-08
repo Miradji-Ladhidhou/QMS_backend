@@ -5,7 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
-import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { buildEvidenceRecordPdf, buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
@@ -42,7 +43,7 @@ async function exportAccidentReport(req, res, format) {
 
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'accidents', recordId: accident.id });
+    evidence = await loadEvidenceForRequest(req, 'accidents', accident.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -102,6 +103,9 @@ router.get('/', async (req, res) => {
   res.json(visible.map((accident) => ({ ...accident, is_private_to_me: accident.category?.owner_user_id === req.user.id })));
 });
 
+router.get('/:id/report.pdf', evidenceExportSelection, async (req, res) => exportAccidentReport(req, res, 'pdf'));
+router.get('/:id/report.word', evidenceExportSelection, async (req, res) => exportAccidentReport(req, res, 'word'));
+
 // GET /api/accidents/:id
 router.get('/:id', async (req, res) => {
   const { data, error } = await supabase.from('accidents').select(ACCIDENT_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
@@ -118,8 +122,6 @@ router.get('/:id', async (req, res) => {
     permission: 'view',
   });
 
-  router.get('/:id/report.pdf', async (req, res) => exportAccidentReport(req, res, 'pdf'));
-  router.get('/:id/report.word', async (req, res) => exportAccidentReport(req, res, 'word'));
   if (!categoryAllowed) {
     return res.status(404).json({ error: 'Accident introuvable.' });
   }

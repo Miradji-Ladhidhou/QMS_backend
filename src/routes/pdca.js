@@ -8,6 +8,9 @@ import { generatePdcaPhaseSuggestion } from '../services/groq.js';
 import { prepareAiResult, aiResultRoute } from '../services/aiGenerations.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { buildPdcaPdf } from '../services/pdcaPdf.js';
+import { buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
 const router = Router();
@@ -69,10 +72,10 @@ router.get('/:id', async (req, res) => {
   res.json({ ...data, is_private_to_me: data.category?.owner_user_id === req.user.id });
 });
 
-// GET /api/pdca/:id/pdf — fiche imprimable d'un projet PDCA (voir services/pdcaPdf.js). Chemin
+// GET /api/pdca/:id/pdf et /word — fiche imprimable d'un projet PDCA. Chemin
 // à deux segments : ne rentre jamais en conflit avec GET /:id ci-dessus, même principe que
 // /:id/pdf dans capas.js/procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id.
-router.get('/:id/pdf', async (req, res) => {
+router.get(['/:id/pdf', '/:id/word'], evidenceExportSelection, async (req, res) => {
   const { data: pdca, error } = await supabase
     .from('pdca_projects')
     .select(PDCA_SELECT)
@@ -97,7 +100,44 @@ router.get('/:id/pdf', async (req, res) => {
 
   const { data: tenant } = await supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single();
   const tenantLogo = await fetchTenantLogoBuffer(tenant?.logo_url);
-  const pdfBuffer = await buildPdcaPdf({ tenantName: tenant?.name, tenantLogo, pdca });
+  let evidence;
+  try {
+    evidence = await loadEvidenceForRequest(req, 'pdca', pdca.id);
+  } catch (error) {
+    return res.status(error.driveConnectionError ? 409 : 502).json({ error: error.message || 'Impossible de charger les photos depuis Google Drive.' });
+  }
+  if (req.path.endsWith('/word')) {
+    const { data: user } = await supabase.from('users').select('full_name').eq('id', req.user.id).single();
+    const formatDate = (value) => value ? new Date(value).toLocaleDateString('fr-FR') : '—';
+    const statuses = { plan: 'Plan', do: 'Do', check: 'Check', act: 'Act', closed: 'Clôturé' };
+    const buffer = await buildEvidenceRecordWord({
+      tenantName: tenant?.name,
+      tenantLogo,
+      title: `Projet PDCA — ${pdca.title}`,
+      facts: [
+        { label: 'Statut', value: statuses[pdca.status] || pdca.status },
+        { label: 'Service', value: pdca.service?.name },
+        { label: 'Responsable', value: pdca.owner_user?.full_name },
+        { label: 'Date cible', value: formatDate(pdca.target_date) },
+        { label: 'Date de clôture', value: formatDate(pdca.closed_at) },
+        { label: 'CAPA liée', value: pdca.linked_capa?.number },
+        { label: 'Dossier', value: pdca.category?.name },
+      ],
+      sections: [
+        { title: 'Description', content: pdca.description },
+        ...['plan', 'do', 'check', 'act'].map((phase) => ({
+          title: `${PHASE_LABELS[phase]} — échéance : ${formatDate(pdca[`${phase}_due_date`])} · terminée le : ${formatDate(pdca[`${phase}_completed_at`])}`,
+          content: pdca[`${phase}_content`],
+        })),
+      ],
+      evidence,
+      generatedBy: user?.full_name,
+    });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="pdca-${pdca.id}.docx"`);
+    return res.send(buffer);
+  }
+  const pdfBuffer = await buildPdcaPdf({ tenantName: tenant?.name, tenantLogo, pdca, evidence });
 
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="pdca-${pdca.id}.pdf"`);

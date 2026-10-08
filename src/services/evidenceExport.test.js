@@ -10,6 +10,7 @@ it('places evidence photos in separate bounded grid cells and starts a new page 
     fontSize: vi.fn(() => doc),
     fillColor: vi.fn(() => doc),
     text: vi.fn(() => doc),
+    heightOfString: vi.fn(() => 28),
     moveDown: vi.fn(() => {
       doc.y += 15;
       return doc;

@@ -17,6 +17,7 @@ import {
   TableLayoutType,
 } from 'docx';
 import { logoImageRun } from './wordLogo.js';
+import { evidenceWordBlocks } from './evidenceExport.js';
 import { CAPA_STATUS_LABELS, RISK_STATUS_LABELS, RISK_TYPE_LABELS, acceptabilityText, describeScore, formatRiskDate, formatRiskDateTime } from './riskLabels.js';
 
 const INK = '1E293B';
@@ -66,7 +67,7 @@ function factsTable(rows) {
 }
 
 // Fiche Word d'un seul risque : mêmes rubriques que riskPdf.js.
-export async function buildRiskWord({ risk, assessments, links, threshold, tenantName, tenantLogo, tenantTimezone }) {
+export async function buildRiskWord({ risk, assessments, links, threshold, tenantName, tenantLogo, tenantTimezone, evidence }) {
   const logo = logoImageRun(tenantLogo);
   const headerTitle = new TextRun({ text: `${tenantName || 'Entreprise'} — ${RISK_TYPE_LABELS[risk.type] || 'Risque'} ${risk.title}`, size: 16, color: MUTED });
   const header = logo
@@ -157,6 +158,7 @@ export async function buildRiskWord({ risk, assessments, links, threshold, tenan
         ]),
   ];
 
+  body.push(...evidenceWordBlocks(evidence));
   const doc = new Document({
     sections: [
       {

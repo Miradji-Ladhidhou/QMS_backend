@@ -5,7 +5,8 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireMenuVisible } from '../middleware/menuVisibility.js';
 import { notifyCapaAssigned } from '../services/capaNotifications.js';
 import { hasGenericCategoryPermission, filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
-import { loadEvidenceForExport } from '../services/qmsEvidence.js';
+import { loadEvidenceForRequest } from '../services/qmsEvidence.js';
+import { evidenceExportSelection } from '../middleware/evidenceExportSelection.js';
 import { buildEvidenceRecordPdf, buildEvidenceRecordWord } from '../services/evidenceRecordReport.js';
 import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 
@@ -41,7 +42,7 @@ async function exportOutputReport(req, res, format) {
 
   let evidence;
   try {
-    evidence = await loadEvidenceForExport({ tenantId: req.tenantId, moduleKey: 'nonconforming-outputs', recordId: output.id });
+    evidence = await loadEvidenceForRequest(req, 'nonconforming-outputs', output.id);
   } catch (driveError) {
     return res.status(driveError.driveConnectionError ? 409 : 502).json({ error: driveError.message || 'Impossible de charger les photos depuis Google Drive.' });
   }
@@ -77,6 +78,9 @@ async function exportOutputReport(req, res, format) {
   res.setHeader('Content-Disposition', `attachment; filename="non-conformite-${output.id}.${ext}"`);
   res.send(buffer);
 }
+
+router.get('/:id/report.pdf', evidenceExportSelection, async (req, res) => exportOutputReport(req, res, 'pdf'));
+router.get('/:id/report.word', evidenceExportSelection, async (req, res) => exportOutputReport(req, res, 'word'));
 
 // GET /api/nonconforming-outputs — liste tenant-wide, tous les rôles (comme accidents.js : le
 // registre concerne le SMQ dans son ensemble). Filtrable par statut. Une catégorie
@@ -118,8 +122,6 @@ router.get('/:id', async (req, res) => {
     permission: 'view',
   });
 
-  router.get('/:id/report.pdf', async (req, res) => exportOutputReport(req, res, 'pdf'));
-  router.get('/:id/report.word', async (req, res) => exportOutputReport(req, res, 'word'));
   if (!categoryAllowed) {
     return res.status(404).json({ error: 'Non-conformité introuvable.' });
   }
