@@ -33,10 +33,10 @@ export async function getEvidenceDriveConnection(tenantId) {
   }
 }
 
-export async function listEvidence({ tenantId, moduleKey, recordId }) {
+export async function listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId = false }) {
   const { data, error } = await supabase
     .from('qms_evidence_attachments')
-    .select('id, module_key, record_id, file_name, mime_type, file_size, caption, uploaded_by, created_at')
+    .select(`id, module_key, record_id, file_name, mime_type, file_size, caption, uploaded_by, created_at${includeDriveFileId ? ', drive_file_id' : ''}`)
     .eq('tenant_id', tenantId)
     .eq('module_key', moduleKey)
     .eq('record_id', recordId)
@@ -124,7 +124,7 @@ export async function uploadEvidence({ tenantId, moduleKey, recordId, userId, fi
 }
 
 export async function loadEvidenceForExport({ tenantId, moduleKey, recordId }) {
-  const evidence = await listEvidence({ tenantId, moduleKey, recordId });
+  const evidence = await listEvidence({ tenantId, moduleKey, recordId, includeDriveFileId: true });
   if (evidence.length === 0) return [];
   const { accessToken } = await getEvidenceDriveConnection(tenantId);
   return Promise.all(
