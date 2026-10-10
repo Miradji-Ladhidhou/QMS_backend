@@ -86,7 +86,7 @@ describe('POST /api/procedures/:id/versions/:versionId/attachment — upload ver
       .get(`/api/procedures/${procedure.id}/versions/${version.body.id}/attachment`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(link.status).toBe(200);
-    expect(link.body.url).toContain('/api/documents/drive-file?ticket=');
+    expect(link.body.url).toContain('/api/public/shared-files/');
   });
 
   it('un échec Google Drive renvoie une erreur explicite, ne persiste rien', async () => {
@@ -140,7 +140,7 @@ describe("POST /api/procedures/:id/versions/:versionId/attachment — stockage S
         .get(`/api/procedures/${procedure.id}/versions/${version.body.id}/attachment`)
         .set('Authorization', `Bearer ${tenant.admin.token}`);
       expect(link.status).toBe(200);
-      expect(link.body.url).toContain(filePath);
+      expect(link.body.url).toContain('/api/public/shared-files/');
 
       const { data, error } = await admin.storage.from('qms-documents').download(filePath);
       expect(error).toBeNull();

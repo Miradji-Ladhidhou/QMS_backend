@@ -1567,14 +1567,99 @@ create table category_permissions (
 create table record_shares (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references tenants (id) on delete cascade,
-  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'procedure')),
+  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
   resource_id    uuid not null,
   subject_type   text not null check (subject_type in ('role', 'user')),
   subject_id     text not null,
+  can_edit       boolean,
+  can_export     boolean,
+  title          text,
   created_by     uuid references users (id) on delete set null,
   created_at     timestamptz not null default now(),
   unique (tenant_id, resource_type, resource_id, subject_type, subject_id)
 );
+
+-- Accès invité temporaire à un élément précis ou un lot figé. Les secrets ne sont jamais stockés en clair :
+-- seuls les hashes du lien, du code et de la session temporaire sont conservés.
+create table guest_shares (
+  id                 uuid primary key default gen_random_uuid(),
+  tenant_id          uuid not null references tenants (id) on delete cascade,
+  resource_type      text check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
+  resource_id        uuid,
+  title              text,
+  email              text not null,
+  token_hash         text not null unique,
+  can_export         boolean not null default false,
+  code_hash          text,
+  code_expires_at    timestamptz,
+  code_sends         integer not null default 0 check (code_sends between 0 and 3),
+  code_sent_at       timestamptz,
+  failed_attempts    integer not null default 0 check (failed_attempts between 0 and 5),
+  access_token_hash  text,
+  expires_at         timestamptz not null,
+  revoked_at         timestamptz,
+  created_by         uuid references users (id) on delete set null,
+  created_at         timestamptz not null default now(),
+  constraint guest_shares_bundle_shape check (
+    (resource_type is not null and resource_id is not null)
+    or (resource_type is null and resource_id is null and length(trim(title)) > 0 and title is not null)
+  ),
+  unique (tenant_id, id)
+);
+
+create index idx_guest_shares_tenant_resource on guest_shares (tenant_id, resource_type, resource_id);
+create index idx_guest_shares_expiry on guest_shares (expires_at) where revoked_at is null;
+
+create table guest_share_items (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  guest_share_id uuid not null,
+  resource_type text not null check (resource_type in (
+    'document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit',
+    'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output',
+    'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy'
+  )),
+  resource_id uuid not null,
+  label text not null,
+  foreign key (tenant_id, guest_share_id) references guest_shares(tenant_id, id) on delete cascade,
+  unique (guest_share_id, resource_type, resource_id)
+);
+create index idx_guest_share_items_tenant_share on guest_share_items(tenant_id, guest_share_id);
+alter table guest_share_items enable row level security;
+revoke all on guest_share_items from anon, authenticated;
+grant select, insert, update, delete on guest_share_items to service_role;
+grant select, insert, update, delete on guest_shares to service_role;
+
+create function create_guest_share_bundle(
+  p_tenant_id uuid, p_created_by uuid, p_title text, p_email text,
+  p_token_hash text, p_expires_at timestamptz, p_items jsonb
+) returns guest_shares
+language plpgsql
+set search_path = public
+as $$
+declare
+  created_share public.guest_shares;
+begin
+  if jsonb_typeof(p_items) is distinct from 'array' then
+    raise exception 'Guest bundle items must be an array';
+  end if;
+  if jsonb_array_length(p_items) = 0 then
+    raise exception 'Guest bundle must contain at least one item';
+  end if;
+  if not exists (select 1 from public.users where id = p_created_by and tenant_id = p_tenant_id) then
+    raise exception 'Guest bundle creator must belong to the tenant';
+  end if;
+  insert into public.guest_shares(tenant_id, created_by, title, email, token_hash, expires_at)
+  values (p_tenant_id, p_created_by, p_title, p_email, p_token_hash, p_expires_at)
+  returning * into created_share;
+  insert into public.guest_share_items(tenant_id, guest_share_id, resource_type, resource_id, label)
+  select p_tenant_id, created_share.id, item.resource_type, item.resource_id, item.label
+  from jsonb_to_recordset(p_items) as item(resource_type text, resource_id uuid, label text);
+  return created_share;
+end;
+$$;
+revoke all on function create_guest_share_bundle(uuid, uuid, text, text, text, timestamptz, jsonb) from public, anon, authenticated;
+grant execute on function create_guest_share_bundle(uuid, uuid, text, text, text, timestamptz, jsonb) to service_role;
 
 -- Catégories génériques réutilisables par plusieurs modules (CAPA, réclamations, QQOQCCP,
 -- fournisseurs, formations, revues de direction) — même principe que document_categories
@@ -2628,6 +2713,7 @@ alter table ai_call_failures enable row level security;
 alter table activity_log enable row level security;
 alter table dashboard_metric_snapshots enable row level security;
 alter table record_shares enable row level security;
+alter table guest_shares enable row level security;
 alter table categories enable row level security;
 alter table generic_category_permissions enable row level security;
 alter table tenant_menu_settings enable row level security;
@@ -3067,3 +3153,80 @@ create policy customer_satisfaction_surveys_isolation on customer_satisfaction_s
   for all
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
+
+create function public.create_internal_share_batch(
+  p_tenant_id uuid, p_created_by uuid, p_title text, p_subject_type text,
+  p_subject_id text, p_can_edit boolean, p_can_export boolean, p_items jsonb
+) returns integer
+language plpgsql
+set search_path = public
+as $$
+declare
+  total integer;
+begin
+  if jsonb_typeof(p_items) is distinct from 'array' then
+    raise exception 'Items must be an array';
+  end if;
+  if jsonb_array_length(p_items) = 0 then raise exception 'No items selected'; end if;
+  if not exists (select 1 from public.users where id = p_created_by and tenant_id = p_tenant_id and role in ('admin', 'manager')) then
+    raise exception 'Invalid share creator';
+  end if;
+  if p_subject_type = 'user' then
+    if not exists (select 1 from public.users where id::text = p_subject_id and tenant_id = p_tenant_id and role <> 'admin') then
+      raise exception 'Invalid recipient';
+    end if;
+  elsif p_subject_type <> 'role' or p_subject_id not in ('manager', 'member') then
+    raise exception 'Invalid recipient';
+  end if;
+  insert into public.record_shares(tenant_id, resource_type, resource_id, subject_type, subject_id, created_by, title, can_edit, can_export)
+  select p_tenant_id, item.resource_type, item.resource_id, p_subject_type, p_subject_id, p_created_by, p_title, p_can_edit, p_can_export
+  from jsonb_to_recordset(p_items) as item(resource_type text, resource_id uuid)
+  on conflict (tenant_id, resource_type, resource_id, subject_type, subject_id)
+  do update set can_edit = excluded.can_edit, can_export = excluded.can_export, title = excluded.title;
+  get diagnostics total = row_count;
+  return total;
+end;
+$$;
+revoke all on function public.create_internal_share_batch(uuid, uuid, text, text, text, boolean, boolean, jsonb) from public, anon, authenticated;
+grant execute on function public.create_internal_share_batch(uuid, uuid, text, text, text, boolean, boolean, jsonb) to service_role;
+
+update storage.buckets set public = false where id = 'qms-documents';
+create policy qms_document_objects_backend_only on storage.objects
+  as restrictive for all to anon, authenticated
+  using (bucket_id <> 'qms-documents')
+  with check (bucket_id <> 'qms-documents');
+
+create policy share_api_insert_only on public.qms_evidence_attachments
+  as restrictive for insert to anon, authenticated with check (false);
+create policy share_api_update_only on public.qms_evidence_attachments
+  as restrictive for update to anon, authenticated using (false) with check (false);
+create policy share_api_delete_only on public.qms_evidence_attachments
+  as restrictive for delete to anon, authenticated using (false);
+
+do $$
+declare
+  target regclass;
+begin
+  for target in
+    with recursive protected(oid) as (
+      select oid from pg_class
+      where relnamespace = 'public'::regnamespace and relname in (
+        'documents', 'capas', 'complaints', 'qqoqccp_analyses', 'procedures',
+        'accidents', 'pdca_projects', 'audits', 'management_reviews', 'risks',
+        'haccp_plans', 'suppliers', 'nonconforming_outputs',
+        'customer_satisfaction_surveys', 'employees', 'trainings', 'kpis',
+        'tasks', 'services', 'quality_policy_versions', 'record_shares',
+        'guest_shares'
+      )
+      union
+      select fk.conrelid from pg_constraint fk join protected p on fk.confrelid = p.oid
+      where fk.contype = 'f' and fk.connamespace = 'public'::regnamespace
+    )
+    select oid::regclass from protected
+  loop
+    execute format('alter table %s enable row level security', target);
+    execute format('create policy share_api_insert_only on %s as restrictive for insert to anon, authenticated with check (false)', target);
+    execute format('create policy share_api_update_only on %s as restrictive for update to anon, authenticated using (false) with check (false)', target);
+    execute format('create policy share_api_delete_only on %s as restrictive for delete to anon, authenticated using (false)', target);
+  end loop;
+end $$;

@@ -9,10 +9,11 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
-import { authLimiter, apiLimiter, publicQuizLimiter } from './middleware/rateLimit.js';
+import { authLimiter, apiLimiter, publicQuizLimiter, publicGuestShareLimiter } from './middleware/rateLimit.js';
 import authRoutes from './routes/auth.js';
 import documentsRoutes from './routes/documents.js';
 import sharesRoutes from './routes/shares.js';
+import sharedFilesRoutes from './routes/sharedFiles.js';
 import categoriesRoutes from './routes/categories.js';
 import moduleCategoriesRoutes from './routes/moduleCategories.js';
 import capasRoutes from './routes/capas.js';
@@ -30,6 +31,7 @@ import aiRoutes from './routes/ai.js';
 import trainingsRoutes from './routes/trainings.js';
 import trainingQuizRoutes from './routes/trainingQuiz.js';
 import publicQuizRoutes from './routes/publicQuiz.js';
+import guestSharesRoutes from './routes/guestShares.js';
 import kpisRoutes from './routes/kpis.js';
 import kpiImportsRoutes from './routes/kpiImports.js';
 import kpiFoldersRoutes from './routes/kpiFolders.js';
@@ -135,6 +137,8 @@ app.use('/api/trainings', trainingQuizRoutes);
 app.use('/api/trainings', trainingsRoutes);
 // Pages publiques (sans authentification) du QCM de formation — voir routes/publicQuiz.js.
 app.use('/api/public/quiz', publicQuizLimiter, publicQuizRoutes);
+app.use('/api/public/guest-shares', publicGuestShareLimiter, guestSharesRoutes);
+app.use('/api/public/shared-files', publicGuestShareLimiter, sharedFilesRoutes);
 app.use('/api/kpis', kpisRoutes);
 app.use('/api/kpi-imports', kpiImportsRoutes);
 app.use('/api/kpi-folders', kpiFoldersRoutes);
@@ -169,7 +173,7 @@ app.use('/api/support', supportRoutes);
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   // Le jeton d'un lien de QCM est dans l'adresse (/api/public/quiz/:token) : jamais dans les journaux.
-  const safeUrl = req.originalUrl.replace(/(\/api\/public\/quiz\/)[^/?]+/, '$1[jeton]');
+  const safeUrl = req.originalUrl.replace(/(\/api\/public\/(?:quiz|guest-shares|shared-files)\/)[^/?]+/, '$1[jeton]');
   console.error(`Erreur non gérée sur ${req.method} ${safeUrl} :`, err);
 
   if (err.type === 'entity.too.large' || err.code === 'LIMIT_FILE_SIZE') {

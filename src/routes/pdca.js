@@ -275,7 +275,7 @@ router.patch(
       return res.status(404).json({ error: 'Projet PDCA introuvable.' });
     }
 
-    const isManager = MANAGER_ROLES.includes(req.userRole);
+    const isManager = req.sharedEditAllowed || MANAGER_ROLES.includes(req.userRole);
     if (!isManager && existing.created_by !== req.user.id) {
       return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
     }

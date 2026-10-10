@@ -367,28 +367,28 @@ describe('Certificats et pièces', () => {
 
     const link = await request(app).get(`/api/suppliers/${supplier.id}/documents/${created.body.id}/download`).set(auth(tenant.users[0].token));
     expect(link.status).toBe(200);
-    expect(link.body.url).toContain('supplier-documents');
-    const file = await fetch(link.body.url);
+    expect(link.body.url).toContain('/api/public/shared-files/');
+    const file = await request(app).get(new URL(link.body.url).pathname);
     expect(file.status).toBe(200);
-    expect(await file.text()).toBe('%PDF-1.4 contenu du certificat');
+    expect(file.body.toString()).toBe('%PDF-1.4 contenu du certificat');
 
     // Autre entreprise : pas de lien.
     expect((await request(app).get(`/api/suppliers/${supplier.id}/documents/${created.body.id}/download`).set(auth(other.admin.token))).status).toBe(404);
 
     // Remplacement (certificat renouvelé) : l'ancien fichier disparaît du stockage.
-    const before = await link.body.url;
+    const { data: before } = await admin.from('supplier_documents').select('file_path').eq('id', created.body.id).single();
     const replaced = await request(app).put(`/api/suppliers/${supplier.id}/documents/${created.body.id}/file`).set(auth(tenant.admin.token)).attach('file', Buffer.from('nouveau certificat'), 'iso9001-2027.pdf');
     expect(replaced.status).toBe(200);
     expect(replaced.body.file_name).toBe('iso9001-2027.pdf');
-    expect((await fetch(before)).status).not.toBe(200);
+    expect((await admin.storage.from('qms-documents').download(before.file_path)).error).not.toBeNull();
     const newLink = await request(app).get(`/api/suppliers/${supplier.id}/documents/${created.body.id}/download`).set(auth(tenant.admin.token));
-    expect(await (await fetch(newLink.body.url)).text()).toBe('nouveau certificat');
+    expect((await request(app).get(new URL(newLink.body.url).pathname)).body.toString()).toBe('nouveau certificat');
     expect((await request(app).put(`/api/suppliers/${supplier.id}/documents/${created.body.id}/file`).set(auth(tenant.admin.token))).status).toBe(400);
 
     // Suppression : document et fichier.
     expect((await request(app).delete(`/api/suppliers/${supplier.id}/documents/${created.body.id}`).set(auth(tenant.users[0].token))).status).toBe(403);
     expect((await request(app).delete(`/api/suppliers/${supplier.id}/documents/${created.body.id}`).set(auth(tenant.admin.token))).status).toBe(204);
-    expect((await fetch(newLink.body.url)).status).not.toBe(200);
+    expect((await request(app).get(new URL(newLink.body.url).pathname)).status).not.toBe(200);
     expect((await request(app).delete(`/api/suppliers/${supplier.id}/documents/${created.body.id}`).set(auth(tenant.admin.token))).status).toBe(404);
   });
 

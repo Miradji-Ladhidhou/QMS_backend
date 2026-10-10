@@ -136,7 +136,7 @@ describe('POST /api/procedures/from-document', () => {
       .get(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(attachment.status).toBe(200);
-    expect(attachment.body.url).toContain(version.attachment_file_path);
+    expect(attachment.body.url).toContain('/api/public/shared-files/');
 
     const documents = await request(app)
       .get('/api/documents')
@@ -402,7 +402,7 @@ describe('POST /api/procedures/from-document', () => {
       .get(`/api/procedures/${converted.body.procedure.id}/versions/${version.data.id}/attachment`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(attachment.status).toBe(200);
-    expect(attachment.body.url).toContain('/api/documents/drive-file?ticket=');
+    expect(attachment.body.url).toContain('/api/public/shared-files/');
   });
 
   it('conserve les restrictions du document source sur la liste, la fiche et le fichier de la procédure', async () => {
@@ -1754,6 +1754,6 @@ describe('Pièce jointe de version (attachment)', () => {
       .get(`/api/procedures/${procedure.id}/versions/${version.id}/attachment`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(res.status).toBe(200);
-    expect(res.body.url).toContain('/api/documents/drive-file?ticket=');
+    expect(res.body.url).toContain('/api/public/shared-files/');
   });
 });

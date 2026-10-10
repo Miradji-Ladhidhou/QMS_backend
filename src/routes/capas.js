@@ -475,7 +475,7 @@ router.patch(
 router.patch(
   '/:id',
   (req, res, next) => {
-    if (req.userRole === 'member') {
+    if (req.userRole === 'member' && !req.sharedEditAllowed) {
       return res.status(403).json({
         error: 'Seuls les administrateurs et managers peuvent modifier une CAPA après sa création.',
       });

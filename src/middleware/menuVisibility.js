@@ -1,5 +1,6 @@
 import { supabase } from '../services/supabase.js';
 import { APP_MODULES, effectiveAppModules } from '../services/appModules.js';
+import { SHAREABLE_RESOURCES } from '../services/shareableResources.js';
 
 // Sections de menu configurables (visibilité par rôle/utilisateur) — dupliqué depuis
 // Layout.jsx#NAV_ITEMS côté frontend (deux repos séparés, pas de package commun). Source
@@ -63,6 +64,10 @@ export function requireMenuVisible(key) {
         tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, appModules: req.appModules,
       });
       if (!visible.has(key)) {
+        if (req.shareAccess?.shared && SHAREABLE_RESOURCES[req.shareTarget?.type]?.module === key) {
+          const enabled = await getVisibleMenuKeys({ tenantId: req.tenantId, userId: req.user.id, userRole: 'admin', appModules: req.appModules });
+          if (enabled.has(key)) return next();
+        }
         return res.status(403).json({
           code: 'APP_MODULE_DISABLED',
           module: key,

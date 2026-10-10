@@ -10,7 +10,7 @@ import { fetchTenantLogoBuffer } from '../services/tenantLogo.js';
 import { buildProcedurePdf } from '../services/procedurePdf.js';
 import { buildProcedureWordDocument } from '../services/procedureWord.js';
 import { resolveTenantStorageProvider, safeStorageContentType } from '../services/tenantStorage.js';
-import { signDownloadTicket } from '../services/driveDownloadTicket.js';
+import { protectedFileUrl } from '../services/sharedFiles.js';
 import {
   getDriveFileStream,
   refreshAccessTokenIfNeeded,
@@ -207,7 +207,7 @@ function bumpVersion(version) {
 // qui a écrit garde la main sur sa propre soumission, sans qu'un autre member ne puisse la
 // pousser à sa place.
 function canActOnVersion(req, version) {
-  return MANAGER_ROLES.includes(req.userRole) || version.author_id === req.user.id;
+  return req.sharedEditAllowed || MANAGER_ROLES.includes(req.userRole) || version.author_id === req.user.id;
 }
 
 // Même point de départ minimal que GET /api/procedure-templates (voir
@@ -1344,10 +1344,7 @@ router.delete('/:id/versions/:versionId/attachment', async (req, res) => {
   res.json(data);
 });
 
-// GET /api/procedures/:id/versions/:versionId/attachment — lien de téléchargement à durée de
-// vie courte, même proxy signé que documents.js (GET /api/documents/drive-file) : le ticket ne
-// porte que tenantId/fileId/fileName, il n'a jamais eu besoin de savoir qu'un document ou une
-// procédure l'a émis.
+// Le lien protégé revérifie l'identité, la procédure et ses droits à chaque téléchargement.
 router.get('/:id/versions/:versionId/attachment', async (req, res) => {
   const version = await fetchVersionForAction(req, res);
   if (!version) return;
@@ -1356,10 +1353,7 @@ router.get('/:id/versions/:versionId/attachment', async (req, res) => {
     return res.status(404).json({ error: 'Aucune pièce jointe pour cette version.' });
   }
 
-  const url =
-    version.attachment_storage_provider === 'google_drive'
-      ? `${req.protocol}://${req.get('host')}/api/documents/drive-file?ticket=${encodeURIComponent(signDownloadTicket(req.tenantId, version.attachment_file_path, version.attachment_file_name))}`
-      : supabase.storage.from(STORAGE_BUCKET).getPublicUrl(version.attachment_file_path).data.publicUrl;
+  const url = protectedFileUrl(req, { resourceType: 'procedure', resourceId: req.params.id, versionId: version.id });
   res.json({ url });
 });
 

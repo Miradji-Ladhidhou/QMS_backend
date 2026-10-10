@@ -39,7 +39,7 @@ function nextDueDate(dueDate, recurrence, interval) {
 // ou supprimer une tâche — pour qu'un member reste capable de cocher/corriger ses propres
 // tâches (contrairement à CAPA, il n'y a pas ici de workflow qualité à protéger).
 function canManageTask(req, task) {
-  return MANAGER_ROLES.includes(req.userRole) || task.created_by === req.user.id || task.assigned_to === req.user.id;
+  return req.sharedEditAllowed || MANAGER_ROLES.includes(req.userRole) || task.created_by === req.user.id || task.assigned_to === req.user.id;
 }
 
 // GET /api/tasks — toutes les tâches du tenant (tous les rôles) ; le filtrage "mes tâches"

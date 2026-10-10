@@ -177,7 +177,7 @@ describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive c
       .set('Authorization', `Bearer ${tenant.admin.token}`);
 
     expect(download.status).toBe(200);
-    expect(download.body.url).toContain('/storage/v1/object/public/');
+    expect(download.body.url).toContain('/api/public/shared-files/');
   });
 
   it("POST /api/documents/:id/versions : l'ancienne version archivée garde son storage_provider (null), la nouvelle aussi", async () => {
@@ -220,7 +220,7 @@ describe('Upload de fichier — repli Supabase par défaut (aucun Google Drive c
       .set('Authorization', `Bearer ${tenant.admin.token}`);
 
     expect(versionDownload.status).toBe(200);
-    expect(versionDownload.body.url).toContain('/storage/v1/object/public/');
+    expect(versionDownload.body.url).toContain('/api/public/shared-files/');
   });
 });
 

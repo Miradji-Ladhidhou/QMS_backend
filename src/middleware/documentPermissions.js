@@ -1,5 +1,6 @@
 import { supabase } from '../services/supabase.js';
 import { isSharedWithUser, getSharedResourceIds } from '../services/recordSharing.js';
+import { getRequestContext } from '../services/requestContext.js';
 
 // Un admin du tenant garde toujours accès à tout, quelle que soit la
 // restriction de catégorie — bypass documenté explicitement, comme demandé.
@@ -21,6 +22,12 @@ export async function getUserGroupIds(userId) {
 // groupe n'est consulté QUE si l'utilisateur n'a aucune règle directe sur cette catégorie.
 export async function hasCategoryPermission({ tenantId, userId, userRole, categoryId, permission, documentId }) {
   if (ADMIN_ROLES.includes(userRole)) return true;
+  const context = getRequestContext();
+  if (context.userId === userId && context.tenantId === tenantId &&
+      context.shareTarget?.type === 'document' && documentId === context.shareTarget.id && context.sharedCategoryId === categoryId &&
+      (permission === 'view' || (permission === 'edit' && context.shareAccess?.can_edit))) {
+    if (context.shareAccess?.shared) return true;
+  }
 
   // Partage d'UN document précis (voir record_shares/recordSharing.js, Paramètres > Partage
   // sur un document) : accordé EN PLUS des règles de catégorie, jamais à leur place — utile

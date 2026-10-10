@@ -1,5 +1,6 @@
 import { supabase } from '../services/supabase.js';
 import { runWithRequestContext } from '../services/requestContext.js';
+import { enforceSharePermissions } from './sharePermissions.js';
 
 export async function requireAuth(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -58,17 +59,21 @@ export async function requireAuth(req, res, next) {
   req.tenantId = profile.tenant_id;
   req.userRole = profile.role;
   req.isSuperAdmin = profile.is_super_admin;
+  if (!(await enforceSharePermissions(req, res))) return;
 
   // Établit le contexte de requête (voir services/requestContext.js) pour toute la suite du
   // traitement de CETTE requête — englobe next() pour couvrir aussi bien les middlewares/routes
   // synchrones que leurs opérations asynchrones (Node propage l'AsyncLocalStorage à travers
   // await/Promise/setTimeout automatiquement).
-  runWithRequestContext({ tenantId: profile.tenant_id, userId: user.id, aiQuotaActionId: req.aiQuotaActionId }, next);
+  runWithRequestContext({
+    tenantId: profile.tenant_id, userId: user.id, aiQuotaActionId: req.aiQuotaActionId,
+    shareAccess: req.shareAccess, shareTarget: req.shareTarget, sharedCategoryId: req.sharedCategoryId,
+  }, next);
 }
 
 export function requireRole(...roles) {
   return (req, res, next) => {
-    if (!roles.includes(req.userRole)) {
+    if (!roles.includes(req.userRole) && !req.sharedEditAllowed) {
       return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
     }
     next();

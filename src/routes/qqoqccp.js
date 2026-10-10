@@ -324,7 +324,8 @@ router.patch(
 
     const isManager = MANAGER_ROLES.includes(req.userRole);
     const isOwnUnvalidatedAnalysis = existing.created_by === req.user.id && existing.status !== 'validated';
-    if (!isManager && !isOwnUnvalidatedAnalysis) {
+    const sharedUnvalidated = req.sharedEditAllowed && existing.status !== 'validated';
+    if (!isManager && !isOwnUnvalidatedAnalysis && !sharedUnvalidated) {
       return res.status(403).json({ error: 'Action non autorisée pour ce rôle.' });
     }
 

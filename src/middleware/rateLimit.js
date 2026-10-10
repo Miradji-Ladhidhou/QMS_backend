@@ -48,3 +48,14 @@ export const publicQuizLimiter = rateLimit({
   skip: skipInTests,
   message: { error: 'Trop de requêtes, réessayez dans quelques minutes.' },
 });
+
+// Les pages invitées sont sans compte. Un plafond par IP complète le verrouillage des codes
+// après cinq échecs, sans gêner un réseau partagé raisonnable.
+export const publicGuestShareLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: skipInTests,
+  message: { error: 'Trop de tentatives. Réessayez dans quelques minutes.' },
+});

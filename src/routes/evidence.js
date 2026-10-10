@@ -79,7 +79,7 @@ async function loadAccessibleRecord(req, moduleKey) {
       item: record,
     });
   } else {
-    allowed = await hasGenericCategoryPermission({
+    allowed = req.shareAccess?.shared || await hasGenericCategoryPermission({
       tenantId: req.tenantId,
       userId: req.user.id,
       userRole: req.userRole,

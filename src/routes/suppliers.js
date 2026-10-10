@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { protectedFileUrl } from '../services/sharedFiles.js';
 import multer from 'multer';
 import { randomUUID } from 'crypto';
 import { body, validationResult } from 'express-validator';
@@ -739,15 +740,14 @@ router.put('/:id/documents/:docId/file', requireRole('admin', 'manager'), upload
   res.json(presentDocument(data));
 });
 
-// GET /api/suppliers/:id/documents/:docId/download — lien de téléchargement à durée de vie courte (5 minutes).
+// GET /api/suppliers/:id/documents/:docId/download — lien protégé valable 60 secondes.
 router.get('/:id/documents/:docId/download', async (req, res) => {
   if (!(await findVisibleSupplier(req))) return res.status(404).json({ error: 'Fournisseur introuvable.' });
   const { data: document } = await supabase.from('supplier_documents').select('file_path, file_name').eq('tenant_id', req.tenantId).eq('supplier_id', req.params.id).eq('id', req.params.docId).maybeSingle();
   if (!document) return res.status(404).json({ error: 'Document introuvable.' });
   if (!document.file_path) return res.status(404).json({ error: 'Aucun fichier joint à ce document.' });
-  const { data, error } = await supabase.storage.from(STORAGE_BUCKET).createSignedUrl(document.file_path, 300, { download: document.file_name || true });
-  if (error || !data) return res.status(500).json({ error: 'Impossible de générer le lien de téléchargement.' });
-  res.json({ url: data.signedUrl, file_name: document.file_name });
+  const url = protectedFileUrl(req, { resourceType: 'supplier', resourceId: req.params.id, versionId: req.params.docId });
+  res.json({ url, file_name: document.file_name });
 });
 
 // DELETE /api/suppliers/:id/documents/:docId — supprime le document et son fichier.
