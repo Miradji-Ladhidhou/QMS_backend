@@ -462,7 +462,7 @@ export async function fetchRegisterItems(tenantId) {
       id: row.id,
       title: `${registerPrefix}${defaultTitle}`,
       date: row.planning_date,
-      link: `/documents?tab=registers&register_id=${row.register_id}`,
+      link: `/registers?register_id=${row.register_id}`,
     });
   });
 }

@@ -54,6 +54,8 @@ describe('guest sharing credentials', () => {
     const coveredModules = new Set([
       ...Object.values(SHAREABLE_RESOURCES).map(({ module }) => module),
       'my-approvals',
+      // Les registres documentaires n'ont pas (encore) de partage invité ligne par ligne.
+      'registers',
     ]);
     const uncoveredModules = APP_MODULES.filter((module) => module !== 'dashboard' && !coveredModules.has(module));
     expect(uncoveredModules).toEqual([]);
