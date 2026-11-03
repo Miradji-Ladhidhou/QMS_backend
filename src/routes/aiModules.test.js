@@ -26,11 +26,6 @@ const PATHS = {
   haccp: ['/haccp/steps/example/hazard-suggestion', '/ai/haccp-surveillance-suggestion', '/ai/haccp-significance-suggestion', '/ai/haccp-ccp-suggestion'],
   audits: ['/audits/example/checklist/generate'],
   management_reviews: ['/management-reviews/example/ai-draft'],
-  procedures: [
-    '/procedures/generate-draft', '/procedures/generate-full-draft', '/procedures/generate-draft-from-qqoqccp',
-    '/procedures/example/suggest-revision-from-capa',
-    ...['check-compliance', 'compliance-fix', 'compare', 'distribution-sheet'].map((action) => `/procedures/example/versions/example/${action}`),
-  ],
   kpis: ['/kpi-imports/example/ai-suggestion'],
 };
 
@@ -88,7 +83,7 @@ it.each(AI_MODULES)('bloque tous les appels du module %s sans consommer de quota
 it('réserve les réglages au super-admin, valide les clés et journalise les changements', async () => {
   const tenant = await fixture();
   const path = `/api/ai-quota/tenants/${tenant.tenantId}/modules`;
-  const settings = effectiveAiModules({ haccp: false, procedures: false });
+  const settings = effectiveAiModules({ haccp: false });
   const patch = (body) => request(app).patch(path).set('Authorization', `Bearer ${tenant.admin.token}`).send(body);
   expect((await patch(settings)).status).toBe(403);
   const client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY, {

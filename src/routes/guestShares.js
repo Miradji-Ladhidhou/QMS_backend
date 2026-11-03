@@ -68,18 +68,6 @@ export async function readSharedResource(share) {
     return rows || [];
   };
 
-  if (share.resource_type === 'procedure' && data.current_version_id) {
-    const { data: version, error: versionError } = await supabase
-      .from('procedure_versions')
-      .select('version, content, status, validated_at')
-      .eq('tenant_id', share.tenant_id)
-      .eq('id', data.current_version_id)
-      .maybeSingle();
-    if (versionError) throw new Error(`Lecture de la version partagée impossible : ${versionError.message}`);
-    data.current_version = version;
-    delete data.current_version_id;
-  }
-
   if (share.resource_type === 'audit') {
     const [findings, checklist] = await Promise.all([
       readChildren('audit_findings', 'type, description, created_at', 'audit_id', share.resource_id),
@@ -423,7 +411,7 @@ router.get('/:token/export', requireGuestSession, async (req, res) => {
 router.get('/:token/download', requireGuestSession, async (req, res) => {
   const target = await guestExportTarget(req, res);
   if (!target) return;
-  if (!['document', 'procedure', 'supplier'].includes(target.resource_type)) {
+  if (!['document', 'supplier'].includes(target.resource_type)) {
     return res.status(404).json({ error: 'Cet élément ne comporte pas de fichier téléchargeable.' });
   }
   if (target.resource_type === 'supplier') {
@@ -437,15 +425,15 @@ router.get('/:token/download', requireGuestSession, async (req, res) => {
   }
   const config = SHAREABLE_RESOURCES[target.resource_type];
   const { data: record, error } = await supabase.from(config.table)
-    .select(target.resource_type === 'document' ? 'file_path' : 'current_version_id')
+    .select('file_path')
     .eq('tenant_id', target.tenant_id).eq('id', target.resource_id).maybeSingle();
   if (error) throw new Error(`Vérification du fichier partagé impossible : ${error.message}`);
-  if (!record || (target.resource_type === 'document' ? !record.file_path : !record.current_version_id)) {
+  if (!record?.file_path) {
     return res.status(404).json({ error: 'Aucun fichier disponible pour cet élément.' });
   }
   res.json({ url: protectedFileUrl(req, {
     resourceType: target.resource_type, resourceId: target.resource_id,
-    versionId: record.current_version_id || null, guestShare: req.guestShare,
+    versionId: null, guestShare: req.guestShare,
   }) });
 });
 

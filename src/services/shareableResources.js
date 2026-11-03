@@ -27,13 +27,6 @@ export const SHAREABLE_RESOURCES = {
     categorySource: 'generic',
     labelField: 'title',
   },
-  procedure: {
-    table: 'procedures',
-    module: 'procedures',
-    fields: 'number, title, process, status, next_review_date, current_version_id, created_at, updated_at',
-    categorySource: 'generic',
-    labelField: 'title',
-  },
   accident: {
     table: 'accidents',
     module: 'accidents',

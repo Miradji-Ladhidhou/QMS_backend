@@ -34,7 +34,7 @@ function addTable(sheet, headers, rows, widths) {
 
 // Classeur d'un audit : onglet « Audit » (faits, qualification, taux de conformité), « Constats » et
 // « Check-list » (une ligne par question, filtrable/triable) — jamais tout dans une seule ligne.
-export async function buildAuditXlsx({ audit, findings, checklistItems, linkedProcedures, qualificationText }) {
+export async function buildAuditXlsx({ audit, findings, checklistItems, qualificationText }) {
   const workbook = new ExcelJS.Workbook();
   const summary = summarizeChecklist(checklistItems);
 
@@ -50,7 +50,6 @@ export async function buildAuditXlsx({ audit, findings, checklistItems, linkedPr
     ['Dossier', audit.category?.name || ''],
     ['Périmètre', audit.scope || ''],
     ['Conclusion', audit.conclusion || ''],
-    ['Procédures liées', linkedProcedures.map((procedure) => `${procedure.number} — ${procedure.title}`).join('\n')],
     ['Constats', findings.length],
     ['Questions de la check-list', summary.total],
     ['Questions répondues', summary.answered],

@@ -218,22 +218,21 @@ describe('Vue « à revoir » et revue en lot', () => {
   });
 });
 
-describe('Liens avec audits, fournisseurs, KPI et procédures', () => {
+describe('Liens avec audits, fournisseurs et KPI', () => {
   async function objects(tenant) {
     const audit = await request(app).post('/api/audits').set(auth(tenant.admin.token)).send({ title: 'Audit achats', planned_date: isoDate(10) });
     const supplier = await request(app).post('/api/suppliers').set(auth(tenant.admin.token)).send({ name: 'Emballages Martin' });
     const kpi = await request(app).post('/api/kpis').set(auth(tenant.admin.token)).send({ name: 'Taux de rebut', target: 3, target_direction: 'max' });
-    const procedure = await request(app).post('/api/procedures').set(auth(tenant.admin.token)).send({ number: 'PR-01', title: 'Achats' });
-    return { audit: audit.body, supplier: supplier.body, kpi: kpi.body, procedure: procedure.body };
+    return { audit: audit.body, supplier: supplier.body, kpi: kpi.body };
   }
 
-  it('rattache un audit, un fournisseur, un KPI et une procédure ; liste résolue avec titre et page ; suppression', async () => {
+  it('rattache un audit, un fournisseur et un KPI ; liste résolue avec titre et page ; suppression', async () => {
     const tenant = await newTenant({ extraUsers: [{ role: 'member' }] });
     const risk = await makeRisk(tenant);
     const objs = await objects(tenant);
     const link = (kind, id, token = tenant.admin.token) => request(app).post(`/api/risks/${risk.id}/links`).set(auth(token)).send({ kind, ref_id: id });
 
-    for (const [kind, id] of [['audit', objs.audit.id], ['supplier', objs.supplier.id], ['kpi', objs.kpi.id], ['procedure', objs.procedure.id]]) {
+    for (const [kind, id] of [['audit', objs.audit.id], ['supplier', objs.supplier.id], ['kpi', objs.kpi.id]]) {
       expect((await link(kind, id)).status).toBe(201);
     }
     const list = (await request(app).get(`/api/risks/${risk.id}/links`).set(auth(tenant.users[0].token))).body;
@@ -241,7 +240,6 @@ describe('Liens avec audits, fournisseurs, KPI et procédures', () => {
       ['audit', 'Audit achats', `/audits/${objs.audit.id}`],
       ['supplier', 'Emballages Martin', `/suppliers/${objs.supplier.id}`],
       ['kpi', 'Taux de rebut', '/kpis'],
-      ['procedure', 'PR-01 — Achats', `/procedures/${objs.procedure.id}`],
     ]);
 
     expect((await link('audit', objs.audit.id)).status).toBe(409);
@@ -249,7 +247,7 @@ describe('Liens avec audits, fournisseurs, KPI et procédures', () => {
 
     expect((await request(app).delete(`/api/risks/${risk.id}/links/${list[0].id}`).set(auth(tenant.admin.token))).status).toBe(204);
     expect((await request(app).delete(`/api/risks/${risk.id}/links/${list[0].id}`).set(auth(tenant.admin.token))).status).toBe(404);
-    expect((await request(app).get(`/api/risks/${risk.id}/links`).set(auth(tenant.admin.token))).body).toHaveLength(3);
+    expect((await request(app).get(`/api/risks/${risk.id}/links`).set(auth(tenant.admin.token))).body).toHaveLength(2);
   });
 
   it("refuse un objet d'un autre tenant, un type ou un id invalide ; supprimer l'objet retire son lien", async () => {

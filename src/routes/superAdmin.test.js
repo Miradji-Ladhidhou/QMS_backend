@@ -316,7 +316,7 @@ describe('GET /api/super-admin/ai-failures', () => {
       },
       {
         tenant_id: targetTenant.tenantId,
-        feature: 'test-ai-failures-route-procedure_full_plan',
+        feature: 'test-ai-failures-route-audit_checklist',
         category: 'timeout',
         message: 'Délai dépassé',
         created_at: '2026-06-01T00:00:00Z',
@@ -330,8 +330,8 @@ describe('GET /api/super-admin/ai-failures', () => {
 
     const ours = res.body.filter((r) => r.feature.startsWith('test-ai-failures-route-'));
     expect(ours).toHaveLength(3);
-    // Le plus récent (procedure_full_plan, juin) avant le plus ancien (qqoqccp, janvier).
-    expect(ours[0].feature).toBe('test-ai-failures-route-procedure_full_plan');
+    // Le plus récent (audit_checklist, juin) avant le plus ancien (qqoqccp, janvier).
+    expect(ours[0].feature).toBe('test-ai-failures-route-audit_checklist');
     expect(ours[0].tenant).toEqual({ id: targetTenant.tenantId, name: targetTenant.companyName });
     expect(ours[0].category).toBe('timeout');
 

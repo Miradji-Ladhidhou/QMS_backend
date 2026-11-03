@@ -5,7 +5,6 @@ import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '
 import {
   fetchCapaItems,
   fetchDocumentItems,
-  fetchProcedureItems,
   fetchTrainingItems,
   fetchTaskItems,
   fetchAuditItems,
@@ -28,7 +27,6 @@ const router = Router();
 // rester cohérent avec les indicateurs déjà affichés ailleurs dans l'application.
 const RENEWAL_WINDOW_DAYS = 60;
 const DOCUMENT_REVIEW_WINDOW_DAYS = 30;
-const PROCEDURE_REVIEW_WINDOW_DAYS = 30;
 
 router.use(requireAuth);
 router.use(requireMenuVisible('dashboard'));
@@ -97,24 +95,6 @@ async function countDocumentsToReview(tenantId) {
     .eq('tenant_id', tenantId)
     .not('review_date', 'is', null)
     .lte('review_date', threshold);
-
-  if (error) return 0;
-  return count || 0;
-}
-
-// Miroir de countDocumentsToReview ci-dessus — mêmes champs, même fenêtre glissante (30 jours),
-// mais exclut les procédures déjà obsolètes (leur révision n'a plus de sens, même logique que
-// isReviewOverdue côté frontend, Procedures.jsx). Pas de service_id sur procedures (voir
-// schema.sql) : toujours tout le tenant, jamais scopé, comme les documents.
-async function countProceduresToReview(tenantId) {
-  const threshold = isoDateInDays(PROCEDURE_REVIEW_WINDOW_DAYS);
-  const { count, error } = await supabase
-    .from('procedures')
-    .select('id', { count: 'exact', head: true })
-    .eq('tenant_id', tenantId)
-    .neq('status', 'obsolete')
-    .not('next_review_date', 'is', null)
-    .lte('next_review_date', threshold);
 
   if (error) return 0;
   return count || 0;
@@ -248,18 +228,16 @@ async function computeTenantMetrics(tenantId) {
   const capas = await filterViewableByCategory({ ...scopeUser, items: rawCapas });
 
   const documentsToReview = await countDocumentsToReview(tenantId);
-  const proceduresToReview = await countProceduresToReview(tenantId);
   const trainingsToRenew = await countTrainingsToRenew(tenantId, null);
   const kpiSummary = await computeKpiSummary(tenantId);
   const managementReviewsDraft = await countManagementReviewsDraft(tenantId);
   const haccpActivePlans = await countActiveHaccpPlans(tenantId, null);
   const accidentsOpen = await countAccidentsOpen(tenantId, scopeUser);
 
-  const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
+  const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
     await Promise.all([
       fetchCapaItems(tenantId, { serviceIds: null, ...scopeUser }),
       fetchDocumentItems(tenantId),
-      fetchProcedureItems(tenantId),
       fetchTrainingItems(tenantId, { userIds: null }),
       fetchTaskItems(tenantId, scopeUser),
       fetchAuditItems(tenantId, { serviceIds: null, ...scopeUser }),
@@ -273,7 +251,6 @@ async function computeTenantMetrics(tenantId) {
   const overdueTotal = countOverdueItems([
     capaItems,
     documentItems,
-    procedureItems,
     trainingItems,
     taskItems,
     auditItems,
@@ -288,7 +265,6 @@ async function computeTenantMetrics(tenantId) {
   return {
     capas: countCapasByStatus(capas),
     documents: { to_review: documentsToReview },
-    procedures: { to_review: proceduresToReview },
     trainings: { to_renew: trainingsToRenew },
     kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
     audits: countActiveAndOverdue(auditItems),
@@ -377,10 +353,6 @@ router.get('/stats', async (req, res) => {
     return res.json({
       capas: countCapasByStatus(capas),
       documents: { to_review: 0 },
-      // Pas de vue personnelle pour les procédures (pas de porteur individuel sur procedures,
-      // voir schema.sql — l'auteur vit sur procedure_versions, pas sur la fiche elle-même) :
-      // même 0 forcé que documents/kpis/suppliers/management_reviews ci-dessous.
-      procedures: { to_review: 0 },
       trainings: { to_renew: trainingsToRenew },
       // Pas de vue personnelle pour les KPI (pas de porteur individuel, comme documents) :
       // 0 forcé ici, le widget correspondant reste masqué pour member côté frontend.
@@ -441,10 +413,9 @@ router.get('/stats', async (req, res) => {
       capas = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: data });
     }
 
-    // Les documents et les procédures n'ont pas de service_id (voir schema.sql) : aucun
+    // Les documents n'ont pas de service_id (voir schema.sql) : aucun
     // filtrage possible, le compte reste celui du tenant entier quel que soit service_id.
     const documentsToReview = await countDocumentsToReview(req.tenantId);
-    const proceduresToReview = await countProceduresToReview(req.tenantId);
 
     const trainingUserIds = await fetchServiceUserIds(req.tenantId, serviceIds);
     const trainingsToRenew = await countTrainingsToRenew(req.tenantId, trainingUserIds);
@@ -453,11 +424,10 @@ router.get('/stats', async (req, res) => {
     const haccpActivePlans = await countActiveHaccpPlans(req.tenantId, serviceIds);
     const accidentsOpen = await countAccidentsOpen(req.tenantId, { userId: req.user.id, userRole: req.userRole }, serviceIds);
 
-    const [capaItems, documentItems, procedureItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
+    const [capaItems, documentItems, trainingItems, taskItems, auditItems, complaintItems, riskItems, supplierItems, pdcaItems, reviewActionItems, managementReviewItems] =
       await Promise.all([
         fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
         fetchDocumentItems(req.tenantId),
-        fetchProcedureItems(req.tenantId),
         fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
         fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
         fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
@@ -471,7 +441,6 @@ router.get('/stats', async (req, res) => {
     const overdueTotal = countOverdueItems([
       capaItems,
       documentItems,
-      procedureItems,
       trainingItems,
       taskItems,
       auditItems,
@@ -486,7 +455,6 @@ router.get('/stats', async (req, res) => {
     metrics = {
       capas: countCapasByStatus(capas),
       documents: { to_review: documentsToReview },
-      procedures: { to_review: proceduresToReview },
       trainings: { to_renew: trainingsToRenew },
       kpis: { off_target: kpiSummary.offTarget, preview: kpiSummary.preview },
       audits: countActiveAndOverdue(auditItems),
@@ -535,19 +503,18 @@ const RECENT_ACTIVITY_PER_MODULE = 8;
 const RECENT_ACTIVITY_TOTAL = 8;
 
 // GET /api/dashboard/recent-activity — les éléments les plus récemment créés/modifiés parmi
-// CAPA/audits/réclamations/risques/documents/procédures/plans HACCP (les modules avec un titre
+// CAPA/audits/réclamations/risques/documents/plans HACCP (les modules avec un titre
 // lisible et un cycle de vie clair), tous rôles confondus dans la requête mais visibilité
 // filtrée EXACTEMENT comme la liste de chaque module (filterViewableByCategory /
 // filterViewableDocuments, mêmes fonctions que GET /api/capas, /api/documents, etc.) — jamais
 // un raccourci qui montrerait plus que ce que l'utilisateur verrait sur la page de la liste
-// elle-même. Procédures exclues de ce filtrage : pas de système de catégories sur ce module
-// (voir schema.sql/routes/procedures.js — ouvert à tout rôle authentifié), rien à restreindre.
+// elle-même.
 // Réservé à admin/manager, comme le panneau "Filtrer par service" (un member n'a pas de vue
 // d'ensemble de l'entreprise).
 router.get('/recent-activity', requireRole('admin', 'manager'), async (req, res) => {
   const scopeUser = { userId: req.user.id, userRole: req.userRole };
 
-  const [rawCapas, rawAudits, rawComplaints, rawRisks, rawDocuments, rawProcedures, rawHaccpPlans] = await Promise.all([
+  const [rawCapas, rawAudits, rawComplaints, rawRisks, rawDocuments, rawHaccpPlans] = await Promise.all([
     supabase
       .from('capas')
       .select('id, number, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
@@ -579,12 +546,6 @@ router.get('/recent-activity', requireRole('admin', 'manager'), async (req, res)
       .order('updated_at', { ascending: false })
       .limit(RECENT_ACTIVITY_PER_MODULE),
     supabase
-      .from('procedures')
-      .select('id, number, title, created_at, updated_at')
-      .eq('tenant_id', req.tenantId)
-      .order('updated_at', { ascending: false })
-      .limit(RECENT_ACTIVITY_PER_MODULE),
-    supabase
       .from('haccp_plans')
       .select('id, title, created_at, updated_at, category_id, category:categories(id, is_restricted)')
       .eq('tenant_id', req.tenantId)
@@ -602,7 +563,6 @@ router.get('/recent-activity', requireRole('admin', 'manager'), async (req, res)
     ...scopeUser,
     documents: rawDocuments.data || [],
   });
-  const procedures = rawProcedures.data || [];
 
   function toEntry(item, module, label, link) {
     return { module, id: item.id, label, link, timestamp: item.updated_at, action: inferAction(item) };
@@ -614,7 +574,6 @@ router.get('/recent-activity', requireRole('admin', 'manager'), async (req, res)
     ...complaints.map((item) => toEntry(item, 'complaints', `Réclamation — ${item.customer_name}`, `/complaints/${item.id}`)),
     ...risks.map((item) => toEntry(item, 'risks', item.title, `/risks/${item.id}`)),
     ...documents.map((item) => toEntry(item, 'documents', `${item.number} — ${item.title}`, `/documents/${item.id}`)),
-    ...procedures.map((item) => toEntry(item, 'procedures', `${item.number} — ${item.title}`, `/procedures/${item.id}`)),
     ...haccpPlans.map((item) => toEntry(item, 'haccp', item.title, `/haccp/${item.id}`)),
   ];
 

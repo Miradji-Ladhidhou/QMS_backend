@@ -8,7 +8,7 @@ export const LOGO_MAX_HEIGHT_PT = 40;
 // Lit les dimensions réelles du logo (PNG/JPEG/WEBP/GIF — seuls formats acceptés à l'upload,
 // voir routes/tenant.js#ALLOWED_LOGO_TYPES) pour calculer une largeur proportionnelle à une
 // hauteur fixe, sans jamais déformer l'image (docx#ImageRun exige des dimensions explicites,
-// il ne les déduit pas seul du buffer). Partagé par tous les exports Word (procedureWord.js,
+// il ne les déduit pas seul du buffer). Partagé par tous les exports Word (ex.
 // listReportWord.js) : le logo est placé dans l'en-tête de section, donc répété sur chaque page.
 export function logoImageRun(tenantLogo, { maxWidth = Number.POSITIVE_INFINITY, maxHeight = LOGO_MAX_HEIGHT_PT } = {}) {
   if (!tenantLogo) return null;

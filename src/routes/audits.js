@@ -61,8 +61,8 @@ router.get('/auditor-qualifications', async (req, res) => {
   res.json({ trainings, by_user: byUser });
 });
 
-// Données d'un audit pour ses exports (PDF, Word, Excel) : l'audit, ses constats, sa check-list, ses
-// procédures liées, le nom/logo de l'entreprise et la qualification de l'auditeur (preuve de compétence,
+// Données d'un audit pour ses exports (PDF, Word, Excel) : l'audit, ses constats, sa check-list,
+// le nom/logo de l'entreprise et la qualification de l'auditeur (preuve de compétence,
 // ISO 9001 §9.2). Répond 404 lui-même et retourne null si l'audit est introuvable ou inaccessible.
 async function loadAuditForExport(req, res) {
   const { data: audit, error } = await supabase.from('audits').select(AUDIT_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();
@@ -83,7 +83,7 @@ async function loadAuditForExport(req, res) {
     return null;
   }
 
-  const [{ data: findings }, { data: checklistItems }, { data: procedureLinks }, { data: tenant }, qualifications] = await Promise.all([
+  const [{ data: findings }, { data: checklistItems }, { data: tenant }, qualifications] = await Promise.all([
     supabase
       .from('audit_findings')
       .select('*, linked_capa:capas!audit_findings_linked_capa_id_fkey(id, number, title, status)')
@@ -96,7 +96,6 @@ async function loadAuditForExport(req, res) {
       .eq('tenant_id', req.tenantId)
       .eq('audit_id', audit.id)
       .order('position', { ascending: true }),
-    supabase.from('procedure_audit_links').select('procedure:procedures(id, number, title)').eq('tenant_id', req.tenantId).eq('audit_id', audit.id),
     supabase.from('tenants').select('name, logo_url').eq('id', req.tenantId).single(),
     fetchAuditorQualifications({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole }),
   ]);
@@ -107,13 +106,12 @@ async function loadAuditForExport(req, res) {
     audit,
     findings: findings || [],
     checklistItems: checklistItems || [],
-    linkedProcedures: (procedureLinks || []).map((link) => link.procedure).filter(Boolean),
     qualificationText: audit.lead_auditor ? describeQualificationForDocument(qualifications.byUser[audit.lead_auditor], qualifications.trainings) : null,
   };
 }
 
 // GET /api/audits/:id/pdf — fiche imprimable : faits, qualification de l'auditeur, périmètre, conclusion,
-// constats, check-list (réponses et taux de conformité), procédures liées.
+// constats, check-list (réponses et taux de conformité).
 router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const data = await loadAuditForExport(req, res);
   if (!data) return;
@@ -189,23 +187,9 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les constats de cet audit.' });
   }
 
-  // Traçabilité inverse : procedure_audit_links pointe de la procédure vers cet audit (créé et
-  // géré depuis routes/procedures.js#link-audit), même principe que linked_procedures sur GET
-  // /api/capas/:id.
-  const { data: procedureLinks, error: procedureLinksError } = await supabase
-    .from('procedure_audit_links')
-    .select('procedure:procedures(id, number, title, status)')
-    .eq('tenant_id', req.tenantId)
-    .eq('audit_id', audit.id);
-
-  if (procedureLinksError) {
-    return res.status(500).json({ error: 'Impossible de récupérer les procédures liées.' });
-  }
-
   res.json({
     ...audit,
     findings,
-    linked_procedures: procedureLinks.map((link) => link.procedure),
     is_private_to_me: audit.category?.owner_user_id === req.user.id,
   });
 });

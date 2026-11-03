@@ -217,10 +217,9 @@ aiResultRoute(router,
 
     if (!(await prepareAiResult(req, res))) return;
     const count = req.body.count || 10;
-    const [{ items: existing }, { data: findings }, { data: links }] = await Promise.all([
+    const [{ items: existing }, { data: findings }] = await Promise.all([
       loadItems(req.tenantId, audit.id),
       supabase.from('audit_findings').select('type, description').eq('tenant_id', req.tenantId).eq('audit_id', audit.id).order('created_at'),
-      supabase.from('procedure_audit_links').select('procedure:procedures(number, title)').eq('tenant_id', req.tenantId).eq('audit_id', audit.id),
     ]);
     const existingQuestions = existing.map((item) => item.question);
 
@@ -230,7 +229,6 @@ aiResultRoute(router,
         typeLabel: AUDIT_TYPE_LABELS[audit.audit_type] || audit.audit_type,
         scope: audit.scope,
         service: audit.service?.name,
-        linkedProcedures: (links || []).map((link) => [link.procedure?.number, link.procedure?.title].filter(Boolean).join(' — ')).filter(Boolean),
         findings: findings || [],
         existingQuestions,
         count,

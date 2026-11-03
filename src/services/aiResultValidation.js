@@ -14,7 +14,6 @@ function capa(value) {
 
 export function validAiResult(endpoint, value, input = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  if (endpoint.endsWith('/generate-full-draft')) return text(value.id) && text(value.subject);
   if (endpoint.includes('/qqoqccp/')) return text(value.ai_synthesis) && capa({ synthesis: value.ai_synthesis, ...value.ai_suggested_actions });
   if (endpoint.endsWith('/capa-suggestion')) return capa(value);
   if (endpoint.includes('/pdca/')) return text(value.content);
@@ -37,14 +36,5 @@ export function validAiResult(endpoint, value, input = {}) {
   if (endpoint.endsWith('/ai-draft')) return texts(value.decisions) && (text(value.conclusions) || text(value.improvement_opportunities) || value.decisions.length > 0);
   if (endpoint.endsWith('/ai-suggestion')) return Array.isArray(value.series) && value.series.length > 0
     && value.series.every((series) => text(series.label) && ['ratio', 'sum', 'average', 'min', 'max', 'count', 'count_grouped'].includes(series.calc_type));
-  if (endpoint.endsWith('/check-compliance')) return typeof value.compliant === 'boolean' && Array.isArray(value.anomalies)
-    && value.anomalies.every((anomaly) => text(anomaly.section_key) && text(anomaly.issue) && ['minor', 'major', 'blocking'].includes(anomaly.severity));
-  if (endpoint.endsWith('/compliance-fix')) return text(value.section_key) && text(value.corrected_content);
-  if (endpoint.endsWith('/compare')) return text(value.summary) && Array.isArray(value.changes)
-    && value.changes.every((change) => text(change.section_key) && text(change.description) && ['added', 'removed', 'modified'].includes(change.change_type));
-  if (endpoint.endsWith('/distribution-sheet')) return Boolean(value.distribution_sheet) && text(value.distribution_sheet.summary);
-  if (endpoint.endsWith('/suggest-revision-from-capa')) return text(value.rationale) && Array.isArray(value.suggested_changes)
-    && value.suggested_changes.every((change) => text(change.section_key) && text(change.suggested_content));
-  return Array.isArray(value.sections) && value.sections.length > 0
-    && value.sections.every((section) => text(section.key) && text(section.label) && Array.isArray(section.blocks) && section.blocks.length > 0);
+  return false;
 }

@@ -778,27 +778,6 @@ describe('KPI de module — revues de direction', () => {
   });
 });
 
-describe('KPI de module — procédures', () => {
-  it('revue en retard sur une procédure non obsolète', async () => {
-    tenant = await createTenant();
-    const t = tenant.admin.token;
-
-    await request(app)
-      .post('/api/procedures')
-      .set('Authorization', `Bearer ${t}`)
-      .send({ number: 'PR-001', title: 'Contrôle réception', next_review_date: '2020-01-01' });
-    await request(app)
-      .post('/api/procedures')
-      .set('Authorization', `Bearer ${t}`)
-      .send({ number: 'PR-002', title: 'Gestion des achats' }); // pas de date de revue
-
-    const overdue = await fromPreset(t, 'procedure_review_overdue_backlog');
-    const rec = (overdue.body.records || []).find((r) => r.value !== null);
-    expect(Number(rec.value)).toBe(1);
-    expect(rec.period_date).toBe(currentMonthBucket());
-  });
-});
-
 describe('KPI de module — approbations documentaires', () => {
   it('circuit d’approbation en attente', async () => {
     tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });

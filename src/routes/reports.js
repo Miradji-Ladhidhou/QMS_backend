@@ -120,8 +120,7 @@ router.post(
 
 // POST /api/reports/table-word — même principe que /table-pdf et /table-xlsx (aucune table
 // métier lue, le frontend envoie exactement ce qu'il affiche), produit un document Word (voir
-// services/listReportWord.js) — même en-têtes de réponse que la route Word déjà existante pour
-// les procédures (routes/procedures.js#export-word).
+// services/listReportWord.js).
 router.post(
   '/table-word',
   [

@@ -137,7 +137,7 @@ export function buildPdcaPdf({ tenantName, tenantLogo, pdca, evidence }) {
 
     appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
-    // Pied de page numéroté — même construction que capaPdf.js/procedurePdf.js.
+    // Pied de page numéroté — même construction que capaPdf.js.
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);

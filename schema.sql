@@ -1304,179 +1304,6 @@ create table document_register_rows (
   updated_at      timestamptz not null default now()
 );
 
--- Module Procédures : contenu structuré (jsonb), versionné, avec gabarit par tenant et
--- accusés de lecture — distinct du module Documents (fichiers uploadés) : ici le contenu est
--- édité/généré (IA) directement dans l'app, pas un fichier binaire.
-create table procedures (
-  id                uuid primary key default gen_random_uuid(),
-  tenant_id         uuid not null references tenants (id) on delete cascade,
-  source_document_id uuid references documents (id) on delete set null,
-  number            text not null,
-  title             text not null,
-  process           text,
-  status            text not null default 'draft' check (status in ('draft', 'in_review', 'approved', 'obsolete')),
-  next_review_date  date,
-  created_by        uuid references users (id) on delete set null,
-  obsolete_reason   text,
-  obsoleted_at      timestamptz,
-  obsoleted_by      uuid references users (id) on delete set null,
-  created_at        timestamptz not null default now(),
-  updated_at        timestamptz not null default now(),
-  unique (tenant_id, number)
-);
-
--- Contrairement à documents/document_versions (où la version COURANTE vit sur documents lui-
--- même et document_versions n'archive que les versions passées), ici TOUTES les versions —
--- y compris la courante — sont des lignes procedure_versions à part entière ;
--- procedures.current_version_id n'est qu'un pointeur vers celle qui fait foi actuellement.
-create table procedure_versions (
-  id            uuid primary key default gen_random_uuid(),
-  tenant_id     uuid not null references tenants (id) on delete cascade,
-  procedure_id  uuid not null references procedures (id) on delete cascade,
-  version       text not null,
-  content       jsonb not null default '{}',
-  ai_generated  boolean not null default false,
-  author_id     uuid references users (id) on delete set null,
-  validator_id  uuid references users (id) on delete set null,
-  submitted_at  timestamptz,
-  validated_at  timestamptz,
-  status        text not null default 'draft' check (status in ('draft', 'pending', 'approved', 'rejected')),
-  -- Motif de rejet ("retour au rédacteur avec commentaire") — même nom que
-  -- document_approvals.comment.
-  comment       text,
-  -- Pièce jointe optionnelle EN COMPLÉMENT du contenu structuré. file_path/provider suivent
-  -- documents.file_path/storage_provider et restent figés sur cette version, même après un
-  -- changement de fournisseur du tenant. Un fichier importé depuis Documents référence son
-  -- stockage existant sans le déplacer.
-  attachment_file_path      text,
-  attachment_file_name      text,
-  attachment_storage_provider text,
-  -- Fiche de diffusion IA (résumé condensé pour un public cible qui doit connaître la
-  -- procédure sans nécessairement la lire en entier) — générée seulement sur une version
-  -- APPROVED (voir POST .../distribution-sheet), persistée ici pour être réaffichée en
-  -- priorité dans la bannière d'accusé de lecture de ProcedureDetail.jsx à chaque chargement,
-  -- pas seulement au moment de sa génération. {target_audience, summary, key_points,
-  -- audience_notes, generated_at}.
-  distribution_sheet jsonb,
-  -- Recherche plein texte du contenu (objet/domaine d'application/responsabilités + texte des
-  -- sections du gabarit) — même principe que documents.search_vector (trigger +
-  -- to_tsvector('french', ...) + index GIN), utilisé par GET /api/procedures?search= via
-  -- search_procedure_ids() ci-dessous plutôt qu'un scan complet du jsonb à chaque requête.
-  search_vector tsvector,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-
--- Ajoutée après coup (comme capas.qqoqccp_analysis_id après qqoqccp_analyses) : référence
--- circulaire résolue en deux temps, procedure_versions référençant déjà procedures.
-alter table procedures add column current_version_id uuid references procedure_versions (id) on delete set null;
-
--- Un gabarit par tenant (GET/PUT /api/procedure-gabarits sont des routes singulières, sans
--- :id — confirmé par la conception des routes, Prompt 2), imposé par une contrainte unique.
-create table procedure_templates (
-  id                   uuid primary key default gen_random_uuid(),
-  tenant_id            uuid not null references tenants (id) on delete cascade unique,
-  section_structure    jsonb not null default '[]',
-  -- Consigne de style libre, ajoutée au prompt IA de génération/vérification de conformité
-  -- (voir services/groq.js) — saisie librement, jamais interprétée structurellement, juste
-  -- passée telle quelle au modèle.
-  fixed_instructions   text,
-  -- accent_color/visual_options : personnalisation directe du rendu Word (voir
-  -- services/procedureWord.js), choisie par le tenant dans Paramètres > Procédures — remplace
-  -- les 4 presets figés d'origine (mtl-logistique/iso-generique/moderne-tertiaire/
-  -- industriel-securite), migrés une fois vers ces deux colonnes (voir
-  -- scripts/migrate-procedure-template-presets-to-custom.mjs). accent_color : hex libre.
-  -- visual_options : { band: bool (bandeau pleine largeur en tête de page 1), bulletStyle:
-  -- 'dash'|'round', calloutStyle: 'left-border'|'full-tint' } — jamais de code couleur de
-  -- gravité (rouge/orange/vert), un seul traitement visuel d'encadré par tenant.
-  accent_color         text not null default '#44546A',
-  visual_options       jsonb not null default '{"band": false, "bulletStyle": "dash", "calloutStyle": "left-border"}',
-  -- render_style/active_preset_id : ANCIEN mécanisme de presets figés, conservé après la
-  -- migration vers accent_color/visual_options uniquement pour ne pas perdre l'historique (les
-  -- colonnes ne sont plus lues par aucun renderer) — active_preset_id vaut désormais toujours
-  -- null pour tout tenant migré ; ne réapparaît que si un vieux client appelle encore l'ancien
-  -- POST /apply-preset (route conservée pour compatibilité, plus liée depuis l'UI actuelle).
-  render_style         jsonb,
-  active_preset_id     text,
-  created_at           timestamptz not null default now(),
-  updated_at           timestamptz not null default now()
-);
-
--- Un job de génération IA "document complet" par exécution (voir
--- services/procedureFullDraftJob.js) : contrairement à generate-draft (transitoire, un seul
--- appel Groq, jamais persisté), ce pipeline enchaîne ~10-15 appels séquentiels (1 plan + 1 par
--- sous-section) et doit survivre à un redémarrage du process (hébergement Render, tiers non
--- payant redémarrable) — un état en mémoire serait perdu au premier restart en cours de
--- génération. procedure_id volontairement absent : comme generate-draft, ce pipeline tourne
--- AVANT que la procédure existe (formulaire de création) aussi bien qu'après (nouvelle
--- version) ; result contient le contenu assemblé, jamais persisté automatiquement dans
--- procedure_versions — c'est au frontend de le proposer dans l'éditeur puis de l'enregistrer
--- normalement via POST/PUT .../versions. Sert aussi de journal pour le garde-fou d'usage (voir
--- routes/procedures.js) : pas de table de quota dédiée, on compte les lignes récentes ici.
-create table procedure_generation_jobs (
-  id                  uuid primary key default gen_random_uuid(),
-  tenant_id           uuid not null references tenants (id) on delete cascade,
-  created_by          uuid references users (id) on delete set null,
-  subject             text not null,
-  -- Copie de procedure_templates.section_structure/fixed_instructions au moment du
-  -- lancement — jamais relu depuis procedure_templates une fois le job démarré, pour ne pas
-  -- mélanger deux gabarits si l'admin le modifie pendant l'exécution.
-  template_snapshot   jsonb not null,
-  status              text not null default 'pending' check (status in ('pending', 'running', 'completed', 'failed')),
-  total_steps         integer,
-  completed_steps     integer not null default 0,
-  current_step_label  text,
-  -- {objet, domaine_application, responsabilites, sections, documents_associes, ai_generation}
-  -- — voir assembleProcedureFullDraft() ; rempli seulement quand status = 'completed'.
-  result              jsonb,
-  -- Sous-sections tombées en erreur (réseau ou JSON illisible) et remplacées par un texte
-  -- "à compléter manuellement" plutôt que de faire échouer tout le document.
-  -- [{section_key, subsection_title}].
-  failed_subsections  jsonb not null default '[]',
-  -- Rempli seulement sur un échec TOTAL (l'étape de plan elle-même a échoué) — jamais sur un
-  -- échec partiel d'une sous-section, qui reste dans failed_subsections ci-dessus.
-  error               text,
-  created_at          timestamptz not null default now(),
-  updated_at          timestamptz not null default now()
-);
-
--- Accusé de lecture par VERSION (chaque procedure_versions est déjà une ligne stable et
--- immuable une fois publiée, contrairement à documents qui mute en place) — plus simple que
--- document_acknowledgments, qui doit matcher un numéro de version texte faute de ligne dédiée
--- par version courante.
-create table procedure_acknowledgments (
-  id                    uuid primary key default gen_random_uuid(),
-  tenant_id             uuid not null references tenants (id) on delete cascade,
-  procedure_version_id  uuid not null references procedure_versions (id) on delete cascade,
-  user_id               uuid not null references users (id) on delete cascade,
-  acknowledged_at       timestamptz not null default now(),
-  unique (procedure_version_id, user_id)
-);
-
--- Traçabilité inverse Procédures <-> CAPA/audits : contrairement à capas.ref_document (un seul
--- FK, fixé à la création de la CAPA), un même CAPA ou audit peut concerner plusieurs
--- procédures et vice-versa — table de liaison many-to-many plutôt qu'une colonne, attachable/
--- détachable après coup depuis n'importe lequel des deux côtés.
-create table procedure_capa_links (
-  id            uuid primary key default gen_random_uuid(),
-  tenant_id     uuid not null references tenants (id) on delete cascade,
-  procedure_id  uuid not null references procedures (id) on delete cascade,
-  capa_id       uuid not null references capas (id) on delete cascade,
-  created_by    uuid references users (id) on delete set null,
-  created_at    timestamptz not null default now(),
-  unique (procedure_id, capa_id)
-);
-
-create table procedure_audit_links (
-  id            uuid primary key default gen_random_uuid(),
-  tenant_id     uuid not null references tenants (id) on delete cascade,
-  procedure_id  uuid not null references procedures (id) on delete cascade,
-  audit_id      uuid not null references audits (id) on delete cascade,
-  created_by    uuid references users (id) on delete set null,
-  created_at    timestamptz not null default now(),
-  unique (procedure_id, audit_id)
-);
-
 create table user_notification_preferences (
   user_id                   uuid primary key references users (id) on delete cascade,
   tenant_id                 uuid not null references tenants (id) on delete cascade,
@@ -1485,7 +1312,6 @@ create table user_notification_preferences (
   email_training_renewal    boolean not null default true,
   email_approval_requests   boolean not null default true,
   email_task_due            boolean not null default true,
-  email_procedure_review    boolean not null default true,
   email_risk_review         boolean not null default true,
   email_haccp_alerts        boolean not null default true,
   email_supplier_alerts     boolean not null default true,
@@ -1567,7 +1393,7 @@ create table category_permissions (
 create table record_shares (
   id             uuid primary key default gen_random_uuid(),
   tenant_id      uuid not null references tenants (id) on delete cascade,
-  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
+  resource_type  text not null check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
   resource_id    uuid not null,
   subject_type   text not null check (subject_type in ('role', 'user')),
   subject_id     text not null,
@@ -1584,7 +1410,7 @@ create table record_shares (
 create table guest_shares (
   id                 uuid primary key default gen_random_uuid(),
   tenant_id          uuid not null references tenants (id) on delete cascade,
-  resource_type      text check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
+  resource_type      text check (resource_type in ('document', 'capa', 'complaint', 'qqoqccp', 'accident', 'pdca', 'audit', 'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output', 'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy')),
   resource_id        uuid,
   title              text,
   email              text not null,
@@ -1615,7 +1441,7 @@ create table guest_share_items (
   tenant_id uuid not null references tenants(id) on delete cascade,
   guest_share_id uuid not null,
   resource_type text not null check (resource_type in (
-    'document', 'capa', 'complaint', 'qqoqccp', 'procedure', 'accident', 'pdca', 'audit',
+    'document', 'capa', 'complaint', 'qqoqccp', 'accident', 'pdca', 'audit',
     'management_review', 'risk', 'haccp_plan', 'supplier', 'nonconforming_output',
     'customer_satisfaction', 'employee', 'training', 'kpi', 'task', 'service', 'quality_policy'
   )),
@@ -1673,7 +1499,7 @@ create table categories (
   resource_type text not null check (
     resource_type in (
       'capa', 'complaint', 'qqoqccp', 'supplier', 'training', 'management_review', 'audit', 'risk', 'task', 'kpi',
-      'haccp_plan', 'procedure', 'accident', 'pdca', 'nonconforming_output',
+      'haccp_plan', 'accident', 'pdca', 'nonconforming_output',
       'customer_satisfaction', 'employee'
     )
   ),
@@ -1748,7 +1574,6 @@ alter table audits add column category_id uuid references categories (id) on del
 alter table risks add column category_id uuid references categories (id) on delete set null;
 alter table kpis add column category_id uuid references categories (id) on delete set null;
 alter table haccp_plans add column category_id uuid references categories (id) on delete set null;
-alter table procedures add column category_id uuid references categories (id) on delete set null;
 
 -- Suivi manuel de tâches sans module dédié dans l'application (le planning agrège aussi
 -- automatiquement les échéances CAPA/documents/formations, voir routes/planning.js).
@@ -1931,9 +1756,8 @@ create table google_drive_connections (
 
 -- Politique qualité (ISO 9001 §5.2). Un texte par tenant, versionné dans le temps : la
 -- version "en vigueur" est simplement la plus récente par created_at, pas de pointeur séparé
--- (contrairement à procedures.current_version_id) — inutile ici car il n'y a jamais de version
--- "en attente" à distinguer de la version courante, la direction publie directement (pas de
--- workflow soumis/validé/rejeté séparé comme pour une procédure).
+-- — inutile ici car il n'y a jamais de version "en attente" à distinguer de la version
+-- courante, la direction publie directement (pas de workflow soumis/validé/rejeté séparé).
 create table quality_policy_versions (
   id          uuid primary key default gen_random_uuid(),
   tenant_id   uuid not null references tenants (id) on delete cascade,
@@ -1942,8 +1766,7 @@ create table quality_policy_versions (
   created_at  timestamptz not null default now()
 );
 
--- Accusé de lecture de la version en vigueur — même principe que procedure_acknowledgments :
--- une nouvelle version remet tout le monde à "pas encore lu" sans purge ni job, simplement
+-- Accusé de lecture de la version en vigueur — une nouvelle version remet tout le monde à "pas encore lu" sans purge ni job, simplement
 -- parce que quality_policy_version_id change.
 create table quality_policy_acknowledgments (
   id                        uuid primary key default gen_random_uuid(),
@@ -2010,7 +1833,7 @@ create table customer_satisfaction_surveys (
   updated_at     timestamptz not null default now()
 );
 
--- Liens d'un risque avec un audit, un fournisseur, un KPI ou une procédure (un seul objet par ligne).
+-- Liens d'un risque avec un audit, un fournisseur ou un KPI (un seul objet par ligne).
 create table risk_links (
   id           uuid primary key default gen_random_uuid(),
   tenant_id    uuid not null references tenants (id) on delete cascade,
@@ -2018,23 +1841,21 @@ create table risk_links (
   audit_id     uuid references audits (id) on delete cascade,
   supplier_id  uuid references suppliers (id) on delete cascade,
   kpi_id       uuid references kpis (id) on delete cascade,
-  procedure_id uuid references procedures (id) on delete cascade,
   created_by   uuid references users (id) on delete set null,
   created_at   timestamptz not null default now(),
-  check (num_nonnulls(audit_id, supplier_id, kpi_id, procedure_id) = 1)
+  check (num_nonnulls(audit_id, supplier_id, kpi_id) = 1)
 );
 
--- Liens d'un plan HACCP avec un fournisseur (matières premières), une formation requise ou une procédure.
+-- Liens d'un plan HACCP avec un fournisseur (matières premières) ou une formation requise.
 create table haccp_plan_links (
   id           uuid primary key default gen_random_uuid(),
   tenant_id    uuid not null references tenants (id) on delete cascade,
   plan_id      uuid not null references haccp_plans (id) on delete cascade,
   supplier_id  uuid references suppliers (id) on delete cascade,
   training_id  uuid references trainings (id) on delete cascade,
-  procedure_id uuid references procedures (id) on delete cascade,
   created_by   uuid references users (id) on delete set null,
   created_at   timestamptz not null default now(),
-  check (num_nonnulls(supplier_id, training_id, procedure_id) = 1)
+  check (num_nonnulls(supplier_id, training_id) = 1)
 );
 alter table capas add column customer_satisfaction_survey_id uuid references customer_satisfaction_surveys (id) on delete set null;
 
@@ -2158,7 +1979,6 @@ create index idx_risk_links_risk_id on risk_links (risk_id);
 create unique index uq_risk_links_audit on risk_links (risk_id, audit_id) where audit_id is not null;
 create unique index uq_risk_links_supplier on risk_links (risk_id, supplier_id) where supplier_id is not null;
 create unique index uq_risk_links_kpi on risk_links (risk_id, kpi_id) where kpi_id is not null;
-create unique index uq_risk_links_procedure on risk_links (risk_id, procedure_id) where procedure_id is not null;
 
 create index idx_haccp_plans_tenant_id on haccp_plans (tenant_id);
 create index idx_haccp_plans_status on haccp_plans (status);
@@ -2184,7 +2004,6 @@ create index idx_supplier_documents_supplier_id on supplier_documents (supplier_
 create index idx_supplier_documents_expires_on on supplier_documents (expires_on);
 create unique index uq_haccp_plan_links_supplier on haccp_plan_links (plan_id, supplier_id) where supplier_id is not null;
 create unique index uq_haccp_plan_links_training on haccp_plan_links (plan_id, training_id) where training_id is not null;
-create unique index uq_haccp_plan_links_procedure on haccp_plan_links (plan_id, procedure_id) where procedure_id is not null;
 create index idx_haccp_monitoring_logs_ccp_id on haccp_monitoring_logs (ccp_id);
 create index idx_haccp_monitoring_logs_recorded_at on haccp_monitoring_logs (recorded_at);
 
@@ -2262,27 +2081,6 @@ create index idx_document_audit_log_created_at on document_audit_log (created_at
 create index idx_document_acknowledgments_tenant_id on document_acknowledgments (tenant_id);
 create index idx_document_acknowledgments_document_id on document_acknowledgments (document_id);
 
-create index idx_procedures_tenant_id on procedures (tenant_id);
-create unique index idx_procedures_source_document_id
-  on procedures (tenant_id, source_document_id)
-  where source_document_id is not null;
-create index idx_procedure_versions_tenant_id on procedure_versions (tenant_id);
-create index idx_procedure_versions_procedure_id on procedure_versions (procedure_id);
-create index idx_procedure_versions_search_vector on procedure_versions using gin (search_vector);
-create index idx_procedure_templates_tenant_id on procedure_templates (tenant_id);
-
-create index idx_procedure_generation_jobs_tenant_id on procedure_generation_jobs (tenant_id);
-create index idx_procedure_generation_jobs_tenant_created_at on procedure_generation_jobs (tenant_id, created_at);
-
-create index idx_procedure_acknowledgments_tenant_id on procedure_acknowledgments (tenant_id);
-create index idx_procedure_acknowledgments_procedure_version_id on procedure_acknowledgments (procedure_version_id);
-create index idx_procedure_capa_links_tenant_id on procedure_capa_links (tenant_id);
-create index idx_procedure_capa_links_procedure_id on procedure_capa_links (procedure_id);
-create index idx_procedure_capa_links_capa_id on procedure_capa_links (capa_id);
-create index idx_procedure_audit_links_tenant_id on procedure_audit_links (tenant_id);
-create index idx_procedure_audit_links_procedure_id on procedure_audit_links (procedure_id);
-create index idx_procedure_audit_links_audit_id on procedure_audit_links (audit_id);
-
 create index idx_user_notification_preferences_tenant_id on user_notification_preferences (tenant_id);
 
 create index idx_notification_log_tenant_id on notification_log (tenant_id);
@@ -2350,32 +2148,6 @@ $$;
 
 create trigger trg_documents_search_vector before insert or update on documents
   for each row execute function documents_search_vector_update();
-
--- Même principe que documents_search_vector_update ci-dessus, mais construit depuis le
--- contenu jsonb d'une version plutôt que des colonnes texte : objet/domaine
--- d'application/responsabilités concaténés au texte de chaque section du gabarit
--- (content->'sections', tableau de {key,label,content}).
-create or replace function procedure_versions_search_vector_update()
-returns trigger
-language plpgsql
-as $$
-begin
-  new.search_vector := to_tsvector(
-    'french',
-    coalesce(new.content->>'objet', '') || ' ' ||
-    coalesce(new.content->>'domaine_application', '') || ' ' ||
-    coalesce(new.content->>'responsabilites', '') || ' ' ||
-    coalesce(
-      (select string_agg(section->>'content', ' ') from jsonb_array_elements(coalesce(new.content->'sections', '[]'::jsonb)) as section),
-      ''
-    )
-  );
-  return new;
-end;
-$$;
-
-create trigger trg_procedure_versions_search_vector before insert or update on procedure_versions
-  for each row execute function procedure_versions_search_vector_update();
 
 create trigger trg_capas_updated_at before update on capas
   for each row execute function set_updated_at();
@@ -2518,18 +2290,6 @@ create trigger trg_google_drive_connections_updated_at before update on google_d
 create trigger trg_categories_updated_at before update on categories
   for each row execute function set_updated_at();
 
-create trigger trg_procedures_updated_at before update on procedures
-  for each row execute function set_updated_at();
-
-create trigger trg_procedure_versions_updated_at before update on procedure_versions
-  for each row execute function set_updated_at();
-
-create trigger trg_procedure_templates_updated_at before update on procedure_templates
-  for each row execute function set_updated_at();
-
-create trigger trg_procedure_generation_jobs_updated_at before update on procedure_generation_jobs
-  for each row execute function set_updated_at();
-
 create trigger trg_nonconforming_outputs_updated_at before update on nonconforming_outputs
   for each row execute function set_updated_at();
 
@@ -2612,29 +2372,6 @@ as $$
   limit p_limit;
 $$;
 
--- Utilisée par GET /api/procedures?search= (routes/procedures.js) : renvoie les id de
--- procédures dont le numéro/titre correspond (ilike, comportement inchangé) OU dont le
--- CONTENU DE LA VERSION COURANTE correspond (plein texte, procedure_versions.search_vector) —
--- jamais l'historique complet, une procédure n'est cherchée qu'à travers ce qui fait foi
--- aujourd'hui. Le résultat n'est qu'une liste d'id : le tri, l'embed current_version et les
--- filtres statut/processus restent gérés par le query builder Supabase côté route, comme
--- avant l'ajout de cette fonction.
-create or replace function search_procedure_ids(p_tenant_id uuid, p_query text)
-returns table (id uuid)
-language sql
-stable
-as $$
-  select p.id
-  from procedures p
-  left join procedure_versions pv on pv.id = p.current_version_id
-  where p.tenant_id = p_tenant_id
-    and (
-      p.number ilike '%' || p_query || '%'
-      or p.title ilike '%' || p_query || '%'
-      or (pv.search_vector is not null and pv.search_vector @@ websearch_to_tsquery('french', p_query))
-    );
-$$;
-
 -- =============================================================================
 -- ROW LEVEL SECURITY
 -- =============================================================================
@@ -2694,13 +2431,6 @@ alter table document_audit_log enable row level security;
 alter table document_acknowledgments enable row level security;
 alter table document_registers enable row level security;
 alter table document_register_rows enable row level security;
-alter table procedures enable row level security;
-alter table procedure_versions enable row level security;
-alter table procedure_templates enable row level security;
-alter table procedure_generation_jobs enable row level security;
-alter table procedure_acknowledgments enable row level security;
-alter table procedure_capa_links enable row level security;
-alter table procedure_audit_links enable row level security;
 alter table user_notification_preferences enable row level security;
 alter table notification_log enable row level security;
 alter table notifications enable row level security;
@@ -3006,41 +2736,6 @@ create policy document_register_rows_isolation on document_register_rows
   using (tenant_id = auth_tenant_id())
   with check (tenant_id = auth_tenant_id());
 
-create policy procedures_isolation on procedures
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_versions_isolation on procedure_versions
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_templates_isolation on procedure_templates
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_generation_jobs_isolation on procedure_generation_jobs
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_acknowledgments_isolation on procedure_acknowledgments
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_capa_links_isolation on procedure_capa_links
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
-create policy procedure_audit_links_isolation on procedure_audit_links
-  for all
-  using (tenant_id = auth_tenant_id())
-  with check (tenant_id = auth_tenant_id());
-
 create policy user_notification_preferences_isolation on user_notification_preferences
   for all
   using (tenant_id = auth_tenant_id())
@@ -3211,7 +2906,7 @@ begin
     with recursive protected(oid) as (
       select oid from pg_class
       where relnamespace = 'public'::regnamespace and relname in (
-        'documents', 'capas', 'complaints', 'qqoqccp_analyses', 'procedures',
+        'documents', 'capas', 'complaints', 'qqoqccp_analyses',
         'accidents', 'pdca_projects', 'audits', 'management_reviews', 'risks',
         'haccp_plans', 'suppliers', 'nonconforming_outputs',
         'customer_satisfaction_surveys', 'employees', 'trainings', 'kpis',

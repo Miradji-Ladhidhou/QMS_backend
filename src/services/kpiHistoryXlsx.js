@@ -12,6 +12,8 @@ const BORDER_ARGB = 'FFCBD5E1';
 const THIN_BORDER = { style: 'thin', color: { argb: BORDER_ARGB } };
 
 const SERIES_HEX_COLORS = ['1F3864', '0D9488', 'D97706', '7C3AED', 'DB2777', '2563EB', '059669', 'DC2626'];
+// Trait plein violet pour la ligne d'objectif — même couleur que l'écran (TARGET_COLOR, Kpis.jsx).
+const TARGET_HEX_COLOR = '7C3AED';
 
 function formatIsoDate(dateStr) {
   if (!dateStr) return '';
@@ -65,6 +67,7 @@ function buildChartXml({
   categories,
   categoryRange,
   seriesList,
+  targetLines = [],
 }) {
   const isBar = chartType === 'bar';
 
@@ -168,6 +171,46 @@ function buildChartXml({
     })
     .join('');
 
+  // Lignes d'objectif : une série ligne en trait plein à valeur constante par cible (celle du
+  // KPI en violet, et/ou celles propres à chaque série à leur couleur). Valeurs littérales
+  // (numLit) : l'objectif n'est pas une colonne de la feuille. En mode bâtons, les cibles
+  // passent dans un groupe lineChart séparé partageant les mêmes axes (graphique combiné).
+  const targetSeriesXml = targetLines
+    .map((t, tIdx) => {
+      const idx = seriesList.length + tIdx;
+      const color = t.color || TARGET_HEX_COLOR;
+      return `
+        <c:ser>
+          <c:idx val="${idx}"/>
+          <c:order val="${idx}"/>
+          <c:tx><c:v>${escapeXml(t.label)}</c:v></c:tx>
+          <c:spPr>
+            <a:ln w="19050">
+              <a:solidFill><a:srgbClr val="${color}"/></a:solidFill>
+            </a:ln>
+          </c:spPr>
+          <c:marker><c:symbol val="none"/></c:marker>
+          <c:cat>
+            <c:strRef>
+              <c:f>'${escapeXml(sheetName)}'!${categoryRange}</c:f>
+              <c:strCache>
+                <c:ptCount val="${categories.length}"/>
+                ${categories.map((c, i) => `<c:pt idx="${i}"><c:v>${escapeXml(c)}</c:v></c:pt>`).join('')}
+              </c:strCache>
+            </c:strRef>
+          </c:cat>
+          <c:val>
+            <c:numLit>
+              <c:formatCode>General</c:formatCode>
+              <c:ptCount val="${categories.length}"/>
+              ${categories.map((_, i) => `<c:pt idx="${i}"><c:v>${t.value}</c:v></c:pt>`).join('')}
+            </c:numLit>
+          </c:val>
+          <c:smooth val="0"/>
+        </c:ser>`;
+    })
+    .join('');
+
   const chartBody = isBar
     ? `
       <c:barChart>
@@ -178,12 +221,23 @@ function buildChartXml({
         <c:gapWidth val="150"/>
         <c:axId val="148921104"/>
         <c:axId val="148922640"/>
-      </c:barChart>`
+      </c:barChart>${
+        targetSeriesXml
+          ? `
+      <c:lineChart>
+        <c:grouping val="standard"/>
+        <c:varyColors val="0"/>
+        ${targetSeriesXml}
+        <c:axId val="148921104"/>
+        <c:axId val="148922640"/>
+      </c:lineChart>`
+          : ''
+      }`
     : `
       <c:lineChart>
         <c:grouping val="standard"/>
         <c:varyColors val="0"/>
-        ${seriesXml}
+        ${seriesXml}${targetSeriesXml}
         <c:axId val="148921104"/>
         <c:axId val="148922640"/>
       </c:lineChart>`;
@@ -694,6 +748,29 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
       targetDesc = ` (Objectif : ${dir} ${kpi.target} ${defaultUnit})`.trim();
     }
 
+    // Lignes d'objectif du graphique — mêmes règles que la carte KPI (frontend) et le rapport
+    // PDF : chaque série paramétrée à part (target_direction présent) a sa propre cible, à la
+    // couleur de la série ; l'objectif du KPI (violet) ne s'affiche que si au moins une série
+    // le suit encore (mono-série : toujours lui).
+    const targetLines = [];
+    if (showSeriesColumn) {
+      seriesConfigs.forEach((series, sIdx) => {
+        if (series.target_direction && series.target !== null && series.target !== undefined) {
+          targetLines.push({
+            label: `Objectif ${series.label}`,
+            value: Number(series.target),
+            color: SERIES_HEX_COLORS[sIdx % SERIES_HEX_COLORS.length],
+          });
+        }
+      });
+      const someSeriesFollowsKpi = seriesConfigs.some((series) => !series.target_direction);
+      if (someSeriesFollowsKpi && kpi.target !== null && kpi.target !== undefined) {
+        targetLines.unshift({ label: 'Objectif', value: Number(kpi.target), color: TARGET_HEX_COLOR });
+      }
+    } else if (kpi.target !== null && kpi.target !== undefined) {
+      targetLines.push({ label: 'Objectif', value: Number(kpi.target), color: TARGET_HEX_COLOR });
+    }
+
     const chartTitle = `Évolution — ${kpi.name}${targetDesc}`;
 
     // Emplacement à côté du tableau (0-indexed pour OpenXML: col totalCols + 1)
@@ -710,6 +787,7 @@ export async function buildKpiHistoryXlsx({ kpi, records, tenantName, exportedBy
         categories,
         categoryRange,
         seriesList,
+        targetLines,
         placement: { fromCol, toCol, fromRow, toRow },
       });
     } catch (err) {

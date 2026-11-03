@@ -80,8 +80,8 @@ export const DEFAULT_RESOURCE_GROUPS = [
     ],
   },
   {
-    title: 'Documents, procédures et politique qualité',
-    modules: ['documents', 'procedures', 'my-approvals'],
+    title: 'Documents et politique qualité',
+    modules: ['documents', 'my-approvals'],
     description: 'Organiser les informations documentées, les versions et les validations du système qualité.',
     resources: [
       {

@@ -1,12 +1,12 @@
 import { supabase } from './supabase.js';
 import { SHAREABLE_RESOURCES } from './shareableResources.js';
-import { hasCategoryPermission, filterViewableDocuments } from '../middleware/documentPermissions.js';
+import { hasCategoryPermission } from '../middleware/documentPermissions.js';
 import { hasGenericCategoryPermission } from '../middleware/genericCategoryPermissions.js';
 import { filterOwnedOrShared } from './ownershipVisibility.js';
 
 export const SHAREABLE_RESOURCE_LABELS = {
   document: 'Documents', capa: 'CAPA', complaint: 'Réclamations',
-  qqoqccp: 'QQOQCCP', procedure: 'Procédures', accident: 'Accidents',
+  qqoqccp: 'QQOQCCP', accident: 'Accidents',
   pdca: 'PDCA', audit: 'Audits', management_review: 'Revues de direction',
   risk: 'Risques et opportunités', haccp_plan: 'HACCP', supplier: 'Fournisseurs',
   nonconforming_output: 'Non-conformités produit/service',
@@ -31,7 +31,6 @@ export async function canManageResourceShare(req, resourceType, categoryId) {
 export function selectionFields(type) {
   const config = SHAREABLE_RESOURCES[type];
   return ['id', 'created_at', ...(config.labelField ? [config.labelField] : []),
-    ...(type === 'procedure' ? ['source_document_id'] : []),
     ...(['capa', 'complaint'].includes(type) ? ['created_by', 'assigned_to', 'category:categories(is_restricted)'] : []),
     ...(config.categorySource ? ['category_id'] : [])].join(', ');
 }
@@ -54,23 +53,7 @@ export async function filterShareableRecords(req, type, records) {
     [id, await canManageResourceShare(req, type, id)]
   )));
   const filtered = records.filter((row) => !row.category_id || permissions.get(row.category_id));
-  return type === 'procedure' ? filterProcedureSources(req, filtered) : filtered;
-}
-
-export async function filterProcedureSources(req, records) {
-  if (req.userRole === 'admin') return records;
-  const ids = [...new Set(records.map((row) => row.source_document_id).filter(Boolean))];
-  const sources = [];
-  for (let offset = 0; offset < ids.length; offset += 100) {
-    const { data, error } = await supabase.from('documents')
-      .select('id, category_id, category:document_categories(id, is_restricted)')
-      .eq('tenant_id', req.tenantId).in('id', ids.slice(offset, offset + 100));
-    if (error) throw new Error(`Vérification des documents sources impossible : ${error.message}`);
-    sources.push(...data);
-  }
-  const visible = await filterViewableDocuments({ tenantId: req.tenantId, userId: req.user.id, userRole: req.userRole, documents: sources });
-  const hidden = new Set(sources.filter((source) => !visible.some((row) => row.id === source.id)).map((row) => row.id));
-  return records.filter((row) => !hidden.has(row.source_document_id));
+  return filtered;
 }
 
 export async function readGuestBundleItems(share) {

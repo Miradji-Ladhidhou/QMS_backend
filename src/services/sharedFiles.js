@@ -33,7 +33,7 @@ export function decodeFileTicket(ticket) {
 
 export async function authorizedFile(ticket) {
   const { tenantId, resourceType, resourceId, versionId } = ticket;
-  if (!['document', 'procedure', 'supplier'].includes(resourceType)) return null;
+  if (!['document', 'supplier'].includes(resourceType)) return null;
   const config = SHAREABLE_RESOURCES[resourceType];
   const { data: record, error } = await supabase.from(config.table).select('*')
     .eq('tenant_id', tenantId).eq('id', resourceId).maybeSingle();
@@ -55,7 +55,6 @@ export async function authorizedFile(ticket) {
       if (itemError) throw new Error(`Vérification de l'appartenance du fichier au lot impossible : ${itemError.message}`);
       if (!item) return null;
     }
-    if (resourceType === 'procedure' && versionId !== record.current_version_id) return null;
     if (resourceType === 'document' && versionId) return null;
   } else {
     const { data: user, error: userError } = await supabase.from('users')
@@ -71,26 +70,17 @@ export async function authorizedFile(ticket) {
       ? await hasCategoryPermission({ tenantId, userId: user.id, userRole: user.role, categoryId: record.category_id, documentId: record.id, permission: 'view' })
       : await hasGenericCategoryPermission({ tenantId, userId: user.id, userRole: user.role, categoryId: record.category_id, permission: 'view' });
     if (!shared && !categoryAllowed) return null;
-    if (resourceType === 'procedure' && record.source_document_id) {
-      const { data: source, error: sourceError } = await supabase.from('documents').select('id, category_id')
-        .eq('tenant_id', tenantId).eq('id', record.source_document_id).maybeSingle();
-      if (sourceError) throw new Error(`Vérification du document source impossible : ${sourceError.message}`);
-      if (!source || permissions.get(`document:${source.id}`)?.can_export === false ||
-          !(await hasCategoryPermission({ tenantId, userId: user.id, userRole: user.role, categoryId: source.category_id, documentId: source.id, permission: 'view' }))) return null;
-    }
   }
   if (resourceType === 'document' && !versionId) {
     return { path: record.file_path, name: record.file_name, provider: record.storage_provider };
   }
-  const table = resourceType === 'document' ? 'document_versions' : resourceType === 'procedure' ? 'procedure_versions' : 'supplier_documents';
-  const parentKey = resourceType === 'document' ? 'document_id' : resourceType === 'procedure' ? 'procedure_id' : 'supplier_id';
+  const table = resourceType === 'document' ? 'document_versions' : 'supplier_documents';
+  const parentKey = resourceType === 'document' ? 'document_id' : 'supplier_id';
   const { data: version, error: versionError } = await supabase.from(table).select('*')
     .eq('tenant_id', tenantId).eq(parentKey, resourceId).eq('id', versionId).maybeSingle();
   if (versionError) throw new Error(`Lecture de la pièce jointe protégée impossible : ${versionError.message}`);
   if (!version) return null;
-  return resourceType === 'procedure'
-    ? { path: version.attachment_file_path, name: version.attachment_file_name, provider: version.attachment_storage_provider }
-    : { path: version.file_path, name: version.file_name, provider: version.storage_provider };
+  return { path: version.file_path, name: version.file_name, provider: version.storage_provider };
 }
 
 export async function streamProtectedFile(res, tenantId, file, disposition = 'attachment') {

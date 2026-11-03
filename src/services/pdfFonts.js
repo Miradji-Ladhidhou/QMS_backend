@@ -23,7 +23,7 @@ export const DEJAVU_SANS_BOLD = require.resolve('dejavu-fonts-ttf/ttf/DejaVuSans
 // 'Body-Bold' n'était jusqu'ici jamais enregistré : chaque générateur PDF ne pouvait
 // différencier un titre du texte courant que par la taille/couleur, jamais par la graisse —
 // d'où des documents qui se lisaient comme un bloc de texte continu malgré des libellés de
-// section censés s'en détacher (voir procedurePdf.js, qui l'utilise désormais).
+// section censés s'en détacher.
 export function useUnicodeFont(doc) {
   doc.registerFont('Body', DEJAVU_SANS);
   doc.registerFont('Body-Bold', DEJAVU_SANS_BOLD);

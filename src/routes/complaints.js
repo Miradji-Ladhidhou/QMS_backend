@@ -85,7 +85,7 @@ router.get('/:id', async (req, res) => {
 
 // GET /api/complaints/:id/pdf — fiche imprimable d'une réclamation (voir
 // services/complaintPdf.js). Chemin à deux segments : ne rentre jamais en conflit avec GET /:id
-// ci-dessus, même principe que /:id/pdf dans capas.js/pdca.js/procedures.js. Même règle de
+// ci-dessus, même principe que /:id/pdf dans capas.js/pdca.js. Même règle de
 // visibilité que GET /:id.
 router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const { data: complaint, error } = await supabase

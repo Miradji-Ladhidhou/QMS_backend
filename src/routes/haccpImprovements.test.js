@@ -652,30 +652,27 @@ describe('Revue annuelle et versions d’un plan', () => {
 });
 
 describe('Liens d’un plan et formations des opérateurs', () => {
-  it('rattache un fournisseur, une formation et une procédure ; doublon 409 ; autre tenant 404 ; member en lecture seule', async () => {
+  it('rattache un fournisseur et une formation ; doublon 409 ; autre tenant 404 ; member en lecture seule', async () => {
     const tenant = await newTenant({ extraUsers: [{ role: 'member' }] });
     const other = await newTenant();
     const { plan } = await buildPlan(tenant);
     const supplier = await request(app).post('/api/suppliers').set(auth(tenant.admin.token)).send({ name: 'Laiterie du Sud' });
     const training = await request(app).post('/api/trainings').set(auth(tenant.admin.token)).send({ title: 'Hygiène — chaîne du froid' });
-    const procedure = await request(app).post('/api/procedures').set(auth(tenant.admin.token)).send({ number: 'PR-HACCP', title: 'Relevé des températures' });
     const foreign = await request(app).post('/api/suppliers').set(auth(other.admin.token)).send({ name: 'Étranger' });
     const link = (kind, id, token = tenant.admin.token) => request(app).post(`/api/haccp/plans/${plan.id}/links`).set(auth(token)).send({ kind, ref_id: id });
 
     expect((await link('supplier', supplier.body.id)).status).toBe(201);
-    expect((await link('training', training.body.id)).status).toBe(201);
-    const last = await link('procedure', procedure.body.id);
+    const last = await link('training', training.body.id);
     expect(last.body.map((item) => [item.kind, item.title])).toEqual([
       ['supplier', 'Laiterie du Sud'],
       ['training', 'Hygiène — chaîne du froid'],
-      ['procedure', 'PR-HACCP — Relevé des températures'],
     ]);
     expect((await link('supplier', supplier.body.id)).status).toBe(409);
     expect((await link('supplier', foreign.body.id)).status).toBe(404);
     expect((await link('audit', supplier.body.id)).status).toBe(400);
     expect((await link('supplier', supplier.body.id, tenant.users[0].token)).status).toBe(403);
 
-    expect((await request(app).get(`/api/haccp/plans/${plan.id}/links`).set(auth(tenant.users[0].token))).body).toHaveLength(3);
+    expect((await request(app).get(`/api/haccp/plans/${plan.id}/links`).set(auth(tenant.users[0].token))).body).toHaveLength(2);
     expect((await request(app).get(`/api/haccp/plans/${plan.id}/links`).set(auth(other.admin.token))).status).toBe(404);
     expect((await request(app).get('/api/haccp/link-candidates?kind=supplier').set(auth(tenant.admin.token))).body).toEqual([{ id: supplier.body.id, title: 'Laiterie du Sud' }]);
     expect((await request(app).get('/api/haccp/link-candidates?kind=kpi').set(auth(tenant.admin.token))).status).toBe(400);

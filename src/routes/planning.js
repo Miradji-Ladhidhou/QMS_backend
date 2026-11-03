@@ -5,7 +5,6 @@ import { parseServiceIdsParam, fetchServiceUserIds, resolveServiceScope } from '
 import {
   fetchCapaItems,
   fetchDocumentItems,
-  fetchProcedureItems,
   fetchTrainingItems,
   fetchTaskItems,
   fetchAuditItems,
@@ -22,14 +21,14 @@ const router = Router();
 router.use(requireAuth);
 router.use(requireMenuVisible('planning'));
 
-// GET /api/planning — agrège CAPA/documents/procédures/formations/tâches/audits/
+// GET /api/planning — agrège CAPA/documents/formations/tâches/audits/
 // réclamations/risques en une liste chronologique unique, avec le même filtrage par rôle et
 // par service que /api/dashboard/stats :
 // - admin : tout le tenant par défaut, filtrable ponctuellement via ?service_id=
 // - manager : auto-scopé sur ses services par défaut, élargissement ponctuel possible
 // - member : uniquement ses propres éléments (CAPA/réclamations assignées, ses formations,
 //   ses tâches, les audits qu'il mène, les risques dont il est responsable) — jamais de
-//   documents ni de procédures (pas de porteur individuel, voir schema.sql) ni de vue
+//   documents (pas de porteur individuel, voir schema.sql) ni de vue
 //   tenant/service
 router.get('/', async (req, res) => {
   const requestedServiceIds = parseServiceIdsParam(req.query.service_id);
@@ -65,7 +64,6 @@ router.get('/', async (req, res) => {
     const [
       capaItems,
       documentItems,
-      procedureItems,
       trainingItems,
       taskItems,
       auditItems,
@@ -79,7 +77,6 @@ router.get('/', async (req, res) => {
     ] = await Promise.all([
       fetchCapaItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
       fetchDocumentItems(req.tenantId),
-      fetchProcedureItems(req.tenantId),
       fetchTrainingItems(req.tenantId, { userIds: trainingUserIds }),
       fetchTaskItems(req.tenantId, { userId: req.user.id, userRole: req.userRole }),
       fetchAuditItems(req.tenantId, { serviceIds, userId: req.user.id, userRole: req.userRole }),
@@ -95,7 +92,6 @@ router.get('/', async (req, res) => {
     items = [
       ...capaItems,
       ...documentItems,
-      ...procedureItems,
       ...trainingItems,
       ...taskItems,
       ...auditItems,

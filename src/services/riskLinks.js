@@ -8,14 +8,6 @@ export const RISK_LINK_KINDS = {
   audit: { column: 'audit_id', table: 'audits', select: 'id, title', title: (row) => row.title, href: (row) => `/audits/${row.id}`, label: 'Audit' },
   supplier: { column: 'supplier_id', table: 'suppliers', select: 'id, name', title: (row) => row.name, href: (row) => `/suppliers/${row.id}`, label: 'Fournisseur' },
   kpi: { column: 'kpi_id', table: 'kpis', select: 'id, name', title: (row) => row.name, href: () => '/kpis', label: 'KPI' },
-  procedure: {
-    column: 'procedure_id',
-    table: 'procedures',
-    select: 'id, number, title',
-    title: (row) => `${row.number} — ${row.title}`,
-    href: (row) => `/procedures/${row.id}`,
-    label: 'Procédure',
-  },
 };
 
 export const RISK_LINK_KIND_KEYS = Object.keys(RISK_LINK_KINDS);
@@ -49,7 +41,7 @@ export async function listLinkCandidates(tenantId, kind, viewer) {
 export async function fetchRiskLinks(tenantId, riskId, viewer) {
   const { data, error } = await supabase
     .from('risk_links')
-    .select('id, audit_id, supplier_id, kpi_id, procedure_id, created_at')
+    .select('id, audit_id, supplier_id, kpi_id, created_at')
     .eq('tenant_id', tenantId)
     .eq('risk_id', riskId)
     .order('created_at', { ascending: true });

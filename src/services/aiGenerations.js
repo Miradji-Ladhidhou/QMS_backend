@@ -98,13 +98,6 @@ export async function insertAiApplication(req, res, { table, endpoint, row, sele
   return inserted;
 }
 
-export async function linkAiGenerationJob(req, job) {
-  await updateGeneration(req, req.aiGenerationId, {
-    job_id: job.id, result: { id: job.id, subject: job.subject, status: job.status },
-  });
-  req.aiLinkedJobId = job.id;
-}
-
 // Called only after the route's validation and business permission checks.
 export async function prepareAiResult(req, res, { suffix = '', existingResult = null, onDelete } = {}) {
   const endpoint = `${req.baseUrl}${req.path}`.replace(/\/saved(?:\/read)?$/, '');
@@ -189,7 +182,7 @@ export async function prepareAiResult(req, res, { suffix = '', existingResult = 
   }
   const scope = aiScopeKey(endpoint, req.body, suffix);
   const { data: latest, error } = await scopeQuery(req, scope)
-    .in('status', endpoint.endsWith('/generate-full-draft') ? ['running', 'completed', 'deleted'] : ['completed', 'deleted'])
+    .in('status', ['completed', 'deleted'])
     .order('created_at', { ascending: false }).limit(1).maybeSingle();
   if (error) {
     console.error('[IA] lecture du résultat :', error.message);
@@ -197,24 +190,7 @@ export async function prepareAiResult(req, res, { suffix = '', existingResult = 
     return false;
   }
   let saved = latest && latest.status !== 'deleted' ? latest.result : (!latest ? existingResult : null);
-  if (saved?.subject && saved?.id && endpoint.endsWith('/generate-full-draft')) {
-    const { data: job, error: jobError } = await supabase.from('procedure_generation_jobs').select('*')
-      .eq('tenant_id', req.tenantId).eq('created_by', req.user.id).eq('id', saved.id).maybeSingle();
-    if (jobError) throw new Error(jobError.message);
-    if (job) saved = job;
-    if (job && latest.status === 'running' && ['completed', 'failed'].includes(job.status)) {
-      await updateGeneration(req, latest.id, { status: job.status, error: job.error });
-    }
-    if (job && ['pending', 'running'].includes(job.status) && !req.aiResultMode) {
-      res.status(202).json(job);
-      return false;
-    }
-  }
   if (req.aiResultMode === 'delete') {
-    if (endpoint.endsWith('/generate-full-draft') && ['pending', 'running'].includes(saved?.status)) {
-      res.status(409).json({ error: 'Attendez la fin de la génération avant de supprimer le résultat.' });
-      return false;
-    }
     const { data: running, error: runningError } = await scopeQuery(req, scope).eq('status', 'running').limit(1).maybeSingle();
     if (runningError) throw new Error(runningError.message);
     if (running) {
@@ -222,12 +198,6 @@ export async function prepareAiResult(req, res, { suffix = '', existingResult = 
       return false;
     }
     if (onDelete) await onDelete();
-    if (endpoint.endsWith('/generate-full-draft') && saved?.id) {
-      const { error: jobDeleteError } = await supabase.from('procedure_generation_jobs')
-        .update({ status: 'failed', result: null, error: 'Résultat supprimé.' })
-        .eq('tenant_id', req.tenantId).eq('created_by', req.user.id).eq('id', saved.id);
-      if (jobDeleteError) throw new Error(jobDeleteError.message);
-    }
     const { error: deleteError } = await supabase.from('ai_generations')
       .update({ status: 'deleted', result: null, updated_at: new Date().toISOString() })
       .eq('tenant_id', req.tenantId).eq('user_id', req.user.id).eq('scope_key', scope).neq('status', 'running');
@@ -240,7 +210,7 @@ export async function prepareAiResult(req, res, { suffix = '', existingResult = 
     return false;
   }
   if (req.aiResultMode === 'edit') {
-    if (!latest || latest.status !== 'completed' || endpoint.endsWith('/generate-full-draft')) {
+    if (!latest || latest.status !== 'completed') {
       res.status(409).json({ error: 'Aucun résultat modifiable disponible.' });
       return false;
     }
@@ -327,10 +297,6 @@ export async function prepareAiResult(req, res, { suffix = '', existingResult = 
   res.json = (body) => {
     if (responding) return res;
     responding = true;
-    if (req.aiQuotaDeferred && res.statusCode === 202 && req.aiLinkedJobId === body?.id) {
-      json(body);
-      return res;
-    }
     if (res.statusCode < 400 && !validAiResult(endpoint, body, req.body)) {
       res.status(503);
       body = { code: 'AI_INVALID_RESULT', error: "L'IA n'a pas produit un résultat complet et valide. Aucun résultat incomplet n'a été enregistré." };

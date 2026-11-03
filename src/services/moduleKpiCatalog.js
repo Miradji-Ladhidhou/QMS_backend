@@ -59,11 +59,11 @@ export const MODULE_KPI_DOMAINS = [
   },
   {
     key: 'documents',
-    label: 'Documents et procédures',
+    label: 'Documents',
     question: 'Notre documentation est-elle à jour ?',
-    modules: ['document', 'document_workflow', 'procedure'],
-    menu_keys: ['documents', 'procedures'],
-    essential: ['document_review_overdue_backlog', 'procedure_review_overdue_backlog', 'document_approval_pending_backlog'],
+    modules: ['document', 'document_workflow'],
+    menu_keys: ['documents'],
+    essential: ['document_review_overdue_backlog', 'document_approval_pending_backlog'],
   },
   {
     key: 'food_safety',

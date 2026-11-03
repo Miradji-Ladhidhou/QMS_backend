@@ -5,16 +5,16 @@ import { readResourceCatalog, validateResourceGroups } from './moduleResources.j
 const copyGroups = () => structuredClone(DEFAULT_RESOURCE_GROUPS);
 
 describe('Catalogue des liens utiles', () => {
-  it('couvre les 21 modules avec deux liens initiaux par rubrique', () => {
+  it('couvre les 20 modules avec deux liens initiaux par rubrique', () => {
     const expected = [
       'dashboard', 'planning', 'documents', 'capas', 'complaints', 'trainings', 'kpis',
       'qqoqccp', 'audits', 'risks', 'haccp', 'suppliers', 'management-reviews',
-      'procedures', 'accidents', 'pdca', 'nonconforming-outputs', 'customer-satisfaction',
+      'accidents', 'pdca', 'nonconforming-outputs', 'customer-satisfaction',
       'my-approvals', 'services', 'employees',
     ];
     const modules = DEFAULT_RESOURCE_GROUPS.flatMap((group) => group.modules);
     expect([...modules].sort()).toEqual(expected.sort());
-    expect(new Set(modules).size).toBe(21);
+    expect(new Set(modules).size).toBe(20);
     expect(DEFAULT_RESOURCE_GROUPS.every((group) => group.resources.length === 2)).toBe(true);
     expect(validateResourceGroups(copyGroups()).error).toBeUndefined();
   });

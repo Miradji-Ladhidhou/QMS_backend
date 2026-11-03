@@ -232,8 +232,8 @@ describe('Persistance durable des générations IA', () => {
       .toBe(aiScopeKey('/api/ai/risk-treatment-suggestion', { resourceId: id, title: 'Nouveau' }));
     expect(aiScopeKey('/api/ai/capa-suggestion', { context: 'A', details: 'B' }))
       .toBe(aiScopeKey('/api/ai/capa-suggestion', { details: 'B', context: 'A' }));
-    expect(aiScopeKey('/api/procedures/generate-draft', { title: 'Procédure' }))
-      .toBe(aiScopeKey('/api/procedures/generate-draft', { title: 'Procédure', process: '', optional: null }));
+    expect(aiScopeKey('/api/ai/capa-suggestion', { context: 'A' }))
+      .toBe(aiScopeKey('/api/ai/capa-suggestion', { context: 'A', details: '', optional: null }));
   });
 
   it('lit et modifie un résultat avec un contexte volumineux sans le placer dans une URL', async () => {

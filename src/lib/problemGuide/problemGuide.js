@@ -116,24 +116,16 @@ export const PROBLEM_GUIDE_MODULES = [
     ],
   },
   {
-    id: 'procedures',
-    label: 'Procédures',
-    path: '/procedures',
-    description: 'Consultez et gérez les procédures applicables.',
-    keywords: [
-      ['procédure', 110], ['procédures', 110], ['mode opératoire', 100],
-      ['instruction de travail', 100], ['procédure non respectée', 120],
-      ['non respect de la procédure', 120], ['respecter la procédure', 100],
-    ],
-  },
-  {
     id: 'documents',
     label: 'Documents',
     path: '/documents',
-    description: 'Retrouvez les documents et enregistrements associés à votre activité.',
+    description: 'Retrouvez les documents, procédures et enregistrements associés à votre activité.',
     keywords: [
       ['document qualité', 85], ['documents qualité', 85], ['enregistrement', 70],
       ['document associé', 70],
+      ['procédure', 110], ['procédures', 110], ['mode opératoire', 100],
+      ['instruction de travail', 100], ['procédure non respectée', 120],
+      ['non respect de la procédure', 120], ['respecter la procédure', 100],
     ],
   },
   {

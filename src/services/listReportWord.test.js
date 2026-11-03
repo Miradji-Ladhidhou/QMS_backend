@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import { buildListReportWord } from './listReportWord.js';
 
-// PNG 1×1 valide (même fixture que procedureWord.test.js).
+// PNG 1×1 valide.
 const TINY_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   'base64'

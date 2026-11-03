@@ -8,7 +8,7 @@ import { createHmac } from 'crypto';
 // vérifié le droit de consultation de SON fichier peut émettre un ticket pour le faire streamer
 // par le même proxy, sans dupliquer cette logique de signature/vérification (voir
 // routes/documents.js#verifyDownloadTicket, resté dans ce fichier puisque c'est lui qui sert la
-// route ; routes/procedures.js n'a besoin que de signer, jamais de vérifier).
+// route).
 const DOWNLOAD_TICKET_TTL_MS = 5 * 60 * 1000;
 
 export function getTicketSecret() {

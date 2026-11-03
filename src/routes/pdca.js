@@ -74,7 +74,7 @@ router.get('/:id', async (req, res) => {
 
 // GET /api/pdca/:id/pdf et /word — fiche imprimable d'un projet PDCA. Chemin
 // à deux segments : ne rentre jamais en conflit avec GET /:id ci-dessus, même principe que
-// /:id/pdf dans capas.js/procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id.
+// /:id/pdf dans capas.js/qqoqccp.js. Même règle de visibilité que GET /:id.
 router.get(['/:id/pdf', '/:id/word'], evidenceExportSelection, async (req, res) => {
   const { data: pdca, error } = await supabase
     .from('pdca_projects')

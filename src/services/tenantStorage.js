@@ -7,7 +7,7 @@ import { refreshAccessTokenIfNeeded } from './googleDrive.js';
 // seulement ces types "actifs" en les stockant comme flux binaire générique (toujours
 // téléchargé, jamais rendu/exécuté), sans bloquer l'upload lui-même. Même liste que
 // routes/documents.js#ACTIVE_CONTENT_TYPES, extraite ici pour être réutilisée par tout upload
-// de fichier tenant (voir routes/procedures.js — pièce jointe de version).
+// de fichier tenant.
 const ACTIVE_CONTENT_TYPES = new Set([
   'text/html',
   'application/xhtml+xml',
@@ -27,9 +27,8 @@ export function safeStorageContentType(mimetype) {
 // personne ne le remarque avant longtemps. err.driveConnectionError marque cette erreur pour
 // que l'appelant renvoie un message actionnable ("reconnectez-vous") plutôt qu'un 500 générique.
 // Extrait de routes/documents.js (module Documents) pour être réutilisé tel quel par tout
-// module qui a besoin d'uploader un fichier vers le Drive du tenant (voir routes/procedures.js
-// — pièce jointe de version), plutôt que de dupliquer cette logique sensible (rafraîchissement
-// de token, invariant "jamais de repli silencieux").
+// module qui a besoin d'uploader un fichier vers le Drive du tenant, plutôt que de dupliquer
+// cette logique sensible (rafraîchissement de token, invariant "jamais de repli silencieux").
 export async function resolveTenantStorageProvider(tenantId) {
   const { data: settings } = await supabase
     .from('tenant_storage_settings')

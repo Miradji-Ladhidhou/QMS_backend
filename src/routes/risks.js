@@ -120,7 +120,7 @@ router.get('/suggestions/kpis', requireRole('admin', 'manager'), async (req, res
   res.json(await fetchKpiRiskSuggestions(req.tenantId));
 });
 
-// GET /api/risks/link-candidates?kind= — audits / fournisseurs / KPI / procédures rattachables à un risque
+// GET /api/risks/link-candidates?kind= — audits / fournisseurs / KPI rattachables à un risque
 // (id + titre, ceux que l'utilisateur peut voir).
 router.get('/link-candidates', requireRole('admin', 'manager'), async (req, res) => {
   if (!RISK_LINK_KIND_KEYS.includes(req.query.kind)) return res.status(400).json({ error: 'Type de lien invalide.' });
@@ -628,7 +628,7 @@ router.get('/:id/assessments', async (req, res) => {
   }
 });
 
-// GET /api/risks/:id/links — audits, fournisseurs, KPI et procédures rattachés à ce risque.
+// GET /api/risks/:id/links — audits, fournisseurs et KPI rattachés à ce risque.
 router.get('/:id/links', async (req, res) => {
   if (!(await findVisibleRisk(req))) return res.status(404).json({ error: 'Risque introuvable.' });
   try {
@@ -638,7 +638,7 @@ router.get('/:id/links', async (req, res) => {
   }
 });
 
-// POST /api/risks/:id/links — rattache un audit, un fournisseur, un KPI ou une procédure de l'entreprise.
+// POST /api/risks/:id/links — rattache un audit, un fournisseur ou un KPI de l'entreprise.
 router.post(
   '/:id/links',
   requireRole('admin', 'manager'),

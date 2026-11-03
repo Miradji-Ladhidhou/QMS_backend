@@ -256,10 +256,7 @@ async function uploadDocumentFile({ storage, file, categoryId, supabasePath }) {
 router.get('/', async (req, res) => {
   const { data, error } = await supabase
     .from('documents')
-    .select(
-      `${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color, is_restricted), ` +
-        'source_procedure:procedures!procedures_source_document_id_fkey(id, number, title, status)'
-    )
+    .select(`${DOCUMENT_SELECT_COLUMNS}, category:document_categories(id, name, color, is_restricted)`)
     .eq('tenant_id', req.tenantId)
     .order('created_at', { ascending: false });
 
@@ -433,7 +430,7 @@ router.get('/import-template.xlsx', async (req, res) => {
   // lignes supplémentaires — voir POST /import.
   sheet.addRow({
     number: 'QP-001',
-    title: 'Exemple de procédure',
+    title: 'Exemple de document',
     description: "Ligne d'exemple — à modifier ou supprimer avant import.",
     category: categories?.[0]?.name || '',
     version: '2.0',

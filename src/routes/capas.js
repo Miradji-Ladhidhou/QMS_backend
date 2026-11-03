@@ -191,19 +191,6 @@ router.get('/:id', async (req, res) => {
     return res.status(500).json({ error: 'Impossible de récupérer les commentaires.' });
   }
 
-  // Traçabilité inverse : procedure_capa_links pointe de la procédure vers ce CAPA (créé et
-  // géré depuis routes/procedures.js#link-capa), même principe que linked_capas sur GET
-  // /api/documents/:id mais dans l'autre sens.
-  const { data: procedureLinks, error: procedureLinksError } = await supabase
-    .from('procedure_capa_links')
-    .select('procedure:procedures(id, number, title, status)')
-    .eq('tenant_id', req.tenantId)
-    .eq('capa_id', capa.id);
-
-  if (procedureLinksError) {
-    return res.status(500).json({ error: 'Impossible de récupérer les procédures liées.' });
-  }
-
   // Tâches de suivi créées depuis cette CAPA (voir POST /:id/create-task) — une CAPA peut se
   // décomposer en plusieurs tâches, contrairement aux liens *_id 1:1 : simple requête filtrée
   // par capa_id, pas de colonne réciproque sur capas (voir schema.sql).
@@ -225,7 +212,6 @@ router.get('/:id', async (req, res) => {
   res.json({
     ...capa,
     comments,
-    linked_procedures: procedureLinks.map((link) => link.procedure),
     linked_tasks: linkedTasks,
     is_private_to_me: capa.category?.owner_user_id === req.user.id,
   });
@@ -233,7 +219,7 @@ router.get('/:id', async (req, res) => {
 
 // GET /api/capas/:id/pdf — fiche imprimable d'une CAPA (voir services/capaPdf.js). Chemin à
 // deux segments : ne rentre jamais en conflit avec GET /:id ci-dessus, même principe que
-// /:id/pdf dans procedures.js/qqoqccp.js. Même règle de visibilité que GET /:id (catégorie
+// /:id/pdf dans qqoqccp.js. Même règle de visibilité que GET /:id (catégorie
 // restreinte ou partage individuel).
 router.get('/:id/pdf', evidenceExportSelection, async (req, res) => {
   const { data: capa, error } = await supabase.from('capas').select(CAPA_SELECT).eq('tenant_id', req.tenantId).eq('id', req.params.id).single();

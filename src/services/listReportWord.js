@@ -57,7 +57,7 @@ function metaParagraph(tenantName, generatedBy) {
 }
 
 // En-tête de section (répété sur chaque page) : logo à gauche, titre du document à droite —
-// un seul paragraphe avec tabulation droite, même principe que procedureWord.js. Sans logo (ou
+// un seul paragraphe avec tabulation droite. Sans logo (ou
 // logo illisible), on retombe sur le titre seul aligné à droite, comme avant.
 function headerParagraph(tenantLogo, title) {
   const titleRun = new TextRun({ text: title, size: 16, color: MUTED });
@@ -99,8 +99,8 @@ function dataTable(columns, rows) {
 
 // Générateur Word générique pour toutes les pages "liste" de l'application — même principe
 // d'entrée (columns/rows déjà formatées côté appelant) que buildListReportPdf/
-// buildListReportXlsx, voir routes/reports.js. Volontairement beaucoup plus simple que
-// procedureWord.js (pas de système de thèmes : ici une seule identité visuelle, cohérente avec
+// buildListReportXlsx, voir routes/reports.js. Volontairement simple (pas de système de
+// thèmes : ici une seule identité visuelle, cohérente avec
 // le PDF/Excel du même export) — et contrairement au PDF, une cellule Word s'ajuste en hauteur
 // nativement, pas besoin de logique de troncature/plafond.
 export async function buildListReportWord({ tenantName, tenantLogo, title, subtitle, generatedBy, columns, rows }) {

@@ -50,9 +50,9 @@ function drawFactsGrid(doc, facts) {
 }
 
 // audit : ligne audits jointe (lead/service/category) ; findings : constats (linked_capa résolue) ;
-// checklistItems : questions et réponses ; linkedProcedures : procédures liées ;
+// checklistItems : questions et réponses ;
 // qualificationText : phrase de qualification de l'auditeur (voir auditorQualification.js).
-export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checklistItems, linkedProcedures, qualificationText, evidence }) {
+export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checklistItems, qualificationText, evidence }) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ margin: PAGE_MARGIN, size: 'A4', bufferPages: true });
     const chunks = [];
@@ -137,13 +137,6 @@ export function buildAuditPdf({ tenantName, tenantLogo, audit, findings, checkli
           doc.fontSize(7).fillColor(MUTED).text(`${item.answerer.full_name} — ${formatDateTime(item.answered_at)}`, PAGE_MARGIN + 12, doc.y + 1, { width: CONTENT_WIDTH - 12 });
         }
         doc.moveDown(0.6);
-      });
-    }
-
-    if (linkedProcedures.length > 0) {
-      drawSectionTitle(doc, '5. Procédures liées');
-      linkedProcedures.forEach((procedure) => {
-        doc.fontSize(10).fillColor(INK).text(`• ${procedure.number} — ${procedure.title}`, PAGE_MARGIN, doc.y, { width: CONTENT_WIDTH });
       });
     }
 

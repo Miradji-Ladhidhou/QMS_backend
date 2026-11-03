@@ -7,6 +7,9 @@ import { INK, MUTED, RULE_LIGHT, drawLetterheadHeader } from './pdfTheme.js';
 const GOOD = '#10b981';
 const BAD = '#ef4444';
 const NEUTRAL = '#94a3b8';
+// Trait plein violet pour la ligne d'objectif — même couleur que l'écran (TARGET_COLOR,
+// Kpis.jsx) et l'export Excel (TARGET_HEX_COLOR, kpiHistoryXlsx.js).
+const TARGET = '#7C3AED';
 
 const PAGE_MARGIN = 50;
 const PAGE_WIDTH = 595.28; // A4
@@ -158,12 +161,11 @@ function drawTrendChart(doc, { x, y, width, height, records, target, unit }) {
 
   if (target !== null && target !== undefined) {
     const targetY = scaleY(target);
-    doc.strokeColor(MUTED).lineWidth(0.5).dash(2, { space: 2 });
+    doc.strokeColor(TARGET).lineWidth(1);
     doc
       .moveTo(plotLeft, targetY)
       .lineTo(plotLeft + plotWidth, targetY)
       .stroke();
-    doc.undash();
   }
 
   doc.strokeColor(INK).lineWidth(1.3);
@@ -247,16 +249,15 @@ function drawMultiSeriesChart(doc, { x, y, width, height, seriesList, targets, u
   doc.text(`${maxValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop - 2, { width: 32, align: 'right', lineBreak: false });
   doc.text(`${minValue.toFixed(1)} ${unit || ''}`.trim(), x, plotTop + plotHeight - 4, { width: 32, align: 'right', lineBreak: false });
 
-  // Une ligne d'objectif par cible distincte : grise pour celle du KPI, à la couleur de la série
-  // pour un objectif propre à une série (plusieurs séries n'ont pas forcément le même).
+  // Une ligne d'objectif par cible distincte : violette pour celle du KPI, à la couleur de la
+  // série pour un objectif propre à une série (plusieurs séries n'ont pas forcément le même).
   targets.forEach(({ value, color }) => {
     const targetY = scaleY(value);
-    doc.strokeColor(color || MUTED).lineWidth(0.5).dash(2, { space: 2 });
+    doc.strokeColor(color || TARGET).lineWidth(1);
     doc
       .moveTo(plotLeft, targetY)
       .lineTo(plotLeft + plotWidth, targetY)
       .stroke();
-    doc.undash();
   });
 
   seriesList.forEach((series) => {

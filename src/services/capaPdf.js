@@ -29,7 +29,7 @@ function formatDateTime(dateStr) {
   return dateStr ? new Date(dateStr).toLocaleString('fr-FR') : '—';
 }
 
-// Même esprit que drawImportantBox de procedurePdf.js — réservé à une information déjà
+// Même esprit que les encadrés "important" des autres PDF — réservé à une information déjà
 // affichée à l'écran (bannière "En retard" sur CapaDetail.jsx), jamais un contenu inventé.
 function drawImportantBox(doc, { color, background, label, text }) {
   doc.moveDown(0.3);
@@ -150,7 +150,7 @@ export function buildCapaPdf({ tenantName, tenantLogo, capa, evidence }) {
 
     appendEvidenceToPdf(doc, evidence, { marginX: PAGE_MARGIN, contentWidth: CONTENT_WIDTH });
 
-    // Pied de page numéroté — même construction que procedurePdf.js/qqoqccpPdf.js.
+    // Pied de page numéroté — même construction que qqoqccpPdf.js.
     const range = doc.bufferedPageRange();
     for (let i = range.start; i < range.start + range.count; i++) {
       doc.switchToPage(i);

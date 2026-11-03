@@ -83,7 +83,7 @@ export function reviewState(reviewDate, windowDays, today = todayIso()) {
 }
 
 // Jalons de rappel de revue : 7 jours avant, le jour même, puis chaque semaine de retard (+7, +14…).
-// Un jalon = un jour précis, jamais répété le lendemain (même principe que les procédures à réviser).
+// Un jalon = un jour précis, jamais répété le lendemain (même principe que les documents à réviser).
 export const RISK_REVIEW_REMINDER_LEAD_DAYS = 7;
 
 export function isReminderMilestone(daysRemaining) {

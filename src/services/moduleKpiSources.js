@@ -508,23 +508,6 @@ export const MODULE_KPI_SOURCES = {
     fetchRows: buildManagementReviewActionRows,
   },
 
-  // Procédures — cycle de revue et blocages en relecture.
-  procedure: {
-    table: 'procedures',
-    label: 'Procédures',
-    async fetchRows(tenantId) {
-      const today = todayStr();
-      const now = new Date();
-      const rows = await selectAll('procedures', 'id, status, next_review_date, updated_at', tenantId);
-      return rowsFrom(rows, (r) => ({
-        _review_overdue: bool01(r.status !== 'obsolete' && r.next_review_date && r.next_review_date < today),
-        // Aucune modification depuis 30 jours sur une procédure en relecture — proxy de blocage
-        // (même principe que PDCA _stalled).
-        _stuck_in_review: bool01(r.status === 'in_review' && daysBetween(r.updated_at, now) > 30),
-      }));
-    },
-  },
-
   // Circuits d'approbation documentaire (§7.5.3 — maîtrise avant diffusion).
   document_workflow: {
     table: 'document_workflows',
@@ -1417,30 +1400,6 @@ export const MODULE_KPI_PRESETS = [
     target_direction: 'max',
     frequency: 'monthly',
     recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_unresolved', operator: 'equals', value: '1' }] },
-  },
-
-  // --- Procédures ---
-  {
-    id: 'procedure_review_overdue_backlog',
-    module: 'procedure',
-    label: 'Procédures dont la revue est en retard',
-    description: 'Nombre de procédures (hors obsolètes) dont la date de prochaine revue est dépassée.',
-    unit: 'procédures',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_review_overdue', operator: 'equals', value: '1' }] },
-  },
-  {
-    id: 'procedure_stuck_in_review_backlog',
-    module: 'procedure',
-    label: 'Procédures bloquées en relecture',
-    description: 'Nombre de procédures en statut « en relecture » sans modification depuis plus de 30 jours.',
-    unit: 'procédures',
-    target: 0,
-    target_direction: 'max',
-    frequency: 'monthly',
-    recipe: { calc_type: 'count', period_column: '__snapshot__', filters: [{ column: '_stuck_in_review', operator: 'equals', value: '1' }] },
   },
 
   // --- Approbations documentaires ---

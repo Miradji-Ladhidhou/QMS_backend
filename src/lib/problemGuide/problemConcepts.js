@@ -86,7 +86,7 @@ export const PROBLEM_CONCEPTS = [
     modules: [
       { id: 'trainings', score: 120, stage: 'Former' },
       { id: 'employees', score: 75, stage: 'Suivre' },
-      { id: 'procedures', score: 85, requires: ['procédure', 'procédures', 'instruction', 'mode opératoire'], stage: 'Consulter' },
+      { id: 'documents', score: 85, requires: ['procédure', 'procédures', 'instruction', 'mode opératoire'], stage: 'Consulter' },
     ],
   },
   {
@@ -96,7 +96,7 @@ export const PROBLEM_CONCEPTS = [
     ],
     modules: [
       { id: 'nonconforming-outputs', score: 110, stage: 'Signaler' },
-      { id: 'procedures', score: 100, stage: 'Consulter' },
+      { id: 'documents', score: 100, stage: 'Consulter' },
       { id: 'capas', score: 70, stage: 'Corriger' },
     ],
   },

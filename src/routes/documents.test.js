@@ -504,7 +504,7 @@ describe('GET /api/documents/:id/preview-url', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .field('number', 'DOC-PREVIEW-001')
       .field('title', 'Procédure PDF')
-      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure.pdf');
+      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'document.pdf');
     expect(doc.status).toBe(201);
 
     const res = await request(app)
@@ -523,7 +523,7 @@ describe('GET /api/documents/:id/preview-url', () => {
       .set('Authorization', `Bearer ${tenant.admin.token}`)
       .field('number', 'DOC-PREVIEW-002')
       .field('title', 'Procédure Word')
-      .attach('file', Buffer.from('contenu factice'), 'procedure.docx');
+      .attach('file', Buffer.from('contenu factice'), 'document.docx');
     expect(doc.status).toBe(201);
 
     const res = await request(app)
@@ -566,7 +566,7 @@ describe('GET /api/documents/:id/preview-url', () => {
       .field('number', 'DOC-PREVIEW-004')
       .field('title', 'Procédure restreinte')
       .field('category_id', category.id)
-      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'procedure.pdf');
+      .attach('file', Buffer.from('%PDF-1.4 contenu factice'), 'document.pdf');
     expect(doc.status).toBe(201);
 
     const res = await request(app)

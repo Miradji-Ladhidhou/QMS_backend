@@ -2,18 +2,10 @@ import { supabase } from './supabase.js';
 import { filterViewableByCategory } from '../middleware/genericCategoryPermissions.js';
 
 // Ce qu'un plan HACCP peut référencer : le fournisseur des matières premières, la formation que doivent
-// avoir suivie les opérateurs, la procédure qui décrit la surveillance. Voir riskLinks.js (même mécanique).
+// avoir suivie les opérateurs. Voir riskLinks.js (même mécanique).
 export const HACCP_LINK_KINDS = {
   supplier: { column: 'supplier_id', table: 'suppliers', select: 'id, name', title: (row) => row.name, href: (row) => `/suppliers/${row.id}`, label: 'Fournisseur' },
   training: { column: 'training_id', table: 'trainings', select: 'id, title', title: (row) => row.title, href: () => '/trainings', label: 'Formation requise' },
-  procedure: {
-    column: 'procedure_id',
-    table: 'procedures',
-    select: 'id, number, title',
-    title: (row) => `${row.number} — ${row.title}`,
-    href: (row) => `/procedures/${row.id}`,
-    label: 'Procédure',
-  },
 };
 export const HACCP_LINK_KIND_KEYS = Object.keys(HACCP_LINK_KINDS);
 
@@ -40,7 +32,7 @@ export async function listHaccpLinkCandidates(tenantId, kind, viewer) {
 export async function fetchHaccpLinks(tenantId, planId, viewer) {
   const { data, error } = await supabase
     .from('haccp_plan_links')
-    .select('id, supplier_id, training_id, procedure_id, created_at')
+    .select('id, supplier_id, training_id, created_at')
     .eq('tenant_id', tenantId)
     .eq('plan_id', planId)
     .order('created_at', { ascending: true });

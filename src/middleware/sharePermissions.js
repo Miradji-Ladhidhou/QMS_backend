@@ -5,7 +5,7 @@ import { getSharePermissions } from '../services/sharePermissions.js';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const SHARE_ROUTE_TYPES = {
   documents: 'document', capas: 'capa', complaints: 'complaint', qqoqccp: 'qqoqccp',
-  procedures: 'procedure', accidents: 'accident', pdca: 'pdca', audits: 'audit',
+  accidents: 'accident', pdca: 'pdca', audits: 'audit',
   'management-reviews': 'management_review', risks: 'risk', haccp: 'haccp_plan',
   suppliers: 'supplier', 'nonconforming-outputs': 'nonconforming_output',
   'customer-satisfaction': 'customer_satisfaction', employees: 'employee',
@@ -78,8 +78,7 @@ export async function enforceSharePermissions(req, res) {
   const access = target.id && target.type ? permissions.get(`${target.type}:${target.id}`) : null;
   req.shareAccess = access;
   req.shareTarget = target;
-  const exporting = (EXPORT_PATH.test(req.originalUrl.split('?')[0]) &&
-    !(target.type === 'procedure' && ['POST', 'DELETE'].includes(req.method) && target.parts.at(-1) === 'attachment')) ||
+  const exporting = EXPORT_PATH.test(req.originalUrl.split('?')[0]) ||
     ['reports', 'drive'].includes(target.module) || req.query.format === 'xlsx' || req.query.format === 'pdf';
   const relevant = target.id && target.type ? (access ? [access] : []) : [...permissions].filter(([key]) =>
     !target.type || key.startsWith(`${target.type}:`)
@@ -106,11 +105,7 @@ export async function enforceSharePermissions(req, res) {
      (target.type === 'supplier' && target.parts[2] === 'documents' &&
        ((req.method === 'POST' && target.parts.length === 3) ||
         (req.method === 'PATCH' && target.parts.length === 4) ||
-        (req.method === 'PUT' && target.parts[4] === 'file' && target.parts.length === 5))) ||
-     (target.type === 'procedure' && target.parts[2] === 'versions' &&
-       ((req.method === 'POST' && target.parts.length === 3) ||
-        (req.method === 'PUT' && target.parts.length === 4) ||
-        (req.method === 'POST' && target.parts.at(-1) === 'attachment'))));
+        (req.method === 'PUT' && target.parts[4] === 'file' && target.parts.length === 5))));
   if (req.sharedEditAllowed && req.userRole === 'member' &&
       ['status', 'effectiveness_verified', 'validated_at', 'validated_by', 'approved_at', 'approved_by', 'closed_at', 'category_id', 'assigned_to', 'created_by'].some((field) => Object.hasOwn(req.body || {}, field))) {
     res.status(403).json({ error: 'Le droit de modification ne permet pas de valider, réassigner ou administrer cet élément.' });

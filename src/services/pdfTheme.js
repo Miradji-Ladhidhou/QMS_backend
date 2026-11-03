@@ -1,5 +1,5 @@
 // Palette et en-tête partagés par tous les documents PDF générés par l'application
-// (listReportPdf.js, qqoqccpPdf.js, capaPdf.js, procedurePdf.js, certificatePdf.js,
+// (listReportPdf.js, qqoqccpPdf.js, capaPdf.js, certificatePdf.js,
 // haccpAuditPdf.js, qualityPolicyPdf.js, skillMatrixPdf.js, attendanceSheetPdf.js,
 // trainingCertificatePdf.js — voir aussi listReportWord.js pour l'équivalent Word).
 //
@@ -34,14 +34,14 @@ function formatDateTime(dateStr) {
   return new Date(dateStr).toLocaleString('fr-FR');
 }
 
-// Filet de sécurité : un titre/sous-titre pathologiquement long (ex. un sujet de procédure
+// Filet de sécurité : un titre/sous-titre pathologiquement long (ex. un long sujet
 // collé sans être résumé par l'IA — bug réel constaté, un document réduit à un en-tête a
 // atteint 444 pages) ne doit jamais pouvoir gonfler l'en-tête au point de repousser tout le
 // contenu hors de la page. Le problème se reproduit en boucle sur CHAQUE nouvelle page,
 // puisque l'en-tête est redessiné à chaque doc.on('pageAdded', ...) chez tous les appelants —
 // une seule chaîne trop longue peut donc, à elle seule, faire exploser le nombre de pages de
-// tout le document. Le vrai correctif (mieux piloter la longueur du texte à la source, voir
-// NewProcedureFullDraftModal.jsx côté frontend) vit ailleurs ; ceci protège TOUS les appelants
+// tout le document. Le vrai correctif (mieux piloter la longueur du texte à la source) vit
+// ailleurs ; ceci protège TOUS les appelants
 // de pdfTheme.js, présents et futurs, quelle que soit la cause en amont.
 const MAX_HEADER_TEXT_LENGTH = 200;
 // Plafond dur sur la hauteur totale de l'en-tête, en plus de la troncature ci-dessus — en
@@ -60,7 +60,7 @@ function truncateForHeader(text) {
 // filet fin en bas) et positionne doc.y juste après. Hauteur calculée depuis le texte réel
 // (titre parfois long/multi-lignes, ex. numéro + titre d'une CAPA) plutôt que fixée, pour ne
 // jamais chevaucher le contenu qui suit — même principe que l'ancien bandeau à hauteur
-// variable de capaPdf.js/procedurePdf.js, désormais partagé par tous.
+// variable de capaPdf.js, désormais partagé par tous.
 //
 // { pageWidth, marginX, tenantName, tenantLogo, title, subtitle, generatedBy } — subtitle
 // optionnel (texte libre affiché sous le nom d'entreprise, ex. le sous-titre d'une liste

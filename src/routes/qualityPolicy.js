@@ -45,7 +45,7 @@ router.get('/', async (req, res) => {
   const current = versions[0] || null;
 
   // Accusé de lecture de l'utilisateur courant POUR LA VERSION EN VIGUEUR uniquement — même
-  // principe que my_acknowledgment sur GET /api/procedures/:id : une republication change
+  // principe que my_acknowledgment sur les accusés de lecture versionnés : une republication change
   // quelle version est "current", ce qui rend naturellement cette valeur null pour tout le
   // monde tant que personne n'a encore accusé réception de la nouvelle.
   let myAcknowledgment = null;
@@ -106,8 +106,8 @@ router.post(
   }
 );
 
-// POST /api/quality-policy/acknowledge — accuse réception de la version EN VIGUEUR, même
-// principe que POST /procedures/:id/acknowledge : une republication remet tout le monde à "pas
+// POST /api/quality-policy/acknowledge — accuse réception de la version EN VIGUEUR :
+// une republication remet tout le monde à "pas
 // encore lu" du simple fait que quality_policy_version_id change, sans purge ni job. Idempotent
 // (upsert) : un second appel sur la même version ne fait rien de plus.
 router.post('/acknowledge', async (req, res) => {

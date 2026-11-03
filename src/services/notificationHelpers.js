@@ -7,7 +7,6 @@ const DEFAULT_PREFERENCES = {
   email_capa_overdue: true,
   email_training_renewal: true,
   email_approval_requests: true,
-  email_procedure_review: true,
   email_risk_review: true,
   email_haccp_alerts: true,
   email_supplier_alerts: true,

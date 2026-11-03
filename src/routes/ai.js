@@ -30,7 +30,6 @@ router.get('/drafts', async (req, res) => {
   const modules = {
     '/ai/capa-suggestion': 'capas',
     '/risks/service-suggestion': 'risks',
-    '/procedures/generate-draft': 'procedures',
   };
   const module = Object.hasOwn(modules, req.query.endpoint) ? modules[req.query.endpoint] : null;
   if (!module) return res.status(400).json({ error: 'Type de brouillon IA invalide.' });

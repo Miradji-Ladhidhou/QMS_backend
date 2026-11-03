@@ -16,7 +16,7 @@ import guestBundlesRouter from './guestBundles.js';
 import { getSharePermissions } from '../services/sharePermissions.js';
 import { readSharedResource } from './guestShares.js';
 import { getVisibleMenuKeys } from '../middleware/menuVisibility.js';
-import { selectionFields, selectionItem, SHAREABLE_RESOURCE_LABELS, filterProcedureSources, filterShareableRecords, readGuestBundleItems } from '../services/guestShareSelection.js';
+import { selectionFields, selectionItem, SHAREABLE_RESOURCE_LABELS, filterShareableRecords, readGuestBundleItems } from '../services/guestShareSelection.js';
 import { resolveSharedTarget } from '../middleware/sharePermissions.js';
 
 const router = Router();
@@ -59,8 +59,7 @@ router.get('/received', async (req, res) => {
       const { data, error } = await supabase.from(config.table).select(selectionFields(type))
         .eq('tenant_id', req.tenantId).in('id', ids.slice(offset, offset + 100));
       if (error) throw new Error(`Lecture des partages reçus impossible : ${error.message}`);
-      const rows = type === 'procedure' ? await filterProcedureSources(req, data) : data;
-      items.push(...rows.map((row) => ({
+      items.push(...data.map((row) => ({
         ...selectionItem(type, row), type_label: SHAREABLE_RESOURCE_LABELS[type],
         permissions: permissions.get(`${type}:${row.id}`),
       })));
@@ -78,12 +77,6 @@ router.get(['/received/:type/:id', '/received/:type/:id/export'], async (req, re
   const access = permissions.get(`${type}:${id}`);
   const visible = await getVisibleMenuKeys({ tenantId: req.tenantId, userId: req.user.id, userRole: 'admin' });
   if (!access?.shared || !visible.has(SHAREABLE_RESOURCES[type].module)) return res.status(404).json({ error: 'Partage introuvable.' });
-  if (type === 'procedure') {
-    const { data: procedure, error } = await supabase.from('procedures').select('id, source_document_id')
-      .eq('tenant_id', req.tenantId).eq('id', id).maybeSingle();
-    if (error) throw new Error(`Vérification de la procédure reçue impossible : ${error.message}`);
-    if (!procedure || !(await filterProcedureSources(req, [procedure])).length) return res.status(404).json({ error: 'Procédure inaccessible.' });
-  }
   const resource = await readSharedResource({ tenant_id: req.tenantId, resource_type: type, resource_id: id });
   if (!resource) return res.status(404).json({ error: 'Élément supprimé.' });
   if (req.path.endsWith('/export')) {

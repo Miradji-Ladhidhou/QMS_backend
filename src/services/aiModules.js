@@ -1,4 +1,4 @@
-export const AI_MODULES = ['capas', 'qqoqccp', 'pdca', 'risks', 'haccp', 'audits', 'management_reviews', 'procedures', 'kpis', 'problem_guide'];
+export const AI_MODULES = ['capas', 'qqoqccp', 'pdca', 'risks', 'haccp', 'audits', 'management_reviews', 'kpis', 'problem_guide'];
 
 const ACTIONS = [
   ['problem_guide', /^\/api\/ai\/problem-guide-search$/],
@@ -10,7 +10,6 @@ const ACTIONS = [
   ['audits', /^\/api\/audits\/[^/]+\/checklist\/generate$/],
   ['management_reviews', /^\/api\/management-reviews\/[^/]+\/ai-draft$/],
   ['kpis', /^\/api\/kpi-imports\/[^/]+\/ai-suggestion$/],
-  ['procedures', /^\/api\/procedures\/(?:generate-draft|generate-full-draft|generate-draft-from-qqoqccp|[^/]+\/suggest-revision-from-capa|[^/]+\/versions\/[^/]+\/(?:check-compliance|compliance-fix|compare|distribution-sheet))$/],
 ];
 
 export function aiModuleForRequest(req) {

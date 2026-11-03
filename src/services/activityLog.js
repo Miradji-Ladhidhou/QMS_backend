@@ -32,7 +32,7 @@ export async function logActivity({ tenantId, actorId, actorEmail, action, entit
 }
 
 // 3 enveloppes pour le geste create/update/delete, qui couvre la quasi-totalité des routes de
-// l'app — action dérivée automatiquement de `entity` (chaîne libre, ex. 'capa', 'procedure',
+// l'app — action dérivée automatiquement de `entity` (chaîne libre, ex. 'capa', 'document',
 // jamais une constante nommée à la main par module — voir le plan : ~30 modules rendrait
 // l'approche "une fonction par entité" ingérable). tenantId/actorId/actorEmail viennent
 // systématiquement de req.tenantId/req.user (déjà peuplés par requireAuth) — jamais du

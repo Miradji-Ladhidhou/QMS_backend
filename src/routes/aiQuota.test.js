@@ -210,9 +210,7 @@ describe('API de quota IA', () => {
       '/ai/haccp-significance-suggestion', '/ai/haccp-ccp-suggestion', '/risks/service-suggestion',
       '/qqoqccp/example/generate', '/pdca/example/generate', '/haccp/steps/example/hazard-suggestion',
       '/audits/example/checklist/generate', '/management-reviews/example/ai-draft',
-      '/kpi-imports/example/ai-suggestion', '/procedures/generate-draft', '/procedures/generate-full-draft',
-      '/procedures/generate-draft-from-qqoqccp', '/procedures/example/suggest-revision-from-capa',
-      ...['check-compliance', 'compliance-fix', 'compare', 'distribution-sheet'].map((action) => `/procedures/example/versions/example/${action}`),
+      '/kpi-imports/example/ai-suggestion',
     ];
     for (const path of paths) {
       const response = await request(app).post(`/api${path}`).set('Authorization', `Bearer ${tenant.admin.token}`).send({});
@@ -220,7 +218,6 @@ describe('API de quota IA', () => {
       expect(isAiActionRequest({ method: 'POST', baseUrl: '/api', path })).toBe(true);
     }
     expect(isAiActionRequest({ method: 'GET', baseUrl: '/api/ai-quota', path: '/' })).toBe(false);
-    expect(isAiActionRequest({ method: 'POST', baseUrl: '/api/procedures', path: '/example/versions' })).toBe(false);
     const blocked = await request(app).post('/api/ai/capa-suggestion')
       .set('Authorization', `Bearer ${tenant.admin.token}`).send({ context: 'Contexte valide de test qualité.' });
     expect(blocked.status).toBe(429);
