@@ -1,0 +1,1 @@
+alter table document_registers add column if not exists folder text;
