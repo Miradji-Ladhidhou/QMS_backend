@@ -4,6 +4,7 @@ import { supabase } from '../services/supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { requireModuleForWrites } from '../middleware/menuVisibility.js';
 import { filterViewableByCategory, requireValidCategoryId } from '../middleware/genericCategoryPermissions.js';
+import { sendInviteEmail, ASSIGNABLE_ROLES } from './users.js';
 
 const router = Router();
 
@@ -13,11 +14,12 @@ const EMPLOYEE_SELECT =
 // Toutes les tables qui référencent une entrée personnel (voir schema.sql) — le nom de colonne
 // varie selon le module, contrairement à service_id sur services.js. training_records est en
 // on delete cascade (l'historique de formation disparaîtrait sans ce garde-fou) ; les deux
-// autres en on delete set null (la trace serait juste détachée en silence).
+// autres en on delete set null (la trace serait juste détachée en silence). userColumn est la
+// colonne jumelle "personne avec compte" utilisée par la conversion en compte utilisateur.
 const EMPLOYEE_REFERENCES = [
-  { table: 'training_records', column: 'employee_id', singular: 'réalisation de formation', plural: 'réalisations de formation' },
-  { table: 'accidents', column: 'injured_employee_id', singular: 'accident du travail', plural: 'accidents du travail' },
-  { table: 'tasks', column: 'assigned_employee_id', singular: 'tâche assignée', plural: 'tâches assignées' },
+  { table: 'training_records', column: 'employee_id', userColumn: 'user_id', singular: 'réalisation de formation', plural: 'réalisations de formation' },
+  { table: 'accidents', column: 'injured_employee_id', userColumn: 'injured_user_id', singular: 'accident du travail', plural: 'accidents du travail' },
+  { table: 'tasks', column: 'assigned_employee_id', userColumn: 'assigned_to', singular: 'tâche assignée', plural: 'tâches assignées' },
 ];
 
 function formatFrenchList(items) {
@@ -180,5 +182,108 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
 
   res.status(204).end();
 });
+
+// POST /api/employees/:id/convert — transforme une entrée personnel sans compte en compte
+// utilisateur invité par email (admin uniquement). Toutes les données rattachées (réalisations
+// de formation — et donc leurs tentatives de quiz liées par record_id —, accidents, tâches)
+// sont re-rattachées au nouveau compte avant la suppression de l'entrée personnel : rien
+// n'est perdu. En cas d'échec de migration, l'entrée personnel est conservée telle quelle.
+router.post(
+  '/:id/convert',
+  requireRole('admin'),
+  [
+    body('email').isEmail().withMessage('Adresse email invalide.'),
+    body('role').optional({ values: 'falsy' }).isIn(ASSIGNABLE_ROLES).withMessage('Rôle invalide.'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: 'Données invalides.', details: errors.array() });
+    }
+
+    const { data: employee, error: employeeError } = await supabase
+      .from('employees')
+      .select('id, full_name, job_title, training_exempt, training_exempt_reason')
+      .eq('tenant_id', req.tenantId)
+      .eq('id', req.params.id)
+      .single();
+
+    if (employeeError || !employee) {
+      return res.status(404).json({ error: 'Entrée personnel introuvable.' });
+    }
+
+    const email = req.body.email;
+    const role = req.body.role || 'member';
+
+    let inviteResult;
+    try {
+      inviteResult = await sendInviteEmail({ email, fullName: employee.full_name, tenantId: req.tenantId });
+    } catch (err) {
+      console.error("Échec de l'envoi de l'email d'invitation :", err);
+      return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+    }
+
+    if (inviteResult.error) {
+      if (inviteResult.error.code === 'email_exists' || /already (been )?registered|already exists/i.test(inviteResult.error.message)) {
+        return res.status(409).json({ error: 'Un compte existe déjà avec cet email.' });
+      }
+      return res.status(500).json({ error: "Erreur lors de l'envoi de l'invitation." });
+    }
+
+    const userId = inviteResult.userId;
+
+    // Même profil que /api/users/invite, enrichi des champs portés par l'entrée personnel
+    // (poste, dispense de formation) pour que la conversion soit sans perte.
+    const { error: profileError } = await supabase.from('users').insert({
+      id: userId,
+      tenant_id: req.tenantId,
+      full_name: employee.full_name,
+      role,
+      job_title: employee.job_title || null,
+      training_exempt: employee.training_exempt || false,
+      training_exempt_reason: employee.training_exempt_reason || null,
+    });
+
+    if (profileError) {
+      await supabase.auth.admin.deleteUser(userId);
+      return res.status(500).json({ error: 'Erreur lors de la création du profil utilisateur.' });
+    }
+
+    // Bascule employee_id → colonne user jumelle, table par table. Si une migration échoue,
+    // on s'arrête : l'entrée personnel est conservée, les données déjà migrées pointent vers
+    // le nouveau compte — rien n'est supprimé dans tous les cas.
+    const migrated = {};
+    for (const { table, column, userColumn } of EMPLOYEE_REFERENCES) {
+      const { data: rows, error: migrateError } = await supabase
+        .from(table)
+        .update({ [userColumn]: userId, [column]: null })
+        .eq('tenant_id', req.tenantId)
+        .eq(column, employee.id)
+        .select('id');
+
+      if (migrateError) {
+        console.error(`Échec de la migration ${table} lors de la conversion :`, migrateError);
+        return res.status(500).json({
+          error: "Le compte a été créé mais le transfert des données n'a pas pu aboutir. L'entrée personnel a été conservée.",
+        });
+      }
+      migrated[table] = rows ? rows.length : 0;
+    }
+
+    const { error: deleteError } = await supabase
+      .from('employees')
+      .delete()
+      .eq('tenant_id', req.tenantId)
+      .eq('id', employee.id);
+
+    if (deleteError) {
+      return res.status(500).json({
+        error: "Le compte a été créé et les données transférées, mais l'entrée personnel n'a pas pu être supprimée.",
+      });
+    }
+
+    res.status(201).json({ id: userId, email, full_name: employee.full_name, role, migrated });
+  }
+);
 
 export default router;

@@ -340,6 +340,49 @@ router.get('/upcoming-renewals', async (req, res) => {
   res.json(result);
 });
 
+// GET /api/trainings/:id — une formation seule, même forme qu'un élément de GET /trainings
+// (réalisations avec session/personne, catégorie, résumé du QCM, signature) : consommée par la
+// page dédiée /trainings/:id côté frontend (TrainingDetail.jsx), qui ne doit pas recharger la
+// liste entière pour afficher une seule formation. Enregistrée après /matrix, /matrix/pdf et
+// /upcoming-renewals pour ne pas capturer ces chemins statiques comme un id.
+router.get('/:id', async (req, res) => {
+  const { data, error } = await supabase
+    .from('trainings')
+    .select(
+      '*, records:training_records(id, user_id, employee_id, completed_at, next_due_date, certificate_url, evaluation_result, evaluation_notes, session:training_sessions(id, session_date), user:users(id, full_name), employee:employees(id, full_name)), category:categories(id, name, color, is_restricted, owner_user_id)'
+    )
+    .eq('tenant_id', req.tenantId)
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ error: 'Formation introuvable.' });
+  }
+
+  // Même règle de visibilité que la liste : une formation d'une catégorie restreinte sans
+  // permission répond 404 (ne pas révéler son existence), jamais son contenu.
+  if (req.userRole !== 'admin') {
+    const viewable = await filterViewableByCategory({ userId: req.user.id, userRole: req.userRole, items: [data] });
+    if (viewable.length === 0) {
+      return res.status(404).json({ error: 'Formation introuvable.' });
+    }
+  }
+
+  // quiz : uniquement le nombre de questions et le seuil, jamais le contenu (mêmes raisons que
+  // GET /trainings) ; has_instructor_signature : seulement l'existence, jamais l'image.
+  const [{ data: quiz }, { data: signature }] = await Promise.all([
+    supabase.from('training_quizzes').select('pass_threshold, questions').eq('tenant_id', req.tenantId).eq('training_id', data.id).maybeSingle(),
+    supabase.from('training_instructor_signatures').select('training_id').eq('tenant_id', req.tenantId).eq('training_id', data.id).maybeSingle(),
+  ]);
+
+  res.json({
+    ...data,
+    quiz: quiz ? { question_count: quiz.questions.length, pass_threshold: quiz.pass_threshold } : null,
+    has_instructor_signature: Boolean(signature),
+    is_private_to_me: data.category?.owner_user_id === req.user.id,
+  });
+});
+
 // POST /api/trainings — création
 router.post(
   '/',

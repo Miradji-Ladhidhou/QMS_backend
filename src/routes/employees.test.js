@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { randomUUID } from 'crypto';
 import request from 'supertest';
 import app from '../app.js';
 import { createTenant, admin } from '../test-utils/tenant.js';
@@ -360,5 +361,123 @@ describe('Personnel — dossiers (catégories génériques resource_type=employe
       .delete(`/api/module-categories/${cat.body.id}`)
       .set('Authorization', `Bearer ${tenant.admin.token}`);
     expect(ok.status).toBe(204);
+  });
+});
+
+describe('POST /api/employees/:id/convert — conversion en compte utilisateur sans perte de données', () => {
+  function uniqueEmail() {
+    return `convert-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
+  }
+
+  it('invite la personne, re-rattache formations/accidents/tâches au compte puis supprime l’entrée personnel', async () => {
+    tenant = await createTenant();
+    const employee = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Luc Converti', job_title: 'Soudeur' });
+    const employeeId = employee.body.id;
+
+    const training = await request(app)
+      .post('/api/trainings')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Habilitation soudure', frequency_months: 12 });
+    const record = await request(app)
+      .post(`/api/trainings/${training.body.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ employee_id: employeeId, completed_at: '2026-01-10' });
+    expect(record.status).toBe(201);
+
+    const accident = await request(app)
+      .post('/api/accidents')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Brûlure légère', occurred_at: '2026-01-15', injured_employee_id: employeeId });
+    const task = await request(app)
+      .post('/api/tasks')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ title: 'Renouveler EPI', due_date: '2026-03-01', assigned_employee_id: employeeId });
+
+    const email = uniqueEmail();
+    const converted = await request(app)
+      .post(`/api/employees/${employeeId}/convert`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ email, role: 'manager' });
+    expect(converted.status).toBe(201);
+    expect(converted.body.full_name).toBe('Luc Converti');
+    expect(converted.body.role).toBe('manager');
+    expect(converted.body.migrated).toEqual({ training_records: 1, accidents: 1, tasks: 1 });
+
+    const userId = converted.body.id;
+    try {
+      // Le profil reprend poste et rôle choisis ; l'historique pointe vers le compte.
+      const { data: profile } = await admin.from('users').select('full_name, role, job_title').eq('id', userId).single();
+      expect(profile).toMatchObject({ full_name: 'Luc Converti', role: 'manager', job_title: 'Soudeur' });
+
+      const { data: migratedRecord } = await admin
+        .from('training_records')
+        .select('user_id, employee_id')
+        .eq('id', record.body.id)
+        .single();
+      expect(migratedRecord).toEqual({ user_id: userId, employee_id: null });
+
+      const { data: migratedAccident } = await admin
+        .from('accidents')
+        .select('injured_user_id, injured_employee_id')
+        .eq('id', accident.body.id)
+        .single();
+      expect(migratedAccident).toEqual({ injured_user_id: userId, injured_employee_id: null });
+
+      const { data: migratedTask } = await admin
+        .from('tasks')
+        .select('assigned_to, assigned_employee_id')
+        .eq('id', task.body.id)
+        .single();
+      expect(migratedTask).toEqual({ assigned_to: userId, assigned_employee_id: null });
+
+      const { data: gone } = await admin.from('employees').select('id').eq('id', employeeId).maybeSingle();
+      expect(gone).toBeNull();
+    } finally {
+      // cleanup() ne connaît que les comptes auth créés par createTenant : celui issu de la
+      // conversion doit être supprimé explicitement pour ne pas fuiter entre les tests.
+      await admin.auth.admin.deleteUser(userId).catch(() => {});
+    }
+  });
+
+  it('403 pour non-admin, 400 sans email valide, 409 si l’email a déjà un compte — l’entrée est conservée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+    const employee = await request(app)
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ full_name: 'Nina Intacte' });
+    const employeeId = employee.body.id;
+
+    const forbidden = await request(app)
+      .post(`/api/employees/${employeeId}/convert`)
+      .set('Authorization', `Bearer ${manager.token}`)
+      .send({ email: uniqueEmail() });
+    expect(forbidden.status).toBe(403);
+
+    const invalid = await request(app)
+      .post(`/api/employees/${employeeId}/convert`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ email: 'pas-un-email' });
+    expect(invalid.status).toBe(400);
+
+    const conflict = await request(app)
+      .post(`/api/employees/${employeeId}/convert`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ email: tenant.admin.email });
+    expect(conflict.status).toBe(409);
+    expect(conflict.body.error).toMatch(/existe déjà/i);
+
+    // Dans tous les cas d'échec, l'entrée personnel reste en place.
+    const { data: stillThere } = await admin.from('employees').select('id').eq('id', employeeId).single();
+    expect(stillThere.id).toBe(employeeId);
+
+    const missing = await request(app)
+      .post(`/api/employees/${randomUUID()}/convert`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ email: uniqueEmail() });
+    expect(missing.status).toBe(404);
   });
 });

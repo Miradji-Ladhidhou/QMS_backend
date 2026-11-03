@@ -382,3 +382,52 @@ describe('GET /api/trainings/matrix — exigences de formation par poste (requir
     expect(row.people.find((p) => p.person.id === person.id).status).toBe('up_to_date');
   });
 });
+
+describe('GET /api/trainings/:id — page dédiée', () => {
+  it("renvoie la formation avec ses réalisations (session embarquée), le résumé du QCM et la visibilité", async () => {
+    tenant = await createTenant();
+    const training = await createTraining(tenant.admin.token, { frequency_months: 12 });
+
+    await request(app)
+      .post(`/api/trainings/${training.id}/records`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ user_id: tenant.admin.id, completed_at: '2026-04-05' })
+      .expect(201);
+
+    const res = await request(app).get(`/api/trainings/${training.id}`).set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(training.id);
+    expect(res.body.records).toHaveLength(1);
+    expect(res.body.records[0].session.session_date).toBe('2026-04-05');
+    expect(res.body.records[0].next_due_date).toBe('2027-04-05');
+    expect(res.body.quiz).toBeNull();
+    expect(res.body.has_instructor_signature).toBe(false);
+    expect(res.body.is_private_to_me).toBe(false);
+  });
+
+  it('répond 404 pour une formation inexistante ou restreinte sans permission, 200 une fois la permission accordée', async () => {
+    tenant = await createTenant({ extraUsers: [{ role: 'manager' }] });
+    const manager = tenant.users[0];
+
+    const missing = await request(app)
+      .get('/api/trainings/00000000-0000-0000-0000-000000000000')
+      .set('Authorization', `Bearer ${tenant.admin.token}`);
+    expect(missing.status).toBe(404);
+
+    const category = await createRestrictedCategory(tenant.admin.token, 'Restreinte pour page dédiée');
+    const training = await createTraining(tenant.admin.token, { category_id: category.id });
+
+    const forbidden = await request(app).get(`/api/trainings/${training.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(forbidden.status).toBe(404);
+
+    await request(app)
+      .post(`/api/module-categories/${category.id}/permissions`)
+      .set('Authorization', `Bearer ${tenant.admin.token}`)
+      .send({ subject_type: 'user', subject_id: manager.id, can_view: true })
+      .expect(201);
+
+    const allowed = await request(app).get(`/api/trainings/${training.id}`).set('Authorization', `Bearer ${manager.token}`);
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.id).toBe(training.id);
+  });
+});
